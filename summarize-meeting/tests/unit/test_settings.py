@@ -37,6 +37,7 @@ def test_settings_round_trip(tmp_path: Path) -> None:
             timeout_ms=7_500,
         ),
         retention=RetentionSettings(keep_audio=True, keep_screenshots=True),
+        auto_transcribe_after_recording=True,
         log_level="DEBUG",
     )
 
@@ -45,6 +46,16 @@ def test_settings_round_trip(tmp_path: Path) -> None:
 
     assert result.settings == expected
     assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == 1
+    assert result.settings.auto_transcribe_after_recording
+
+
+def test_old_settings_default_auto_transcription_to_disabled(tmp_path: Path) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text('{"schema_version":1}', encoding="utf-8")
+
+    result = FileSettingsRepository(path).load()
+
+    assert not result.settings.auto_transcribe_after_recording
 
 
 def test_corrupt_settings_are_backed_up_without_overwrite(tmp_path: Path) -> None:

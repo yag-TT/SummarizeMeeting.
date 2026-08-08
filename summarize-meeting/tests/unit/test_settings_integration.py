@@ -41,9 +41,11 @@ class _UiController(QObject):
         self.last_microphone_device_id = microphone_id
         self.last_system_device_id = system_id
         self.meetings_directory = Path("C:/portable/data/meetings")
+        self.auto_transcribe_after_recording = False
         self.is_recording = False
         self.stop_count = 0
         self.replaced_screen_targets: list[ScreenTarget] = []
+        self.auto_transcription_updates: list[bool] = []
 
     def list_input_devices(self):
         return [
@@ -76,6 +78,10 @@ class _UiController(QObject):
     def replace_screen_target(self, target: ScreenTarget) -> None:
         self.replaced_screen_targets.append(target)
 
+    def set_auto_transcribe_after_recording(self, enabled: bool) -> None:
+        self.auto_transcribe_after_recording = enabled
+        self.auto_transcription_updates.append(enabled)
+
 
 class _UiTranscriptionController(QObject):
     job_started = Signal(str)
@@ -94,6 +100,21 @@ class _UiTranscriptionController(QObject):
 
     def cancel(self) -> None:
         self.is_running = False
+
+
+def _create_recorded_session(root: Path, name: str = "session") -> Path:
+    session = root / name
+    audio = session / "audio"
+    audio.mkdir(parents=True)
+    (session / "analysis").mkdir()
+    (session / "output").mkdir()
+    (session / "session.json").write_text(
+        '{"title":"自動実行テスト","started_at":"2026-08-08T12:00:00+09:00","status":"RECORDED"}',
+        encoding="utf-8",
+    )
+    (audio / "manifest.json").write_text('{"tracks":{}}', encoding="utf-8")
+    (audio / "microphone.wav").write_bytes(b"wave")
+    return session
 
 
 def test_ui_restores_devices_by_saved_id(qapp: QApplication) -> None:
@@ -153,6 +174,62 @@ def test_ui_selects_past_session_and_starts_transcription(
     window._toggle_transcription()  # noqa: SLF001
 
     assert transcription.started_paths == [older.resolve()]
+    window.close()
+
+
+def test_ui_persists_auto_transcription_checkbox(qapp: QApplication) -> None:
+    recording = _UiController(microphone_id=None, system_id=None)
+    window = MainWindow(recording)  # type: ignore[arg-type]
+
+    window._auto_transcribe.setChecked(True)  # noqa: SLF001
+
+    assert recording.auto_transcription_updates == [True]
+    assert recording.auto_transcribe_after_recording
+    window.close()
+
+
+def test_ui_starts_transcription_after_successful_recording(
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    session = _create_recorded_session(tmp_path)
+    recording = _UiController(microphone_id=None, system_id=None)
+    recording.meetings_directory = tmp_path
+    recording.auto_transcribe_after_recording = True
+    transcription = _UiTranscriptionController()
+    window = MainWindow(  # type: ignore[arg-type]
+        recording,
+        transcription,  # type: ignore[arg-type]
+        FileSessionCatalog(tmp_path),
+    )
+
+    window._on_session_finished(str(session))  # noqa: SLF001
+
+    assert transcription.started_paths == [session.resolve()]
+    assert "自動実行" in window._message.text()  # noqa: SLF001
+    window.close()
+
+
+def test_ui_does_not_auto_transcribe_interrupted_recording(
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    session = _create_recorded_session(tmp_path)
+    recording = _UiController(microphone_id=None, system_id=None)
+    recording.meetings_directory = tmp_path
+    recording.auto_transcribe_after_recording = True
+    transcription = _UiTranscriptionController()
+    window = MainWindow(  # type: ignore[arg-type]
+        recording,
+        transcription,  # type: ignore[arg-type]
+        FileSessionCatalog(tmp_path),
+    )
+    window._session_error_message = "録音確定失敗"  # noqa: SLF001
+
+    window._on_session_finished(str(session))  # noqa: SLF001
+
+    assert transcription.started_paths == []
+    assert "録音確定失敗" in window._message.text()  # noqa: SLF001
     window.close()
 
 
@@ -399,9 +476,11 @@ def test_controller_applies_screen_settings_and_remembers_devices(tmp_path: Path
         AudioDevice(id="mic-2", name="Mic", channels=1),
         AudioDevice(id="system-1", name="Speakers", channels=2, is_loopback=True),
     )
+    controller.set_auto_transcribe_after_recording(True)
 
     assert recorder._interval == 0.25  # noqa: SLF001
     assert recorder._detector._pixel_diff_threshold == 32  # noqa: SLF001
     saved = repository.load().settings
     assert saved.last_microphone_device_id == "mic-2"
     assert saved.last_system_device_id == "system-1"
+    assert saved.auto_transcribe_after_recording

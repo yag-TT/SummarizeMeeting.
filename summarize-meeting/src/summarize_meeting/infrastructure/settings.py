@@ -34,6 +34,7 @@ class AppSettings:
     screen_evaluation_fps: float = 2.0
     screen_change_thresholds: ScreenChangeSettings = field(default_factory=ScreenChangeSettings)
     retention: RetentionSettings = field(default_factory=RetentionSettings)
+    auto_transcribe_after_recording: bool = False
     log_level: str = "INFO"
 
     def to_dict(self) -> dict[str, Any]:
@@ -113,6 +114,10 @@ class AppSettings:
                     retention.get("keep_screenshots", True),
                     "keep_screenshots",
                 ),
+            ),
+            auto_transcribe_after_recording=_boolean(
+                value.get("auto_transcribe_after_recording", False),
+                "auto_transcribe_after_recording",
             ),
             log_level=log_level.upper(),
         )

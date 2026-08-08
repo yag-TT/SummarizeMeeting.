@@ -7,6 +7,7 @@ from pathlib import Path
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFormLayout,
     QHBoxLayout,
@@ -125,6 +126,10 @@ class MainWindow(QMainWindow):
         analysis_selector.addWidget(self._refresh_sessions)
         root.addLayout(analysis_selector)
 
+        self._auto_transcribe = QCheckBox("録音終了後に自動で文字起こし")
+        self._auto_transcribe.setChecked(controller.auto_transcribe_after_recording)
+        root.addWidget(self._auto_transcribe)
+
         analysis = QHBoxLayout()
         analysis.addWidget(QLabel("文字起こし"))
         self._transcription_status = QLabel("未実行")
@@ -164,6 +169,7 @@ class MainWindow(QMainWindow):
         self._transcribe.clicked.connect(self._toggle_transcription)
         self._refresh_sessions.clicked.connect(lambda: self.refresh_analysis_sessions())
         self._analysis_session.currentIndexChanged.connect(self._on_analysis_session_changed)
+        self._auto_transcribe.toggled.connect(self._on_auto_transcription_toggled)
         self._microphone.currentIndexChanged.connect(self._update_idle_source_names)
         self._system_audio.currentIndexChanged.connect(self._update_idle_source_names)
         self._screen_target.currentIndexChanged.connect(self._update_idle_source_names)
@@ -366,6 +372,7 @@ class MainWindow(QMainWindow):
         else:
             self.show_information(f"記録を保存しました: {path}")
         self.refresh_analysis_sessions(Path(path))
+        self._maybe_start_auto_transcription(Path(path), error_message=error_message)
         self._close_if_requested()
 
     def _on_finalize_progress(self, percent: int, message: str) -> None:
@@ -422,6 +429,45 @@ class MainWindow(QMainWindow):
         try:
             controller.start(summary.path)
         except Exception as exc:
+            self.show_error(str(exc))
+
+    def _maybe_start_auto_transcription(
+        self,
+        session_path: Path,
+        *,
+        error_message: str | None,
+    ) -> None:
+        if (
+            error_message is not None
+            or self._close_requested
+            or self._os_shutdown_requested
+            or not self._auto_transcribe.isChecked()
+        ):
+            return
+        summary = self._selected_analysis_session()
+        controller = self._transcription_controller
+        if (
+            summary is None
+            or summary.path != session_path.resolve()
+            or summary.recording_status != "RECORDED"
+            or not summary.can_transcribe
+            or controller is None
+            or controller.is_running
+        ):
+            return
+        self.show_information("録音を保存しました。文字起こしを自動実行します。")
+        try:
+            controller.start(summary.path)
+        except Exception as exc:
+            self.show_error(f"文字起こしを自動実行できません: {exc}")
+
+    def _on_auto_transcription_toggled(self, enabled: bool) -> None:
+        try:
+            self._controller.set_auto_transcribe_after_recording(enabled)
+        except Exception as exc:
+            self._auto_transcribe.blockSignals(True)
+            self._auto_transcribe.setChecked(self._controller.auto_transcribe_after_recording)
+            self._auto_transcribe.blockSignals(False)
             self.show_error(str(exc))
 
     def _on_transcription_started(self, session_path: str) -> None:
@@ -566,6 +612,7 @@ class MainWindow(QMainWindow):
         self._screen_target.setEnabled(enabled)
         self._analysis_session.setEnabled(enabled)
         self._refresh_sessions.setEnabled(enabled)
+        self._auto_transcribe.setEnabled(enabled)
 
     def show_information(self, message: str) -> None:
         self._message.setText(message)

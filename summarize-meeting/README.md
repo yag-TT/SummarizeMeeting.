@@ -20,6 +20,8 @@ uv run summarize-meeting
 
 録音終了後、画面下部の「文字起こし」から実行します。既定モデルは`large-v3-turbo`、言語は日本語です。初回実行時はモデルを`models/faster-whisper/`へ取得するため時間とインターネット接続が必要です。会議音声と文字起こし結果は外部サービスへ送信しません。
 
+「録音終了後に自動で文字起こし」をONにすると、正常に確定した録音だけを会議終了後に自動処理します。既定はOFFです。録音確定エラー、音声不足、アプリ終了時には自動実行せず、録音済みセッションから手動で再実行できます。
+
 「解析対象」には`data/meetings/`内の録音済みセッションが新しい順に表示されます。アプリを再起動した後でも過去の会議を選択し、文字起こしの実行・再実行ができます。壊れた`session.json`が混在しても、そのフォルダ名を使って他のセッションとともに一覧表示します。
 
 文字起こしJobの開始・成功・失敗・キャンセルは`analysis/jobs.json`へatomic保存します。実行中にアプリが終了して`RUNNING`が残った場合、次回起動時は「前回中断」として表示し、再実行できます。
@@ -66,7 +68,7 @@ uv run python -m summarize_meeting.processing.transcription_worker `
 
 会議開始前に保存先の空き容量を確認し、5 GiB未満では録音を開始しません。録音中は60秒ごとに確認し、5 GiB未満になった場合は新しい画面保存を停止して音声録音を優先します。データを自動削除して容量を確保することはありません。
 
-前回使用したマイクとPC音声のdevice ID、画面変更検知設定、保持方針、ログレベルは `data/settings.json` に保存します。壊れた設定は `data/settings.corrupt-<timestamp>.json` へ退避し、既定値で起動します。保存済みdevice IDが見つからない場合、別デバイスへ自動切替はしません。
+前回使用したマイクとPC音声のdevice ID、画面変更検知設定、保持方針、自動文字起こし、ログレベルは `data/settings.json` に保存します。壊れた設定は `data/settings.corrupt-<timestamp>.json` へ退避し、既定値で起動します。保存済みdevice IDが見つからない場合、別デバイスへ自動切替はしません。
 
 `audio/manifest.json` には2track共通のmonotonic origin、各trackの推定開始offset、WAV時間、再接続gapを除く稼働時間、duration drift、queue最大使用率、pressure回数、overflow回数を保存します。診断値に基づく音声の自動伸縮や無音挿入は行いません。
 

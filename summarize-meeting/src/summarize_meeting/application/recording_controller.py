@@ -119,6 +119,18 @@ class RecordingController(QObject):
         return self._app_paths.meetings_dir
 
     @property
+    def auto_transcribe_after_recording(self) -> bool:
+        return self._settings.auto_transcribe_after_recording
+
+    def set_auto_transcribe_after_recording(self, enabled: bool) -> None:
+        updated = replace(self._settings, auto_transcribe_after_recording=bool(enabled))
+        try:
+            self._settings_repository.save(updated)
+        except OSError as exc:
+            raise RuntimeError(f"自動文字起こし設定を保存できません: {exc}") from exc
+        self._settings = updated
+
+    @property
     def is_recording(self) -> bool:
         with self._lock:
             return self._session is not None and self._session.status in {
