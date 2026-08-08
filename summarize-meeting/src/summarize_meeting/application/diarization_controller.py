@@ -11,6 +11,10 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
+from summarize_meeting.application.worker_process import (
+    platform_popen_options,
+    terminate_process_tree,
+)
 from summarize_meeting.domain.analysis_job import AnalysisJobState, AnalysisJobStatus
 from summarize_meeting.infrastructure.analysis_job_repository import (
     FileAnalysisJobRepository,
@@ -68,7 +72,7 @@ class DiarizationController(QObject):
             raise RuntimeError(
                 "話者分離モデルがありません: "
                 + ", ".join(missing)
-                + " / scripts\\setup-diarization-models.ps1 を実行してください"
+                + " / python scripts/setup_models.py diarization を実行してください"
             )
         state = AnalysisJobState.start(
             job="diarization",
@@ -108,7 +112,7 @@ class DiarizationController(QObject):
             self._cancel_requested = True
             process = self._process
         if process is not None and process.poll() is None:
-            process.terminate()
+            terminate_process_tree(process)
 
     def update_speaker_names(
         self,
@@ -144,7 +148,6 @@ class DiarizationController(QObject):
             command.extend(["--speaker-count", str(speaker_count)])
         environment = os.environ.copy()
         environment["PYTHONUTF8"] = "1"
-        creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         try:
             process = subprocess.Popen(
                 command,
@@ -154,7 +157,7 @@ class DiarizationController(QObject):
                 encoding="utf-8",
                 errors="replace",
                 env=environment,
-                creationflags=creation_flags,
+                **platform_popen_options(),
             )
         except OSError as exc:
             message = f"話者分離を開始できません: {exc}"
@@ -174,7 +177,7 @@ class DiarizationController(QObject):
             self._process = process
             cancel_requested = self._cancel_requested
         if cancel_requested:
-            process.terminate()
+            terminate_process_tree(process)
 
         output_path: str | None = None
         diagnostic_lines: deque[str] = deque(maxlen=20)

@@ -93,7 +93,7 @@ class SherpaDpdfNetBackend:
         if not self._model_path.is_file():
             raise AudioEnhancementError(
                 "音声改善モデルがありません: "
-                f"{self._model_path} / .\\scripts\\setup-audio-enhancement-model.ps1 "
+                f"{self._model_path} / python scripts/setup_models.py audio-enhancement "
                 "を実行してください"
             )
         digest = hashlib.sha256()

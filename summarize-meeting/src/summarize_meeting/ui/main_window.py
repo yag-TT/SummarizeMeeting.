@@ -1315,7 +1315,7 @@ class MainWindow(QMainWindow):
         self._stop.setEnabled(False)
         self._reselect.setEnabled(False)
         if self._controller.is_recording:
-            self.show_information("Windowsの終了に備えて記録を保存しています。")
+            self.show_information("OSの終了に備えて記録を保存しています。")
         if self._transcription_controller is not None:
             self._transcription_controller.cancel()
         if self._audio_enhancement_controller is not None:

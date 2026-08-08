@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import asyncio
+import hashlib
 import json
 import math
 import os
@@ -11,12 +11,26 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-import cv2
 import numpy as np
 
 from summarize_meeting.domain.screen_analysis import OcrLine, ScreenRecognition
 
 ProgressCallback = Callable[[int, str], None]
+
+_PADDLE_MODELS = (
+    (
+        "PP-OCRv6_medium_det",
+        "PaddlePaddle/PP-OCRv6_medium_det_onnx",
+        "61323801669c338b7891481ec7bac61ce31b576a",
+        "463732affa49c479c2d6319a0962c5c0889f6044fa999a9b93edbda807cefe2c",
+    ),
+    (
+        "PP-OCRv6_medium_rec",
+        "PaddlePaddle/PP-OCRv6_medium_rec_onnx",
+        "50c7eacafc52fa7bcf4194e8cd08e46f8558504b",
+        "ebc14563f1f93a58f5061fb87f0681d8d0afffc5cddfeda6a8cfed444cabd3c8",
+    ),
+)
 
 
 class ScreenAnalysisError(RuntimeError):
@@ -44,81 +58,181 @@ class ScreenshotEvent:
     metrics: dict[str, float]
 
 
-class WindowsOcrBackend:
-    def __init__(self, *, language: str = "ja") -> None:
+class PaddleOcrBackend:
+    def __init__(self, *, models_directory: Path, language: str = "ja") -> None:
+        self._models_directory = models_directory
         self._language = language
         self._engine: object | None = None
 
     @property
     def runtime_name(self) -> str:
-        return "windows-media-ocr"
+        return "paddleocr-3.7/PP-OCRv6-medium-onnx"
 
     @property
     def language(self) -> str:
         return self._language
 
+    def prepare(self) -> None:
+        self._get_engine()
+
     def analyze(self, image_path: Path) -> ScreenRecognition:
         engine = self._get_engine()
-        frame = _decode_image(image_path)
-        height, width = frame.shape[:2]
         try:
-            from winrt.windows.graphics.imaging import (
-                BitmapAlphaMode,
-                BitmapPixelFormat,
-                SoftwareBitmap,
-            )
-            from winrt.windows.storage.streams import Buffer
-        except ImportError as exc:  # pragma: no cover - required at runtime
-            raise ScreenAnalysisError("Windows OCR projectionを読み込めません") from exc
-
-        bgra = cv2.cvtColor(frame, cv2.COLOR_BGR2BGRA)
-        raw = bgra.tobytes()
-        buffer = Buffer(len(raw))
-        buffer.length = len(raw)
-        memoryview(buffer)[:] = raw
-        bitmap = SoftwareBitmap(
-            BitmapPixelFormat.BGRA8,
-            width,
-            height,
-            BitmapAlphaMode.IGNORE,
-        )
-        bitmap.copy_from_buffer(buffer)
-        loop = asyncio.new_event_loop()
-        try:
-            result = loop.run_until_complete(engine.recognize_async(bitmap))
+            results = engine.predict(str(image_path))
+            result = next(iter(results), None)
         except Exception as exc:
-            raise ScreenAnalysisError(f"Windows OCRに失敗しました: {exc}") from exc
-        finally:
-            loop.close()
-            bitmap.close()
-        lines = tuple(_convert_ocr_line(line) for line in result.lines if line.text.strip())
-        return ScreenRecognition(
-            text=result.text.strip(),
-            lines=lines,
-            language=self._language,
-        )
+            raise ScreenAnalysisError(f"PaddleOCRの解析に失敗しました: {exc}") from exc
+        if result is None:
+            return ScreenRecognition(text="", lines=(), language=self._language)
+        return _convert_paddle_result(result, language=self._language)
 
     def _get_engine(self):
         if self._engine is not None:
             return self._engine
         try:
-            from winrt.windows.globalization import Language
-            from winrt.windows.media.ocr import OcrEngine
-        except ImportError as exc:  # pragma: no cover - required at runtime
-            raise ScreenAnalysisError("Windows OCR projectionを読み込めません") from exc
-        language = Language(self._language)
-        if not OcrEngine.is_language_supported(language):
-            available = ", ".join(
-                value.language_tag for value in OcrEngine.available_recognizer_languages
+            model_directories = ensure_paddle_models(self._models_directory)
+            _configure_paddle_model_cache(self._models_directory)
+            from paddleocr import PaddleOCR
+
+            self._engine = PaddleOCR(
+                text_detection_model_name="PP-OCRv6_medium_det",
+                text_recognition_model_name="PP-OCRv6_medium_rec",
+                text_detection_model_dir=str(model_directories["PP-OCRv6_medium_det"]),
+                text_recognition_model_dir=str(model_directories["PP-OCRv6_medium_rec"]),
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=False,
+                engine="onnxruntime",
+                device="cpu",
             )
+        except Exception as exc:
             raise ScreenAnalysisError(
-                f"Windows OCR言語パック {self._language} がありません"
-                + (f"（利用可能: {available}）" if available else "")
-            )
-        self._engine = OcrEngine.try_create_from_language(language)
-        if self._engine is None:
-            raise ScreenAnalysisError(f"Windows OCR {self._language} を初期化できません")
+                "PaddleOCRモデルを準備できません。オンライン環境で "
+                "uv run python scripts/setup_models.py ocr を実行してください: "
+                f"{exc}"
+            ) from exc
         return self._engine
+
+
+def create_screen_analysis_backend(
+    *,
+    models_directory: Path,
+    language: str = "ja",
+) -> ScreenAnalysisBackend:
+    return PaddleOcrBackend(models_directory=models_directory, language=language)
+
+
+def default_screen_analysis_runtime() -> str:
+    return "paddleocr-3.7/PP-OCRv6-medium-onnx"
+
+
+def _configure_paddle_model_cache(directory: Path) -> None:
+    resolved = str(directory.resolve())
+    os.environ.setdefault("PADDLE_OCR_BASE_DIR", resolved)
+    os.environ.setdefault("PADDLE_PDX_CACHE_HOME", resolved)
+    os.environ.setdefault("HF_HOME", str((directory / "huggingface").resolve()))
+
+
+def ensure_paddle_models(
+    models_directory: Path,
+    *,
+    force: bool = False,
+) -> dict[str, Path]:
+    from huggingface_hub import snapshot_download
+
+    models_directory.mkdir(parents=True, exist_ok=True)
+    result: dict[str, Path] = {}
+    for name, repository, revision, expected_sha256 in _PADDLE_MODELS:
+        destination = models_directory / name
+        model_path = destination / "inference.onnx"
+        if force or not _matches_sha256(model_path, expected_sha256):
+            snapshot_download(
+                repo_id=repository,
+                revision=revision,
+                local_dir=destination,
+                allow_patterns=("inference.onnx", "inference.json", "inference.yml", "README.md"),
+                force_download=force,
+            )
+        if not _matches_sha256(model_path, expected_sha256):
+            raise ScreenAnalysisError(
+                f"PaddleOCRモデルのSHA-256が一致しません: {model_path}"
+            )
+        result[name] = destination
+    return result
+
+
+def paddle_models_status(models_directory: Path) -> dict[str, bool]:
+    return {
+        name: _matches_sha256(models_directory / name / "inference.onnx", expected_sha256)
+        for name, _repository, _revision, expected_sha256 in _PADDLE_MODELS
+    }
+
+
+def _matches_sha256(path: Path, expected: str) -> bool:
+    if not path.is_file():
+        return False
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest().casefold() == expected.casefold()
+
+
+def _convert_paddle_result(value: object, *, language: str) -> ScreenRecognition:
+    payload = _paddle_result_payload(value)
+    texts = payload.get("rec_texts")
+    polygons = payload.get("rec_polys", payload.get("dt_polys"))
+    scores = payload.get("rec_scores")
+    if not isinstance(texts, Sequence) or isinstance(texts, str | bytes):
+        raise ScreenAnalysisError("PaddleOCR結果にrec_textsがありません")
+    if not isinstance(polygons, Sequence | np.ndarray):
+        raise ScreenAnalysisError("PaddleOCR結果に文字領域がありません")
+    score_values = scores if isinstance(scores, Sequence | np.ndarray) else ()
+    lines: list[OcrLine] = []
+    for index, (text_value, polygon_value) in enumerate(zip(texts, polygons, strict=False)):
+        text = str(text_value).strip()
+        if not text:
+            continue
+        score = float(score_values[index]) if index < len(score_values) else 1.0
+        if not math.isfinite(score) or score < 0:
+            continue
+        polygon = np.asarray(polygon_value, dtype=np.float64).reshape(-1, 2)
+        if polygon.size == 0 or not np.isfinite(polygon).all():
+            continue
+        left = float(polygon[:, 0].min())
+        top = float(polygon[:, 1].min())
+        right = float(polygon[:, 0].max())
+        bottom = float(polygon[:, 1].max())
+        lines.append(
+            OcrLine(
+                text=text,
+                x=round(left, 2),
+                y=round(top, 2),
+                width=round(max(0.0, right - left), 2),
+                height=round(max(0.0, bottom - top), 2),
+                confidence=score,
+            )
+        )
+    return ScreenRecognition(
+        text="\n".join(line.text for line in lines),
+        lines=tuple(lines),
+        language=language,
+    )
+
+
+def _paddle_result_payload(value: object) -> dict[str, object]:
+    raw = getattr(value, "json", value)
+    if callable(raw):
+        raw = raw()
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ScreenAnalysisError("PaddleOCR結果のJSONが不正です") from exc
+    if not isinstance(raw, dict):
+        raise ScreenAnalysisError("PaddleOCR結果の形式が不正です")
+    nested = raw.get("res")
+    return nested if isinstance(nested, dict) else raw
 
 
 class ScreenAnalysisService:
@@ -279,35 +393,6 @@ def _important_lines(lines: Sequence[str]) -> list[str]:
         if len(values) == 10:
             break
     return values
-
-
-def _convert_ocr_line(value: object) -> OcrLine:
-    words = tuple(value.words)
-    if words:
-        left = min(float(word.bounding_rect.x) for word in words)
-        top = min(float(word.bounding_rect.y) for word in words)
-        right = max(float(word.bounding_rect.x + word.bounding_rect.width) for word in words)
-        bottom = max(float(word.bounding_rect.y + word.bounding_rect.height) for word in words)
-    else:
-        left = top = right = bottom = 0.0
-    return OcrLine(
-        text=value.text.strip(),
-        x=round(left, 2),
-        y=round(top, 2),
-        width=round(max(0.0, right - left), 2),
-        height=round(max(0.0, bottom - top), 2),
-    )
-
-
-def _decode_image(path: Path) -> np.ndarray:
-    try:
-        encoded = np.frombuffer(path.read_bytes(), dtype=np.uint8)
-    except OSError as exc:
-        raise ScreenAnalysisError(f"画像を読み込めません: {exc}") from exc
-    frame = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
-    if frame is None or frame.size == 0:
-        raise ScreenAnalysisError("画像をdecodeできません")
-    return frame
 
 
 def _read_events(path: Path) -> tuple[ScreenshotEvent, ...]:

@@ -10,6 +10,10 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
+from summarize_meeting.application.worker_process import (
+    platform_popen_options,
+    terminate_process_tree,
+)
 from summarize_meeting.domain.analysis_job import AnalysisJobState, AnalysisJobStatus
 from summarize_meeting.infrastructure.analysis_job_repository import FileAnalysisJobRepository
 from summarize_meeting.infrastructure.paths import PortableAppPaths
@@ -93,7 +97,7 @@ class MinutesController(QObject):
             self._cancel_requested = True
             process = self._process
         if process is not None and process.poll() is None:
-            _terminate_process_tree(process)
+            terminate_process_tree(process)
 
     def _run_worker(self, session_directory: Path, state: AnalysisJobState) -> None:
         self.job_started.emit(str(session_directory))
@@ -110,7 +114,6 @@ class MinutesController(QObject):
             command.extend(["--model", self._model])
         environment = os.environ.copy()
         environment["PYTHONUTF8"] = "1"
-        creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         try:
             process = subprocess.Popen(
                 command,
@@ -120,7 +123,7 @@ class MinutesController(QObject):
                 encoding="utf-8",
                 errors="replace",
                 env=environment,
-                creationflags=creation_flags,
+                **platform_popen_options(),
             )
         except OSError as exc:
             message = f"議事録生成を開始できません: {exc}"
@@ -137,7 +140,7 @@ class MinutesController(QObject):
             self._process = process
             cancel_requested = self._cancel_requested
         if cancel_requested:
-            _terminate_process_tree(process)
+            terminate_process_tree(process)
 
         output_path: str | None = None
         diagnostics: deque[str] = deque(maxlen=20)
@@ -217,22 +220,6 @@ class MinutesController(QObject):
             self._process = None
             self._cancel_requested = False
             self._running = False
-
-
-def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
-    if sys.platform == "win32":
-        creation_flags = subprocess.CREATE_NO_WINDOW
-        try:
-            subprocess.run(
-                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                capture_output=True,
-                creationflags=creation_flags,
-                check=False,
-            )
-            return
-        except OSError:
-            pass
-    process.terminate()
 
 
 def _relative_output_path(session_directory: Path, value: str) -> str:

@@ -49,6 +49,8 @@ class ScreenRecorder:
         self._stop = threading.Event()
         self._failed = threading.Event()
         self._target_lock = threading.Lock()
+        self._awaiting_first_frame = threading.Event()
+        self._awaiting_first_frame.set()
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
@@ -60,15 +62,20 @@ class ScreenRecorder:
         with self._target_lock:
             self._target = target
             self._detector.reset()
-        if self._thread is None or not self._thread.is_alive():
+            self._awaiting_first_frame.set()
+        thread_is_alive = self._thread is not None and self._thread.is_alive()
+        if thread_is_alive:
+            self._backend.replace_target(target)
+            self._state_callback(ComponentStatus.STARTING, None, "画面を再選択しました")
+        else:
             self._failed.clear()
             self._stop.clear()
             self.start()
-        else:
-            self._state_callback(ComponentStatus.STARTING, None, "画面を再選択しました")
 
     def request_stop(self) -> None:
         self._stop.set()
+        with suppress(Exception):
+            self._backend.stop()
 
     def fail(self, error_code: str, message: str) -> None:
         if self._failed.is_set():
@@ -91,13 +98,19 @@ class ScreenRecorder:
     def _run(self) -> None:
         paused = False
         save_failed = False
-        self._state_callback(ComponentStatus.RUNNING, None, None)
         try:
+            with self._target_lock:
+                initial_target = self._target
+            self._backend.start(initial_target)
+            self._state_callback(ComponentStatus.RUNNING, None, None)
             while not self._stop.wait(self._interval):
-                with self._target_lock:
-                    target = self._target
                 try:
-                    frame = self._backend.capture(target)
+                    frame = self._backend.read_latest_frame(
+                        120.0
+                        if self._awaiting_first_frame.is_set()
+                        else max(2.0, self._interval * 4)
+                    )
+                    self._awaiting_first_frame.clear()
                     if self._failed.is_set():
                         return
                     if paused:
@@ -138,6 +151,8 @@ class ScreenRecorder:
                     self._detector.mark_saved(decision)
                     self._count_callback(self._store.count)
                 except ScreenTargetPausedError as exc:
+                    if self._stop.is_set():
+                        return
                     if not paused:
                         paused = True
                         self._notify_exception("SCREEN_TARGET_PAUSED", exc)
@@ -147,6 +162,8 @@ class ScreenRecorder:
                             str(exc),
                         )
                 except ScreenTargetClosedError as exc:
+                    if self._stop.is_set():
+                        return
                     self._notify_exception("SCREEN_TARGET_CLOSED", exc)
                     self._failed.set()
                     self._state_callback(
@@ -156,6 +173,8 @@ class ScreenRecorder:
                     )
                     return
                 except Exception as exc:
+                    if self._stop.is_set():
+                        return
                     self._notify_exception("SCREEN_CAPTURE_FAILED", exc)
                     self._failed.set()
                     self._state_callback(
@@ -164,9 +183,29 @@ class ScreenRecorder:
                         str(exc),
                     )
                     return
+        except ScreenTargetClosedError as exc:
+            if self._stop.is_set():
+                return
+            self._notify_exception("SCREEN_TARGET_CLOSED", exc)
+            self._failed.set()
+            self._state_callback(
+                ComponentStatus.FAILED,
+                "SCREEN_TARGET_CLOSED",
+                str(exc),
+            )
+        except Exception as exc:
+            if self._stop.is_set():
+                return
+            self._notify_exception("SCREEN_CAPTURE_FAILED", exc)
+            self._failed.set()
+            self._state_callback(
+                ComponentStatus.FAILED,
+                "SCREEN_CAPTURE_FAILED",
+                str(exc),
+            )
         finally:
             try:
-                self._backend.close()
+                self._backend.stop()
             except Exception as exc:
                 self._notify_exception("SCREEN_CLOSE_FAILED", exc)
                 if not self._failed.is_set():

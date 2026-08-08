@@ -174,7 +174,7 @@ def _wait(event: threading.Event, app: QCoreApplication, *, timeout: float) -> b
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Record a test WAV through real Windows audio devices and optionally transcribe it"
+            "Record a test WAV through real audio devices and optionally transcribe it"
         )
     )
     parser.add_argument("--source-wave", required=True, type=Path)

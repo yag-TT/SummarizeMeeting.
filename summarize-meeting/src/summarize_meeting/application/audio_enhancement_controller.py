@@ -10,6 +10,10 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
+from summarize_meeting.application.worker_process import (
+    platform_popen_options,
+    terminate_process_tree,
+)
 from summarize_meeting.domain.analysis_job import AnalysisJobState, AnalysisJobStatus
 from summarize_meeting.infrastructure.analysis_job_repository import FileAnalysisJobRepository
 from summarize_meeting.infrastructure.paths import PortableAppPaths
@@ -82,7 +86,7 @@ class AudioEnhancementController(QObject):
             self._cancel_requested = True
             process = self._process
         if process is not None and process.poll() is None:
-            process.terminate()
+            terminate_process_tree(process)
 
     def _run_worker(self, session_directory: Path, state: AnalysisJobState) -> None:
         self.job_started.emit(str(session_directory))
@@ -97,7 +101,6 @@ class AudioEnhancementController(QObject):
         ]
         environment = os.environ.copy()
         environment["PYTHONUTF8"] = "1"
-        creation_flags = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
         try:
             process = subprocess.Popen(
                 command,
@@ -107,7 +110,7 @@ class AudioEnhancementController(QObject):
                 encoding="utf-8",
                 errors="replace",
                 env=environment,
-                creationflags=creation_flags,
+                **platform_popen_options(),
             )
         except OSError as exc:
             message = f"マイク音声の改善を開始できません: {exc}"
@@ -127,7 +130,7 @@ class AudioEnhancementController(QObject):
             self._process = process
             cancel_requested = self._cancel_requested
         if cancel_requested:
-            process.terminate()
+            terminate_process_tree(process)
 
         output_path: str | None = None
         diagnostic_lines: deque[str] = deque(maxlen=20)

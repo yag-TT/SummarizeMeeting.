@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True, slots=True)
@@ -10,9 +10,17 @@ class OcrLine:
     y: float
     width: float
     height: float
+    confidence: float = 1.0
 
     def to_dict(self) -> dict[str, object]:
-        return asdict(self)
+        # Keep analysis/screens.json schema version 1 unchanged.
+        return {
+            "text": self.text,
+            "x": self.x,
+            "y": self.y,
+            "width": self.width,
+            "height": self.height,
+        }
 
 
 @dataclass(frozen=True, slots=True)

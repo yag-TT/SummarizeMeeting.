@@ -7,16 +7,22 @@ from pathlib import Path
 
 from summarize_meeting.processing.screen_analysis import (
     ScreenAnalysisService,
-    WindowsOcrBackend,
+    create_screen_analysis_backend,
 )
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run local screenshot analysis")
     parser.add_argument("--session", required=True, type=Path)
+    parser.add_argument("--models-dir", required=True, type=Path)
     parser.add_argument("--language", default="ja")
     args = parser.parse_args(argv)
-    service = ScreenAnalysisService(WindowsOcrBackend(language=args.language))
+    service = ScreenAnalysisService(
+        create_screen_analysis_backend(
+            models_directory=args.models_dir / "paddleocr",
+            language=args.language,
+        )
+    )
 
     def progress(percent: int, message: str) -> None:
         print(

@@ -4,7 +4,7 @@
 
 状態: Draft（製品判断の回答反映済み、実機PoC項目を含む）
 
-対象: Phase 1「記録基盤」のWindows 11先行実装
+対象: Phase 1「記録基盤」のWindows 11 / Ubuntu 22.04共通実装
 
 ## 1. 文書の位置付け
 
@@ -39,7 +39,6 @@
 - UIスレッドでのブロッキング録音、画像処理、ファイル書き込み
 - 1つのWorker障害による他の正常Workerの強制停止
 - 会議中のWhisper、VLM、LLM起動
-- FFmpegおよびQt MultimediaのFFmpegバックエンドへの依存
 - Teams / Google Meet内部APIへの依存
 - 会議データの外部サービス送信
 - セッション終了確認前の原本削除
@@ -48,9 +47,9 @@
 
 ### 3.1 対象
 
-- Windows 11向けPySide6デスクトップUI
+- Windows 11 / Ubuntu 22.04向けPySide6デスクトップUI
 - マイク入力デバイスの列挙と録音
-- PC出力デバイスの列挙とWASAPI Loopback録音
+- PC出力デバイスの列挙とSoundCard loopback録音
 - マイクとPC音声の別トラック保存
 - 各音声ソースのレベルメーター
 - OSまたはアプリUIによる対象ウィンドウ選択
@@ -58,11 +57,10 @@
 - `session.json`、イベントログ、アプリログの保存
 - 正常停止、部分障害、次回起動時の復旧検査
 - Fake Captureを使用した自動テスト
-- Windows実機での15分および1時間連続試験
+- Windows 11 / Ubuntu 22.04 Wayland実機での15分および1時間連続試験
 
 ### 3.2 対象外
 
-- Ubuntu Capture実装（Windows検証後に同じPortへ追加する）
 - STT、話者分離、画面内容理解、議事録生成
 - リアルタイム字幕、リアルタイム議事録
 - 特定アプリだけの音声抽出
@@ -82,14 +80,13 @@
 - 初期基準はPython 3.11とする。
 - `uv.lock` は再現性確保のためGit管理対象とする。
 - 実行時依存と開発時依存を分離する。
-- Windows固有依存には環境マーカーを付与する。
-- Phase 1のCapture PoCが完了するまで、画面Captureライブラリを最終固定しない。
+- OS固有処理はQt Multimedia、SoundCard、psutilの共通Portの内側へ閉じ込める。
 
 想定コマンドは以下とする。
 
-```powershell
-uv sync
-uv run meeting-minutes
+```console
+uv sync --frozen
+uv run summarize-meeting
 uv run pytest
 uv run ruff check .
 ```
@@ -100,16 +97,17 @@ uv run ruff check .
 |---|---|---|---|
 | Runtime | PySide6 | GUIとスレッド間Signal | 採用予定 |
 | Runtime | numpy | 音声変換、RMS、画像差分補助 | 採用予定 |
-| Runtime | SoundCard | WASAPIマイク・Loopback PoC | PoC対象 |
-| Runtime | sounddevice | SoundCard非互換マイクのWASAPIフォールバック | 実機試験で採用 |
-| Runtime | opencv-python-headless | 画像縮小・差分・保存 | 採用予定 |
-| Runtime | Windows Runtime bridge | Windows.Graphics.Capture接続 | PoCで選定 |
+| Runtime | SoundCard | WASAPI / PulseAudio互換のマイク・loopback | 採用 |
+| Runtime | sounddevice | SoundCard非互換の物理マイク用フォールバック | 採用 |
+| Runtime | OpenCV（PaddleOCR依存） | 画像縮小・差分・保存 | 採用 |
+| Runtime | PySide6 Qt Multimedia | Windows / X11 / Wayland画面取得 | 採用 |
+| Runtime | psutil | workerと子孫プロセスの共通終了処理 | 採用 |
 | Dev | pytest | 単体・結合テスト | 採用予定 |
 | Dev | pytest-qt | GUI Signalと状態試験 | 採用予定 |
 | Dev | ruff | lint・format | 採用予定 |
 | Dev | mypy | Port境界の型検査 | 採用予定 |
 
-SoundCardはWindows/WASAPIとLoopbackを提供するが、公式READMEにはWindowsでの単一チャンネル録音、blocksize無視、buffer underrunに関する既知事項が記載されている。このため、`AudioBackend` Portの背後で実機評価する。PC音声loopbackはSoundCardを使用し、物理マイクをSoundCardで開始できない場合はsounddeviceのWindows WASAPI入力へフォールバックする。
+PC音声loopbackはSoundCardを使用する。WindowsではWASAPI、UbuntuではPulseAudioまたはPipeWireのPulseAudio互換層を利用する。物理マイクだけはSoundCardで開始できない場合に同名のsounddevice入力へフォールバックする。重複名は既定host APIを優先し、それでも一意に決まらなければ自動切替しない。
 
 ### 4.2 保存形式の初期値
 
@@ -636,26 +634,20 @@ duration_drift_ms = audio_duration_ms - active_capture_duration_ms
 
 ## 11. 画面取得詳細
 
-### 11.1 Windows Graphics Capture PoC
+### 11.1 Qt Multimedia共通Capture
 
-画面取得backendには `Windows.Graphics.Capture` を採用する。Python側はPyWinRT 3.2.1を使用する。
+画面取得backendはPySide6の`QMediaCaptureSession`、`QScreenCapture`、`QWindowCapture`、`QVideoSink`へ統一する。Qt objectとsignal処理はGUI threadに所属させ、Recorder workerは同期Portだけを使用する。
 
-- アプリ内の列挙UIで選択したHWNDを `create_for_window(HWND)` へ渡す。OS pickerは重ねて表示しない。
-- Hardware D3D11 deviceからWinRT `IDirect3DDevice` を生成する。
-- `Direct3D11CaptureFramePool.create_free_threaded` を使用し、Screen Worker内でsessionを維持する。
-- pixel formatは `B8G8R8A8UIntNormalized`、buffer数は2とする。
-- frame surfaceは `SoftwareBitmap.create_copy_from_surface_async` でCPU側へcopyし、BGRのNumPy配列へ正規化する。
-- cursor captureとcapture borderは無効にする。無効化に失敗した場合はScreen開始失敗として扱い、音声は継続する。
-- 静止画で新規frameが来ない評価周期は、最後に取得したframeのcopyを返す。ScreenChangeDetectorが同一frameを再保存しない。
-- DWMのextended frame boundsとframe sizeを照合し、古いsizeのframeを破棄する。
-- 対象のリサイズ時はframe poolをrecreateし、新sizeのframeをbaseline候補にする。
-- session、frame pool、surface、SoftwareBitmap、D3D deviceはScreen Worker終了時に解放する。
+- Portは`list_targets()`、`start(target)`、`read_latest_frame(timeout)`、`replace_target()`、`stop()`とする。
+- WindowsとX11は`QGuiApplication.screens()`と`QWindowCapture.capturableWindows()`から対象を列挙する。
+- Waylandは固定のPortal疑似対象だけを列挙し、`QScreenCapture.start()`でOSのScreenCast選択画面を表示する。
+- `QVideoFrame.toImage()`後にstrideを考慮し、所有権のある連続BGR NumPy配列へcopyする。
+- backendは約2 fpsで最新frameだけを保持し、FIFOを作らない。
+- Portal拒否、Portal不在、対象終了、frame timeoutはScreen componentだけを`FAILED`または`PAUSED`にし、音声を継続する。
+- Waylandでは録音ごとに共有許可を得る。保存済み画面IDを復元せず、ヘッドレス、SSHのみ、ロック画面を対象外とする。
+- Ubuntu診断対象はPipeWire、`xdg-desktop-portal`、`xdg-desktop-portal-gnome`、FFmpegとする。
 
-PoCではPySide6の自己ウィンドウについて、別Workerからの初回取得、静止中の連続評価、リサイズ追従、BGR画素値、正常解放を確認済みである。UI Threadを停止した状態では対象の再描画も止まるため、画面取得は必ずScreen Workerで実行する。
-
-旧MSS Adapterは比較・診断用にソースを残すが、通常のRecordingControllerからは使用しない。全画面captureやMSSへの自動fallbackは行わない。
-
-遮蔽、複数モニター、DPI変更、HDR、保護コンテンツ、Windowsロック、Remote Desktopは手動実機試験を継続する。
+WinRT/WGC、Windows ctypes、MSSの実装・依存・fallbackは持たない。Windows/X11の複数モニター、DPI、HDR、保護コンテンツとWayland Portal実装差は手動実機試験を継続する。
 
 最小化と対象終了に対する製品動作は次で固定し、backendごとの検出方法だけをPoCで決める。
 

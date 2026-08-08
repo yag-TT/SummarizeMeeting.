@@ -689,7 +689,7 @@ def test_ui_accepts_os_shutdown_without_confirmation_while_recording(
 
     assert event.isAccepted()
     assert controller.stop_count == 1
-    assert "Windowsの終了" in window._message.text()  # noqa: SLF001
+    assert "OSの終了" in window._message.text()  # noqa: SLF001
     controller.is_recording = False
     window.close()
 

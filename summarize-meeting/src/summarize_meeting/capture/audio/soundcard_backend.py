@@ -64,7 +64,7 @@ class SoundDeviceInputStream:
         block_frames: int,
         channels: int,
     ) -> None:
-        device_index, max_channels = _find_wasapi_input(device_name)
+        device_index, max_channels = _find_sounddevice_input(device_name)
         selected_channels = max(1, min(channels, max_channels))
         self._format = AudioFormat(sample_rate, selected_channels)
         stream = sd.InputStream(
@@ -155,16 +155,18 @@ class SoundCardAudioBackend:
                 ) from sounddevice_error
 
 
-def _find_wasapi_input(device_name: str) -> tuple[int, int]:
+def _find_sounddevice_input(device_name: str) -> tuple[int, int]:
     host_apis = sd.query_hostapis()
-    wasapi_indexes = {
+    default_host_index = getattr(sd.default, "hostapi", None)
+    preferred_host_indexes = {
         index
         for index, value in enumerate(host_apis)
-        if isinstance(value, dict) and value.get("name") == "Windows WASAPI"
+        if isinstance(value, dict)
+        and value.get("name") in {"Windows WASAPI", "ALSA", "PulseAudio"}
     }
-    matches: list[tuple[int, int]] = []
+    matches: list[tuple[int, int, int]] = []
     for index, value in enumerate(sd.query_devices()):
-        if not isinstance(value, dict) or value.get("hostapi") not in wasapi_indexes:
+        if not isinstance(value, dict):
             continue
         name = value.get("name")
         max_channels = value.get("max_input_channels")
@@ -174,9 +176,21 @@ def _find_wasapi_input(device_name: str) -> tuple[int, int]:
             and isinstance(max_channels, int | float)
             and max_channels > 0
         ):
-            matches.append((index, int(max_channels)))
+            host_index = value.get("hostapi")
+            if host_index == default_host_index:
+                priority = 0
+            elif host_index in preferred_host_indexes:
+                priority = 1
+            else:
+                priority = 2
+            matches.append((priority, index, int(max_channels)))
+    matches.sort()
     if len(matches) != 1:
+        best = [match for match in matches if match[0] == matches[0][0]] if matches else []
+        if len(best) == 1:
+            return best[0][1], best[0][2]
         raise RuntimeError(
-            f"WASAPI入力デバイスを1件に特定できません: {device_name} (matches={len(matches)})"
+            f"sounddevice入力デバイスを1件に特定できません: "
+            f"{device_name} (matches={len(matches)})"
         )
-    return matches[0]
+    return matches[0][1], matches[0][2]

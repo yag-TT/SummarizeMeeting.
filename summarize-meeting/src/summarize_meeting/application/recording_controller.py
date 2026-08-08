@@ -20,8 +20,8 @@ from summarize_meeting.application.storage_monitor import (
 from summarize_meeting.capture.audio.recorder import AudioTrackRecorder
 from summarize_meeting.capture.audio.soundcard_backend import SoundCardAudioBackend
 from summarize_meeting.capture.screen.change_detector import ScreenChangeDetector
+from summarize_meeting.capture.screen.platform_backend import create_screen_capture_backend
 from summarize_meeting.capture.screen.recorder import ScreenRecorder
-from summarize_meeting.capture.screen.windows_wgc import WindowsWgcScreenBackend
 from summarize_meeting.domain.capture import AudioDevice, ScreenTarget
 from summarize_meeting.domain.session import (
     ComponentKind,
@@ -75,7 +75,7 @@ class RecordingController(QObject):
         self._app_paths = app_paths
         self._repository = FileSessionRepository(app_paths.meetings_dir)
         self._audio_backend = SoundCardAudioBackend()
-        self._screen_backend = WindowsWgcScreenBackend()
+        self._screen_backend = create_screen_capture_backend()
         self._settings_repository = settings_repository or FileSettingsRepository(
             app_paths.settings_file
         )

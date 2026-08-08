@@ -27,4 +27,4 @@
 - Windowsネイティブランタイムとして`sherpa-onnx-core==1.13.2`
 - `models/sherpa-onnx/speech-enhancement/dpdfnet2_48khz_hr.onnx`
 - SHA-256: `0B399F8A58DC4D70D8CD97541F5C39869406145193B957D00A03B66070944928`
-- モデルはリポジトリへ含めず、`scripts/setup-audio-enhancement-model.ps1`で取得・検証する。
+- モデルはリポジトリへ含めず、`uv run python scripts/setup_models.py audio-enhancement`で取得・検証する。

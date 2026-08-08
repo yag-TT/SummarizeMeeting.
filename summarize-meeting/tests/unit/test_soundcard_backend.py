@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import pytest
 
 from summarize_meeting.capture.audio import soundcard_backend as backend_module
 from summarize_meeting.capture.audio.soundcard_backend import (
     SoundCardAudioBackend,
-    _find_wasapi_input,
+    _find_sounddevice_input,
 )
 
 
@@ -55,7 +56,8 @@ def test_loopback_does_not_use_input_only_fallback(monkeypatch) -> None:
         )
 
 
-def test_find_wasapi_input_selects_exact_name(monkeypatch) -> None:
+def test_find_sounddevice_input_prefers_default_host_api(monkeypatch) -> None:
+    monkeypatch.setattr(backend_module.sd, "default", SimpleNamespace(hostapi=1))
     monkeypatch.setattr(
         backend_module.sd,
         "query_hostapis",
@@ -70,4 +72,24 @@ def test_find_wasapi_input_selects_exact_name(monkeypatch) -> None:
         ],
     )
 
-    assert _find_wasapi_input("マイク (Brio 100)") == (1, 2)
+    assert _find_sounddevice_input("マイク (Brio 100)") == (1, 2)
+
+
+def test_find_sounddevice_input_rejects_ambiguous_name(monkeypatch) -> None:
+    monkeypatch.setattr(backend_module.sd, "default", SimpleNamespace(hostapi=None))
+    monkeypatch.setattr(
+        backend_module.sd,
+        "query_hostapis",
+        lambda: [{"name": "ALSA"}],
+    )
+    monkeypatch.setattr(
+        backend_module.sd,
+        "query_devices",
+        lambda: [
+            {"name": "USB Mic", "hostapi": 0, "max_input_channels": 1},
+            {"name": "USB Mic", "hostapi": 0, "max_input_channels": 2},
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="1件に特定できません"):
+        _find_sounddevice_input("USB Mic")

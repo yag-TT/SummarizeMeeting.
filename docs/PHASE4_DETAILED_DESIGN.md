@@ -4,25 +4,25 @@
 
 Phase 4では、Phase 1で「意味のある画面変更」として保存したスクリーンショットを会議終了後にローカル解析し、Phase 5の統合議事録が参照できるtimestamp付き`analysis/screens.json`を生成する。
 
-正常系PoCではWindows 11内蔵OCRを使用し、画面内テキスト、画面種別、タイトル候補、抽出的な要約、重要事項候補を生成する。画像に存在しない内容を推測しない。
+Windows 11とUbuntu 22.04で共通のPaddleOCR 3.7 / PP-OCRv6 medium ONNXモデルを使用し、画面内テキスト、画面種別、タイトル候補、抽出的な要約、重要事項候補を生成する。画像に存在しない内容を推測しない。
 
 ## 2. 前提
 
-- 正式対象はWindows 11
+- 正式対象はWindows 11 / Ubuntu 22.04
 - `session.json`が`RECORDED`
 - `screenshots/events.jsonl`と1枚以上の画像が存在する
 - 全イベントはセッション開始時刻基準の`timestamp_ms`を持つ
 - 画像と解析結果を外部サービスへ送信しない
 - AI JobはGUIプロセスと分離する
 - アプリは第三者へ配布しないため、再配布ライセンス対応は対象外
-- Windowsの日本語OCR言語パックがインストール済み
+- `models/paddleocr/`へ検証済みOCRモデルを事前配置済み
 
 ## 3. 対象範囲
 
 ### 3.1 対象
 
 - 保存済みスクリーンショットだけを会議終了後に解析
-- Windows Media OCRによる日本語・英数字認識
+- PaddleOCRによる日本語・英語混在認識
 - OCR行とbounding rectangleの保存
 - 画面種別の規則ベース分類
 - 画面タイトル候補の抽出
@@ -52,24 +52,20 @@ Phase 4では、Phase 1で「意味のある画面変更」として保存した
 
 | 項目 | 採用案 |
 |---|---|
-| OCR runtime | Windows.Media.Ocr |
-| OCR言語 | `ja` |
+| OCR runtime | PaddleOCR 3.7 / ONNX Runtime |
+| OCR model | `PP-OCRv6_medium_det` / `PP-OCRv6_medium_rec` |
+| OCR言語 | 日本語を含む多言語モデル、結果metadataは`ja` |
 | 画像decode | OpenCV `imdecode` |
 | 画面理解 | OCRに基づく決定的な規則処理 |
-| provider | CPU / Windows OS API |
+| provider | CPU / ONNX Runtime |
 | Job分離 | child Python process |
 | 出力 | UTF-8 JSON |
 
-Windows Media OCRはデバイスにインストールされたOCR言語を列挙し、指定言語が利用可能か判定できる。言語パックがない場合はJob開始後に明示的なエラーとして返す。
+文書回転分類、画像展開、textline orientationを無効にし、検出と認識だけを実行する。モデルは`setup_models.py ocr`で固定revisionから取得し、ONNXファイルのSHA-256を検証する。モデル不足かつオフラインの場合は同じ準備コマンドを再現可能なエラーとして表示する。
 
 Qwen3-VL 4B Instructの公式BF16重みは約9GBあり、想定GPUのRTX 4060 8GBへそのまま常駐できない。正常系PoCでは安定したOS OCRを先行採用し、Q4級量子化モデルとllama.cpp系multimodal runtimeの比較を別工程にする。
 
-参考:
-
-- Windows OCR language support: https://learn.microsoft.com/en-us/uwp/api/windows.media.ocr.ocrengine.islanguagesupported
-- Windows OCR available languages: https://learn.microsoft.com/en-us/uwp/api/windows.media.ocr.ocrengine.availablerecognizerlanguages
-- Qwen3-VL official repository: https://github.com/QwenLM/Qwen3-VL
-- Qwen3-VL-4B-Instruct model: https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct
+runtime metadataは`paddleocr-3.7/PP-OCRv6-medium-onnx`とする。既存`analysis/screens.json`のschema version 1とOCR行JSON形状は維持し、confidenceは内部結果にだけ保持する。
 
 ## 5. 処理構成
 
@@ -79,7 +75,7 @@ GUI process
     -> ScreenAnalysisController
          -> child Python process
               -> ScreenAnalysisService
-                   -> WindowsOcrBackend
+                   -> PaddleOcrBackend
                    -> deterministic understanding
                    -> analysis/screens.json
 ```
@@ -119,12 +115,11 @@ Phase 1が画像保存成功後に追記したJSON Linesを正とする。
 
 ## 7. OCR
 
-1. 画像をBGRとしてdecodeする
-2. BGRA8へ変換する
-3. WinRT `Buffer`へコピーする
-4. `SoftwareBitmap`を作成する
-5. `OcrEngine(ja)`で認識する
-6. 全文、行、各行のword bounding rectangle統合値を取得する
+1. 画像パスをPaddleOCR pipelineへ渡す
+2. PP-OCRv6 mediumでtext detectionとrecognitionを実行する
+3. `rec_polys`の最小・最大座標を既存`OcrLine`矩形へ変換する
+4. `rec_scores`を内部confidenceとして保持する
+5. 全文と行矩形を既存schema version 1で保存する
 
 OCR結果は補正・翻訳せず、そのまま保存する。OCR誤認識は後続VLMまたはPhase 5で参照できるよう原文を残す。
 
@@ -268,8 +263,8 @@ Phase 4では画像内容のプレビューとOCR編集UIを作らない。
 
 ### 14.3 実機PoC
 
-- Windows日本語OCR言語パックを検出
-- 実際のWGC保存画像をworkerで解析
+- Windows 11 / Ubuntu 22.04で検証済みモデルを検出
+- 実際のQt Capture保存画像をworkerで解析
 - `timestamp_ms`がイベントと一致
 - 日本語と英数字のOCR行が1件以上生成
 - worker終了後にプロセスが残らない
@@ -295,4 +290,3 @@ Phase 4では画像内容のプレビューとOCR編集UIを作らない。
 4. presentation title領域等のlayout-aware抽出
 5. 表・課題管理画面から担当、期限、状態を構造化
 6. OCR/VLM信頼度とユーザー確認UI
-

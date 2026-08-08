@@ -13,7 +13,8 @@ from PySide6.QtWidgets import QApplication
 
 from summarize_meeting.application.recording_controller import RecordingController
 from summarize_meeting.application.storage_monitor import StorageMonitor
-from summarize_meeting.domain.capture import AudioDevice, AudioFormat
+from summarize_meeting.capture.screen.base import ScreenTargetClosedError
+from summarize_meeting.domain.capture import AudioDevice, AudioFormat, ScreenTarget
 from summarize_meeting.domain.session import ComponentKind, ComponentStatus, SessionStatus
 from summarize_meeting.infrastructure.paths import PortableAppPaths
 
@@ -80,6 +81,26 @@ class _BlockingOpenAudioBackend(_SelectiveAudioBackend):
             sample_rate=sample_rate,
             block_frames=block_frames,
         )
+
+
+class _RejectedScreenBackend:
+    def list_targets(self):
+        return [ScreenTarget("qt-portal", "OSダイアログで選択", "portal")]
+
+    def start(self, _target) -> None:
+        raise ScreenTargetClosedError("Portal permission denied")
+
+    def read_latest_frame(self, _timeout):
+        raise AssertionError("start must fail first")
+
+    def replace_target(self, target) -> None:
+        self.start(target)
+
+    def stop(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
 
 
 def _make_controller(
@@ -171,6 +192,44 @@ def test_session_starts_when_one_of_two_audio_sources_is_ready(tmp_path: Path) -
     assert system_summary["frames"] > 0
     assert system_summary["validated"]
     assert controller._session_terminal.is_set()  # noqa: SLF001
+
+
+def test_portal_rejection_does_not_stop_audio_or_session_finalize(tmp_path: Path) -> None:
+    controller = _make_controller(tmp_path, failing_device_ids=set())
+    controller._screen_backend = _RejectedScreenBackend()  # type: ignore[assignment]  # noqa: SLF001
+
+    session_path = controller.start_session(
+        title="portal rejected",
+        microphone=AudioDevice("mic", "Working mic", 1),
+        system_audio=None,
+        screen_target=ScreenTarget("qt-portal", "OSダイアログで選択", "portal"),
+    )
+
+    _wait_for(
+        lambda: (
+            controller._session is not None  # noqa: SLF001
+            and controller._session.components[ComponentKind.SCREEN.value].status  # noqa: SLF001
+            == ComponentStatus.FAILED
+        )
+    )
+    assert controller._session is not None  # noqa: SLF001
+    assert controller._session.status == SessionStatus.RECORDING  # noqa: SLF001
+    assert (
+        controller._session.components[ComponentKind.MICROPHONE.value].status  # noqa: SLF001
+        == ComponentStatus.RUNNING
+    )
+
+    controller.stop_session()
+    _wait_for(
+        lambda: not controller.is_recording and controller._session_log is None  # noqa: SLF001
+    )
+
+    metadata = json.loads((session_path / "session.json").read_text(encoding="utf-8"))
+    assert metadata["status"] == SessionStatus.RECORDED
+    assert metadata["components"][ComponentKind.SCREEN.value]["error_code"] == (
+        "SCREEN_TARGET_CLOSED"
+    )
+    assert (session_path / "audio" / "microphone.wav").is_file()
 
 
 def test_session_is_failed_to_start_when_all_audio_sources_fail(

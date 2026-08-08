@@ -2,7 +2,7 @@
 
 ## 1. 目的
 
-実際の物理マイク、実スピーカー、WGC画面取得から作成したセッションについて、話者付き文字起こしと画面解析をtimestampで統合し、既存LM Studioモデルから`timeline.json`、`minutes.json`、`minutes.md`を生成できることを確認する。
+実際の物理マイク、実スピーカー、Qt画面取得から作成したセッションについて、話者付き文字起こしと画面解析をtimestampで統合し、既存LM Studioモデルから`timeline.json`、`minutes.json`、`minutes.md`を生成できることを確認する。
 
 実施日: 2026-08-08
 

@@ -27,7 +27,6 @@ Phase 1の長時間・異常系評価は継続課題として残すが、正常�
 - 発話の重複解消やマイクへの回り込み除去
 - 文字起こし結果のGUI編集
 - モデルを配布物へ同梱する仕組み
-- Ubuntu対応
 
 PC音声の話者表示はPhase 3まで暫定的に`PC音声`とする。マイク側は`自分`とする。
 
@@ -46,7 +45,7 @@ PC音声の話者表示はPhase 3まで暫定的に`PC音声`とする。マイ�
 
 モデルは初回実行時に取得し、`<app_root>/models/faster-whisper/`へ保持する。モデル取得以外の処理はローカルで完結し、会議音声や文字起こし結果を外部サービスへ送信しない。
 
-Windowsのポータブル開発構成ではCUDA 12.4のcuBLASとcuDNN 9.5 DLLを`<app_root>/runtime/cuda/bin/`へ置く。worker起動時だけこのディレクトリをDLL検索対象とし、OSの`System32`やシステムPATHを変更しない。
+CPU動作を必須とする。GPUはOSへ公式のNVIDIA CUDA 12とcuDNN 9が導入され、CTranslate2から利用可能と判定された場合だけ使用する。初期化または推論に失敗した場合はCPUへ再試行する。CUDA DLL archiveやランタイムをアプリ内へ同梱しない。
 
 本アプリは配布しない方針のため、モデルおよび依存ライブラリの再配布ライセンス確認とモデル同梱方式は対象外とする。将来、第三者への配布へ方針変更する場合は、配布工程の開始前に再度必須課題として扱う。
 
@@ -56,7 +55,7 @@ Windowsのポータブル開発構成ではCUDA 12.4のcuBLASとcuDNN 9.5 DLLを
 GUI process
   MainWindow
     -> TranscriptionController
-         -> child Python process
+         -> psutilで管理するchild Python process
               -> FasterWhisperBackend
               -> TranscriptionService
                    -> transcription.json

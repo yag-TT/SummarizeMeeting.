@@ -59,7 +59,7 @@ Phase 2の短時間正常系として、以下を確認できた。
 
 ## 6. GPU再試験
 
-- CUDA 12.4 / cuBLASとcuDNN 9.5を`runtime/cuda/bin`へ配置し、workerだけのDLL検索パスへ追加した
+- 旧検証では同梱CUDAを使用したが、現行実装はOSへ導入した公式CUDA 12 / cuDNN 9だけを自動検出し、利用不可時はCPUへフォールバックする
 - GPU `float16`で同じスモーク試験を再実行し、約5秒×2トラックを8.78秒で正常処理した
 - 両トラックの`runtime_device`が`cuda`であることをJSONで確認した
 - GPU試験でも2つの日本語認識結果と開始offsetが維持された

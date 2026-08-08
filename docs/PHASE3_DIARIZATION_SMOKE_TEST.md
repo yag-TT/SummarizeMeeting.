@@ -16,7 +16,7 @@ Windows 11上で、sherpa-onnx実モデルによる話者分離と、Phase 2録�
 - embedding: `nemo_en_titanet_small.onnx`
 - provider: CPU
 
-モデルは`setup-diarization-models.ps1`で固定URLから取得し、次のSHA-256を検証した。
+モデルは`uv run python scripts/setup_models.py diarization`で固定URLから取得し、次のSHA-256を検証した。
 
 - segmentation archive: `24615EE884C897D9D2BA09BB4D30DA6BB1B15E685065962DB5B02E76E4996488`
 - embedding model: `AD4A1802485D8B34C722D2A9D04249662F2ECE5D28A7A039063CA22F515A789E`

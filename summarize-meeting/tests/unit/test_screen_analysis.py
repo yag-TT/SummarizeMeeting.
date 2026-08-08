@@ -9,8 +9,10 @@ import pytest
 
 from summarize_meeting.domain.screen_analysis import OcrLine, ScreenRecognition
 from summarize_meeting.processing.screen_analysis import (
+    PaddleOcrBackend,
     ScreenAnalysisError,
     ScreenAnalysisService,
+    _convert_paddle_result,
     derive_screen_understanding,
 )
 
@@ -151,3 +153,54 @@ def test_understanding_does_not_invent_important_items() -> None:
     assert value["type"] == "presentation"
     assert value["title"] == "PowerPoint"
     assert value["important"] == ["来週までにテスト"]
+
+
+def test_paddle_result_is_converted_to_lines() -> None:
+    result = _convert_paddle_result(
+        {
+            "res": {
+                "rec_texts": ["設計会議", "Deadline 8/15"],
+                "rec_scores": np.array([0.98, 0.93]),
+                "rec_polys": np.array(
+                    [
+                        [[10, 20], [65, 20], [65, 32], [10, 32]],
+                        [[10, 40], [90, 40], [90, 52], [10, 52]],
+                    ]
+                ),
+            }
+        },
+        language="ja",
+    )
+
+    assert result.text == "設計会議\nDeadline 8/15"
+    assert [line.to_dict() for line in result.lines] == [
+        {"text": "設計会議", "x": 10.0, "y": 20.0, "width": 55.0, "height": 12.0},
+        {"text": "Deadline 8/15", "x": 10.0, "y": 40.0, "width": 80.0, "height": 12.0},
+    ]
+    assert [line.confidence for line in result.lines] == [0.98, 0.93]
+
+
+def test_paddle_empty_result_is_preserved() -> None:
+    result = _convert_paddle_result(
+        {"res": {"rec_texts": [], "rec_scores": [], "rec_polys": []}},
+        language="ja",
+    )
+
+    assert result.text == ""
+    assert result.lines == ()
+
+
+def test_paddle_backend_reports_reproducible_model_setup_error(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    def fail_models(_directory):
+        raise OSError("offline")
+
+    monkeypatch.setattr(
+        "summarize_meeting.processing.screen_analysis.ensure_paddle_models",
+        fail_models,
+    )
+
+    with pytest.raises(ScreenAnalysisError, match="setup_models.py ocr"):
+        PaddleOcrBackend(models_directory=tmp_path).prepare()

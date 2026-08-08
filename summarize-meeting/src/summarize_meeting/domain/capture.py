@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,4 +23,4 @@ class AudioFormat:
 class ScreenTarget:
     id: str
     title: str
-    kind: str = "window"
+    kind: Literal["window", "screen", "portal"] = "window"

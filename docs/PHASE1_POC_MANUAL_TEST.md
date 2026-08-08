@@ -164,9 +164,8 @@ finalize中断を再現できる場合は、完成済みの最終WAVと `.work` 
 
 対話デスクトップ上で自己ウィンドウ統合テストだけを実行する場合:
 
-```powershell
-$env:SUMMARIZE_MEETING_RUN_WGC_TESTS = "1"
-uv run pytest -q tests/integration/test_wgc_backend.py
+```console
+uv run pytest -q tests/unit/test_qt_capture.py tests/integration/test_recording_startup.py
 ```
 
 ### 4.6 保存先の空き容量不足

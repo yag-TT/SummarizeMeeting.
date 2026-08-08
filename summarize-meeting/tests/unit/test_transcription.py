@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import wave
 from pathlib import Path
 
@@ -15,7 +14,6 @@ from summarize_meeting.processing.transcription import (
     TranscriptionService,
     _is_cuda_runtime_error,
 )
-from summarize_meeting.processing.transcription_worker import _configure_cuda_runtime
 
 
 class _Backend:
@@ -220,16 +218,3 @@ def test_faster_whisper_retries_cuda_runtime_failure_on_cpu(
 def test_cuda_runtime_error_detection_does_not_hide_regular_inference_errors() -> None:
     assert _is_cuda_runtime_error(RuntimeError("cudnn library cannot be loaded"))
     assert not _is_cuda_runtime_error(RuntimeError("invalid audio tensor"))
-
-
-def test_worker_adds_portable_cuda_runtime_to_dll_search_path(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("PATH", "existing-path")
-
-    handle = _configure_cuda_runtime(tmp_path)
-
-    assert handle is not None
-    assert os.environ["PATH"].split(os.pathsep)[0] == str(tmp_path.resolve())
-    handle.close()
