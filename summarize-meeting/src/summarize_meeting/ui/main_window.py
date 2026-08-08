@@ -109,6 +109,9 @@ class MainWindow(QMainWindow):
         self._start.clicked.connect(self._start_recording)
         self._stop.clicked.connect(self._stop_recording)
         self._reselect.clicked.connect(self._replace_screen)
+        self._microphone.currentIndexChanged.connect(self._update_idle_source_names)
+        self._system_audio.currentIndexChanged.connect(self._update_idle_source_names)
+        self._screen_target.currentIndexChanged.connect(self._update_idle_source_names)
         controller.component_changed.connect(self._on_component_changed)
         controller.meter_changed.connect(self._on_meter_changed)
         controller.screenshot_count_changed.connect(
@@ -155,6 +158,7 @@ class MainWindow(QMainWindow):
                 if target.id == selected_screen_id:
                     self._screen_target.setCurrentIndex(self._screen_target.count() - 1)
             self._sources_loaded = True
+            self._update_idle_source_names()
             message = "PC音声は選択した出力デバイスから再生される全音声を記録します。"
             if missing_devices:
                 missing = "、".join(missing_devices)
@@ -213,10 +217,12 @@ class MainWindow(QMainWindow):
             self.show_error("再選択するウィンドウを選んでください")
             return
         self._controller.replace_screen_target(target)
+        self._screen_status.set_source(target.title)
 
     def _on_session_preparing(self, path: str) -> None:
         self._session_path = Path(path)
         self._show_save_path(self._session_path)
+        self._show_active_source_names()
         self._started_at = None
         self._timer.stop()
         self._set_inputs_enabled(False)
@@ -338,6 +344,25 @@ class MainWindow(QMainWindow):
         value = str(path)
         self._save_path.setText(value)
         self._save_path.setToolTip(value)
+
+    def _update_idle_source_names(self, _index: int | None = None) -> None:
+        if self._controller.is_recording:
+            return
+        self._show_active_source_names()
+
+    def _show_active_source_names(self) -> None:
+        microphone = self._microphone.currentData()
+        system_audio = self._system_audio.currentData()
+        screen_target = self._screen_target.currentData()
+        self._mic_status.set_source(
+            microphone.name if isinstance(microphone, AudioDevice) else None
+        )
+        self._system_status.set_source(
+            system_audio.name if isinstance(system_audio, AudioDevice) else None
+        )
+        self._screen_status.set_source(
+            screen_target.title if isinstance(screen_target, ScreenTarget) else None
+        )
 
     def prepare_for_os_shutdown(self) -> None:
         self._os_shutdown_requested = True

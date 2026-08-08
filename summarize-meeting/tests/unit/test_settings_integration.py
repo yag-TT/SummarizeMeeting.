@@ -37,6 +37,7 @@ class _UiController(QObject):
         self.meetings_directory = Path("C:/portable/data/meetings")
         self.is_recording = False
         self.stop_count = 0
+        self.replaced_screen_targets: list[ScreenTarget] = []
 
     def list_input_devices(self):
         return [
@@ -48,10 +49,16 @@ class _UiController(QObject):
         return [AudioDevice(id="system-1", name="Speakers", channels=2, is_loopback=True)]
 
     def list_screen_targets(self):
-        return []
+        return [
+            ScreenTarget(id="screen-1", title="Planning deck"),
+            ScreenTarget(id="screen-2", title="Demo browser"),
+        ]
 
     def stop_session(self) -> None:
         self.stop_count += 1
+
+    def replace_screen_target(self, target: ScreenTarget) -> None:
+        self.replaced_screen_targets.append(target)
 
 
 def test_ui_restores_devices_by_saved_id(qapp: QApplication) -> None:
@@ -62,6 +69,50 @@ def test_ui_restores_devices_by_saved_id(qapp: QApplication) -> None:
 
     assert window._microphone.currentData().id == "mic-2"  # noqa: SLF001
     assert window._system_audio.currentData().id == "system-1"  # noqa: SLF001
+    window.close()
+
+
+def test_ui_shows_selected_capture_source_names_while_preparing(
+    qapp: QApplication,
+) -> None:
+    controller = _UiController(microphone_id="mic-2", system_id="system-1")
+    window = MainWindow(controller)  # type: ignore[arg-type]
+    window.refresh_sources()
+    window._screen_target.setCurrentIndex(1)  # noqa: SLF001
+
+    window._on_session_preparing("C:/portable/data/meetings/session-001")  # noqa: SLF001
+
+    assert window._mic_status._source.text() == "Mic two"  # noqa: SLF001
+    assert window._system_status._source.text() == "Speakers"  # noqa: SLF001
+    assert window._screen_status._source.text() == "Planning deck"  # noqa: SLF001
+    window._on_session_start_cancelled(  # noqa: SLF001
+        "C:/portable/data/meetings/session-001"
+    )
+    window.close()
+
+
+def test_screen_source_name_changes_only_after_reselection_succeeds(
+    qapp: QApplication,
+) -> None:
+    controller = _UiController(microphone_id=None, system_id=None)
+    window = MainWindow(controller)  # type: ignore[arg-type]
+    window.refresh_sources()
+    window._screen_target.setCurrentIndex(1)  # noqa: SLF001
+    window._on_session_preparing("C:/portable/data/meetings/session-001")  # noqa: SLF001
+    controller.is_recording = True
+
+    window._screen_target.setCurrentIndex(2)  # noqa: SLF001
+
+    assert window._screen_status._source.text() == "Planning deck"  # noqa: SLF001
+
+    window._replace_screen()  # noqa: SLF001
+
+    assert controller.replaced_screen_targets[-1].title == "Demo browser"
+    assert window._screen_status._source.text() == "Demo browser"  # noqa: SLF001
+    controller.is_recording = False
+    window._on_session_start_cancelled(  # noqa: SLF001
+        "C:/portable/data/meetings/session-001"
+    )
     window.close()
 
 

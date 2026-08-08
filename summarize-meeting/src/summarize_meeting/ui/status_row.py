@@ -36,7 +36,11 @@ class CaptureStatusRow(QWidget):
         self._lamp = QLabel("●")
         self._lamp.setFixedWidth(18)
         self._title = QLabel(title)
-        self._title.setMinimumWidth(90)
+        self._title.setFixedWidth(65)
+        self._source = QLabel("未選択")
+        self._source.setMinimumWidth(150)
+        self._source.setMaximumWidth(250)
+        self._source.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._status = QLabel("未選択")
         self._status.setMinimumWidth(90)
         self._meter = QProgressBar()
@@ -47,6 +51,7 @@ class CaptureStatusRow(QWidget):
         self._detail.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self._lamp)
         layout.addWidget(self._title)
+        layout.addWidget(self._source)
         layout.addWidget(self._status)
         if show_meter:
             layout.addWidget(self._meter, 1)
@@ -55,6 +60,12 @@ class CaptureStatusRow(QWidget):
             layout.addStretch(1)
         layout.addWidget(self._detail, 1)
         self.set_state("NOT_CONFIGURED")
+
+    def set_source(self, source_name: str | None) -> None:
+        value = source_name.strip() if source_name else ""
+        display = value or "未選択"
+        self._source.setText(display)
+        self._source.setToolTip(value)
 
     def set_state(self, state: str, detail: str = "") -> None:
         color = _COLORS.get(state, "#808080")
