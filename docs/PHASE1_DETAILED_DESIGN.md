@@ -69,6 +69,7 @@
 - 動画保存
 - 自動削除
 - 配布用exeの生成
+- Windowsのスリープ／休止状態をまたぐ録音継続および専用復旧処理
 
 ## 4. 技術基準
 
@@ -128,6 +129,7 @@ WebPへの切替は1時間試験で、PNGとの容量、保存CPU時間、読込
 - アプリ本体、設定、ログ、会議データを1つのポータブルフォルダ内で完結させる。
 - 会議データや設定を `%LOCALAPPDATA%`、Documentsなどへ暗黙に保存しない。
 - 配置先が書込み不可の場合は起動時preflightで明示し、別の場所へコピーするよう案内する。ユーザーが認識しない別パスへのfallbackは行わない。
+- 同じアプリフォルダからの同時起動は禁止する。コピー先が異なる別アプリフォルダは、それぞれ独立した `data/` を持つため別インスタンスとして扱う。
 - Phase 6では、PyInstaller / Nuitkaの比較に加え、展開済みフォルダをZIP等で配布し、解凍またはコピーだけで起動できることを受入条件にする。
 
 配布フォルダの完成イメージ:
@@ -140,6 +142,7 @@ SummarizeMeeting/
 ├─ licenses/
 └─ data/
    ├─ settings.json
+   ├─ instance.lock
    ├─ logs/
    │  └─ application.log
    └─ meetings/
@@ -147,6 +150,8 @@ SummarizeMeeting/
 ```
 
 アプリ更新時は `data/` を保持したまま本体を置き換えられる構造にする。配布物には空の `data/` だけを含め、会議データを含めない。
+
+単一起動制御にはアプリルートごとの `QLockFile` を使用する。2つ目のプロセスは録音画面を開かず、「このアプリフォルダのSummarize Meetingは既に起動しています」と表示して終了する。異常終了後のstale lockは、プロセス生存確認を行ったうえで回復する。
 
 ## 5. 論理アーキテクチャ
 
@@ -329,10 +334,15 @@ NOT_CONFIGURED
 READY
 STARTING
 RUNNING
+RECONNECTING
+PAUSED
 STOPPING
 STOPPED
 FAILED
 ```
+
+- `RECONNECTING` は音声デバイス切断後に同じデバイスへ再接続している状態である。
+- `PAUSED` は対象ウィンドウ最小化などにより画面frameを一時取得できない状態である。Phase 1ではScreen Componentにのみ使用する。
 
 各状態変更は `events.jsonl` へ記録する。
 
@@ -565,6 +575,18 @@ timestamp_sec = estimated_start_offset_sec + frame_index / sample_rate
 
 終了時に `frames_written / sample_rate` とmonotonic経過時間の差を記録し、デバイスクロックdriftの診断に使用する。Phase 1では無断でstretchやsilence挿入を行わない。
 
+### 10.7 音声デバイス切断と再接続
+
+- 録音中にデバイス切断を検出した場合、対象Componentを `RECONNECTING` にして黄色ランプを表示する。
+- 別のデバイスや新しい既定デバイスへ自動で切り替えない。
+- セッション開始時と同じ安定device IDだけを再openする。
+- 初期値として2秒間隔、最大5回、合計約10秒間再接続を試行する。
+- 再接続成功時は新しいWAV segmentを開始し、Componentを `RUNNING` に戻す。
+- 切断開始、再接続成功、再接続断念を `events.jsonl` に記録する。
+- 切断中の時間は音声gapとしてmanifestへ記録し、無音sampleを暗黙に挿入しない。
+- 再接続できなければComponentを `FAILED` にし、赤ランプを表示する。もう一方のAudioとScreenは継続する。
+- 再接続回数と間隔は実機PoCで調整可能な設定値とするが、通常UIには露出しない。
+
 ## 11. 画面取得詳細
 
 ### 11.1 Windows第一候補
@@ -585,6 +607,15 @@ PythonからのWinRT / Direct3D surface受け渡し、PySide6 HWNDとのpicker�
 3. Windows固有の小さなnative helperを別プロセスとして実装
 
 DXcam + cropは、他ウィンドウによる遮蔽、対象移動、DPI、複数モニター境界の影響を受けるため第一候補にはしない。
+
+最小化と対象終了に対する製品動作は次で固定し、backendごとの検出方法だけをPoCで決める。
+
+- 最小化または一時的なframe停止を検出した場合、Screenを `PAUSED` にして黄色ランプを表示する。
+- 最小化中は最後のframeを繰り返し保存せず、音声録音を継続する。
+- 対象復元後にframe取得が戻れば、自動的に `RUNNING` へ戻して変更検知を再開する。
+- 対象ウィンドウが終了した場合はScreenを `FAILED` にし、赤ランプと再選択ボタンを表示する。
+- 再選択は音声を停止せずに実行できる。新しい対象の初回frameを保存し、変更検知baselineをリセットする。
+- 全画面Captureへ自動fallbackしない。
 
 ### 11.2 フレーム処理頻度
 
@@ -733,7 +764,9 @@ SupervisorはWorker内部のCapture APIを直接操作せず、start/stop契約�
 - Audio Writerのqueue drain: 30秒
 - WAV統合: ファイルサイズ依存のため固定timeoutを設けず、進捗表示する
 
-アプリ終了ボタンやOS終了要求を受けた場合も、録音中なら同じ停止処理を通す。強制終了しかできない状態ではセッションを `INTERRUPTED` として残す。
+録音中にユーザーがアプリウィンドウを閉じた場合は、「録音を終了してアプリを閉じますか？」という確認を表示する。キャンセル時は録音を継続する。確認後の終了、またはOS終了要求を受けた場合は同じ停止処理を通す。OS終了時には確認ダイアログを表示せずbest-effortでfinalizeする。強制終了しかできない状態ではセッションを `INTERRUPTED` として残す。
+
+Windowsのスリープ／休止状態はPhase 1の利用シナリオとして想定せず、専用のflush、resume、gap継続機能を実装しない。発生後の録音継続は保証しない。個々のCaptureがエラーを返した場合は通常のComponent障害処理を適用する。
 
 ## 14. セッション保存構造
 
@@ -860,6 +893,8 @@ log_level
 
 ## 16. UI詳細
 
+Phase 1のUI、エラーメッセージ、ログ閲覧用のユーザー向け文言は日本語のみとする。内部error codeと構造化フィールド名は英語で統一する。
+
 ### 16.1 RecordingPage入力
 
 - 会議名（必須、前後空白除去後1文字以上）
@@ -884,13 +919,15 @@ log_level
 |---|---|---|
 | `STARTING` | 黄・点滅 | 接続中 |
 | `RUNNING` | 緑・点灯 | 取得中 |
+| `RECONNECTING` | 黄・点滅 | 再接続中 |
+| `PAUSED` | 黄・点灯 | 一時停止 |
 | `STOPPING` | 黄・点灯 | 停止処理中 |
 | `STOPPED` | 灰・消灯 | 停止 |
 | `FAILED` | 赤・点灯 | 取得失敗 / 取得停止 |
 | `NOT_CONFIGURED` | 灰・消灯 | 未選択 |
 
 - ランプはマイク、PC音声、画面の3つを常時同じ位置に表示する。
-- Component障害時は状態ランプを直ちに赤へ変更し、他Componentは緑のまま維持する。
+- Componentが `FAILED` になった時点で状態ランプを赤へ変更し、他Componentは緑のまま維持する。再接続中または画面一時停止中は黄色で示す。
 - 対象ウィンドウが終了した場合は画面ランプだけを赤へ変更し、全画面Captureへfallbackせず、音声録音を継続する。
 - マイクまたはPC音声の片方が開始できなくても確認ダイアログを表示しない。
 - 全音声Componentが停止した場合は状態ランプに加え、録音できていないことを見落とさないよう画面内bannerを表示する。
@@ -901,7 +938,7 @@ log_level
 |---|---:|---:|---:|---:|
 | CREATED | 可 | 可 | 不可 | 可 |
 | PREPARING | 不可 | 不可 | キャンセル | 不可 |
-| RECORDING | 不可 | 不可 | 可 | 画面障害時のみ候補 |
+| RECORDING | 不可 | 不可 | 可 | 画面一時停止・障害時に可 |
 | STOPPING/FINALIZING | 不可 | 不可 | 不可 | 不可 |
 | RECORDED | 不可 | 不可 | 不可 | 不可 |
 
@@ -918,10 +955,13 @@ log_level
 |---|---|---|
 | `MIC_OPEN_FAILED` | ERROR | system録音が可能なら確認なしで継続し、マイクランプを赤にする |
 | `SYSTEM_AUDIO_OPEN_FAILED` | ERROR | mic録音が可能なら確認なしで継続し、PC音声ランプを赤にする |
+| `AUDIO_DEVICE_DISCONNECTED` | WARNING | 同じdevice IDへの再接続を開始し、対象ランプを黄色にする |
+| `AUDIO_RECONNECT_FAILED` | ERROR | 対象trackを停止して赤ランプにし、他Componentを継続する |
 | `AUDIO_QUEUE_PRESSURE` | WARNING | 継続、使用率と回数を記録 |
 | `AUDIO_WRITE_FAILED` | CRITICAL | 対象track停止、他Component継続 |
 | `SCREEN_OPEN_FAILED` | WARNING | 音声継続、再選択を案内 |
-| `SCREEN_TARGET_CLOSED` | WARNING | 画面停止、音声継続 |
+| `SCREEN_TARGET_PAUSED` | WARNING | 黄色ランプで一時停止し、音声継続、frame復帰を待つ |
+| `SCREEN_TARGET_CLOSED` | WARNING | 赤ランプで画面停止、音声継続、再選択を案内 |
 | `SCREEN_SAVE_FAILED` | WARNING | baselineを更新せず継続 |
 | `LOW_DISK_SPACE` | ERROR | 開始前は阻止、録音中は強い警告 |
 | `SESSION_METADATA_WRITE_FAILED` | CRITICAL | 音声Writerを可能な限り継続し緊急表示 |
@@ -980,6 +1020,13 @@ Phase 1では会議予定時間入力を必須にしないため、最低空き�
 - 依存ライブラリの更新確認やtelemetryをアプリから呼び出さない。
 - 将来localhostモデルサーバーを使う場合も `127.0.0.1` 固定を既定とする。
 
+保存時暗号化:
+
+- Phase 1ではアプリ独自の保存データ暗号化を実装しない。
+- WAV、PNG、JSON、Markdownは通常ファイルとして保存する。
+- アクセス制御と保存媒体の暗号化は、配置先フォルダのWindows ACL、BitLocker等のOS・ドライブ側機能へ委ねる。
+- アプリフォルダをコピーすれば `data/` もコピーされるため、利用者向け文書で取扱注意を明記する。
+
 ## 21. テスト戦略
 
 ### 21.1 Unit Test
@@ -997,6 +1044,9 @@ Phase 1では会議予定時間入力を必須にしないため、最低空き�
 - 設定破損時のfallback
 - PortableAppPathProviderの開発・配布・テスト時のroot解決
 - アプリルートが書込み不可の場合のpreflight失敗
+- アプリルートごとの単一起動lockとstale lock回復
+- Audio切断、同一device再接続成功、再接続断念
+- 録音中のアプリ終了確認をキャンセルした場合の継続
 
 ### 21.2 Integration Test（Fake backend）
 
@@ -1040,7 +1090,6 @@ Phase 1では会議予定時間入力を必須にしないため、最低空き�
 - 空き容量警告
 - screenshot保存失敗
 - アプリ強制終了後の復旧
-- Windowsスリープ・復帰
 
 ## 22. Phase 1受入基準
 
@@ -1129,16 +1178,54 @@ Phase 1では会議予定時間入力を必須にしないため、最低空き�
 - `%LOCALAPPDATA%` やDocumentsへ暗黙にfallbackしない。
 - 将来の会社指定パス対応とテストに備え、パス取得は `PortableAppPathProvider` として抽象化する。
 
+### D7. 録音同意UI
+
+- 社内規程向けの録音同意確認画面やcheckboxは実装しない。
+- 録音状態そのものは通常の録音画面とComponent状態ランプで明示する。
+
 ### D8. アプリ配置方式
 
 - インストールを前提にせず、フォルダをコピーして配置するポータブルアプリとする。
 - Registry登録、管理者権限、Windowsサービス登録を要求しない。
 - 書込み可能な配置先を前提とし、書込み不可なら起動時に明示的なエラーを表示する。
 
-### D7. 録音同意UI
+### D9. 対象ウィンドウ最小化と再選択
 
-- 社内規程向けの録音同意確認画面やcheckboxは実装しない。
-- 録音状態そのものは通常の録音画面とComponent状態ランプで明示する。
+- 最小化中はScreenを `PAUSED` として黄色ランプで示し、音声録音を継続する。
+- 復元後は画面取得を自動再開する。
+- 対象終了時は赤ランプにし、音声を止めずに別ウィンドウを再選択できるようにする。
+
+### D10. 音声デバイス切断
+
+- 別デバイスへ自動で切り替えない。
+- 同じdevice IDへの再接続だけを一定時間試行する。
+- 再接続できなければ対象trackをFAILEDとし、他の記録を継続する。
+
+### D11. Windowsスリープ／休止状態
+
+- Phase 1では想定利用シナリオに含めない。
+- スリープ前flush、復帰後の同一セッション継続など、専用処理は実装しない。
+- スリープをまたいだ録音の完全性を保証しない。
+
+### D12. 録音中のアプリ終了
+
+- ユーザー操作でウィンドウを閉じる場合は、録音終了確認を表示する。
+- OS終了時は確認を表示せず、可能な範囲でfinalizeする。
+
+### D13. 複数起動
+
+- 同じアプリフォルダからの同時起動を禁止する。
+- 別の場所へコピーされたアプリは独立したdata rootを持つ別インスタンスとして扱う。
+
+### D14. 保存データの暗号化
+
+- Phase 1ではアプリ独自暗号化を実装しない。
+- Windows ACL、BitLockerなど配置環境側の保護を利用する。
+
+### D15. UI言語
+
+- Phase 1のユーザー向けUIは日本語のみとする。
+- 内部error codeと構造化データのfield名は英語とする。
 
 ## 25. PoCで決定する事項
 

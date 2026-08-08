@@ -9,6 +9,7 @@ Teams、Google Meetなどのオンライン会議について、マイク音声�
 - Python 3.11
 - uv
 - Windows 11先行
+- Phase 1のUIは日本語のみ
 
 ```powershell
 uv sync
