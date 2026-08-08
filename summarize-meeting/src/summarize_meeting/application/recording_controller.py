@@ -50,6 +50,7 @@ class RecordingController(QObject):
         self._screen_recorder: ScreenRecorder | None = None
         self._lock = threading.RLock()
         self._stop_thread: threading.Thread | None = None
+        self._audio_unavailable_notified = False
 
     @property
     def is_recording(self) -> bool:
@@ -101,6 +102,7 @@ class RecordingController(QObject):
         with self._lock:
             self._session = session
             self._session_paths = paths
+            self._audio_unavailable_notified = False
 
         self._append_event("session_preparing")
         self._audio_recorders = {}
@@ -152,6 +154,7 @@ class RecordingController(QObject):
             self._repository.save(paths, session)
         self._append_event("session_started")
         self.session_started.emit(str(paths.root))
+        self._notify_if_all_audio_failed()
         return paths.root
 
     def replace_screen_target(self, target: ScreenTarget) -> None:
@@ -205,6 +208,7 @@ class RecordingController(QObject):
                 kind, status, code, message
             ),
             meter_callback=lambda level: self.meter_changed.emit(kind.value, level),
+            origin_ns=self._origin_ns,
         )
 
     def _stop_session_worker(self) -> None:
@@ -290,6 +294,30 @@ class RecordingController(QObject):
             )
             self._repository.save(self._session_paths, self._session)
         self.component_changed.emit(kind.value, status.value, message or "")
+        self._notify_if_all_audio_failed()
+
+    def _notify_if_all_audio_failed(self) -> None:
+        with self._lock:
+            if (
+                self._session is None
+                or self._session.status != SessionStatus.RECORDING
+                or self._audio_unavailable_notified
+            ):
+                return
+            selected = [
+                kind
+                for kind in (ComponentKind.MICROPHONE, ComponentKind.SYSTEM_AUDIO)
+                if kind.value in self._session.audio
+            ]
+            if not selected or not all(
+                self._session.components[kind.value].status == ComponentStatus.FAILED
+                for kind in selected
+            ):
+                return
+            self._audio_unavailable_notified = True
+        self.fatal_error.emit(
+            "選択したすべての音声取得が停止しています。画面取得のみでは会議音声を記録できません。"
+        )
 
     def _append_event(self, event_type: str, **extra: object) -> None:
         with self._lock:

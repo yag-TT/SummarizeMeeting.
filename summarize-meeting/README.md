@@ -36,6 +36,8 @@ data/meetings/<session>/
 
 アプリ起動時に正常終了していないセッションを検出すると、復旧確認を表示します。復旧時は元の `.work` segmentを変更せず、`audio/microphone.recovered.wav` や `audio/system.recovered.wav` を新しく生成します。
 
+録音中に音声デバイスが切断された場合は、別デバイスへ切り替えず、同じdevice IDへ最大5回、約10秒間再接続を試します。切断区間は `audio/manifest.json` の `gaps` に記録されます。
+
 ## 開発時の検証
 
 ```powershell
@@ -53,7 +55,6 @@ uv run pytest -q
 
 - 画面取得は最終候補のWindows Graphics Captureではなく、選択ウィンドウの表示矩形をMSSで取得する暫定Adapterです。
 - 対象ウィンドウが他のウィンドウに隠れると、隠した側の内容が画像へ入る場合があります。
-- 音声デバイス切断時の同一デバイス再接続は未実装です。
 - Windowsスリープ／休止状態をまたぐ録音は対象外です。
 
 ## ドキュメント

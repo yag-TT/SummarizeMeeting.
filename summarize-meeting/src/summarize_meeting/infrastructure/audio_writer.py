@@ -13,6 +13,14 @@ from summarize_meeting.domain.capture import AudioFormat
 
 
 @dataclass(frozen=True, slots=True)
+class AudioGap:
+    start_ms: int
+    end_ms: int
+    reconnect_attempts: int
+    outcome: str
+
+
+@dataclass(frozen=True, slots=True)
 class AudioTrackStats:
     file: str
     sample_rate: int
@@ -20,6 +28,7 @@ class AudioTrackStats:
     sample_width_bytes: int
     frames_written: int
     segments: int
+    gaps: tuple[AudioGap, ...] = ()
 
 
 class SegmentedWaveWriter:
@@ -42,6 +51,10 @@ class SegmentedWaveWriter:
         self._current_frames = 0
         self._frames_written = 0
         self._closed = False
+
+    @property
+    def audio_format(self) -> AudioFormat:
+        return self._format
 
     def write(self, samples: ArrayLike) -> None:
         if self._closed:
@@ -84,6 +97,12 @@ class SegmentedWaveWriter:
         if self._current is not None:
             self._close_segment()
         self._closed = True
+
+    def rotate_segment(self) -> None:
+        if self._closed:
+            raise RuntimeError("Audio writer is closed")
+        if self._current is not None:
+            self._close_segment()
 
     def stats(self) -> AudioTrackStats:
         return AudioTrackStats(
