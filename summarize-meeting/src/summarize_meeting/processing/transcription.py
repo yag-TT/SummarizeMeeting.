@@ -259,9 +259,14 @@ class TranscriptionService:
             if not isinstance(file_value, str) or not file_value:
                 raise TranscriptionError(f"{manifest_name}の音声ファイル名が不正です")
             relative_path = Path(file_value)
-            if relative_path.name != file_value:
+            if relative_path.is_absolute():
                 raise TranscriptionError(f"{manifest_name}の音声ファイル名が不正です")
-            audio_path = audio_directory / relative_path
+            if relative_path.parts == (relative_path.name,):
+                audio_path = audio_directory / relative_path
+            elif relative_path.parts == ("audio", relative_path.name):
+                audio_path = audio_directory.parent / relative_path
+            else:
+                raise TranscriptionError(f"{manifest_name}の音声ファイル名が不正です")
             if not audio_path.is_file():
                 raise TranscriptionError(f"音声ファイルが見つかりません: {audio_path.name}")
             offset_value = value.get("estimated_start_offset_ms", 0)

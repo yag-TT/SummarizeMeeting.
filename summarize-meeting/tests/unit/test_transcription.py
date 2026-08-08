@@ -116,6 +116,21 @@ def test_transcription_rejects_manifest_path_traversal(tmp_path: Path) -> None:
         TranscriptionService(_Backend(), model_name="test-model").run(session)
 
 
+def test_transcription_accepts_session_relative_audio_path(tmp_path: Path) -> None:
+    session = _session(tmp_path)
+    manifest_path = session / "audio" / "manifest.json"
+    value = json.loads(manifest_path.read_text("utf-8"))
+    value["tracks"]["microphone"]["file"] = "audio/microphone.wav"
+    value["tracks"]["system_audio"]["file"] = "audio/system.wav"
+    manifest_path.write_text(json.dumps(value), encoding="utf-8")
+    backend = _Backend()
+
+    output = TranscriptionService(backend, model_name="test-model").run(session)
+
+    assert output.is_file()
+    assert [path.name for path in backend.paths] == ["microphone.wav", "system.wav"]
+
+
 def test_transcription_requires_at_least_one_supported_track(tmp_path: Path) -> None:
     session = _session(tmp_path)
     (session / "audio" / "manifest.json").write_text(

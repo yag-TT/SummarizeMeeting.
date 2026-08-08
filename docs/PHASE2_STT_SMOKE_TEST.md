@@ -66,6 +66,6 @@ Phase 2の短時間正常系として、以下を確認できた。
 
 ## 7. 残る課題
 
-- CUDA DLLと取得archiveの再配布条件を確認する
 - 実マイク・実PC再生音声で認識品質を確認する
-- 1時間音声で処理時間とメモリ使用量を測定する
+- 1時間試験の結果は [Phase 2 STT 1時間ベンチマーク](PHASE2_STT_1H_BENCHMARK.md) を参照する
+- Windows音声デバイスを通した試験結果は [Phase 2 Windows実音声スモーク試験](PHASE2_REAL_AUDIO_SMOKE_TEST.md) を参照する

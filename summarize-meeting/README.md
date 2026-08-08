@@ -88,6 +88,29 @@ $env:SUMMARIZE_MEETING_RUN_WGC_TESTS = "1"
 uv run pytest -q tests/integration/test_wgc_backend.py
 ```
 
+短い録音済みセッションから、長時間STT試験用の反復音声セッションを生成する場合:
+
+```powershell
+uv run python -m summarize_meeting.devtools.benchmark_session `
+  --source-session data\meetings\stt-smoke-ja `
+  --output-session data\meetings\stt-benchmark-1h `
+  --duration-seconds 3600
+```
+
+出力先がすでに存在する場合は上書きしません。生成物は`data/`配下へ置き、Gitには含めません。
+
+VB-Audio Virtual Cableなどの指定デバイスだけを使い、Windows録音から文字起こしまでを試験する場合:
+
+```powershell
+uv run python -m summarize_meeting.devtools.real_audio_smoke `
+  --source-wave data\meetings\stt-smoke-ja\audio\system.wav `
+  --microphone "CABLE Output" `
+  --loopback "CABLE Input" `
+  --speaker "CABLE Input"
+```
+
+指定名は各デバイス一覧で1件に絞れる部分文字列にします。このコマンドは指定した再生先へWAVを流し、録音セッションを`data/meetings/`へ保存します。
+
 実機録音の検証手順は [Phase 1 PoC手動検証](../docs/PHASE1_POC_MANUAL_TEST.md) を参照してください。
 
 ## 配置方針
@@ -105,3 +128,5 @@ uv run pytest -q tests/integration/test_wgc_backend.py
 - [Phase 1詳細設計](../docs/PHASE1_DETAILED_DESIGN.md)
 - [Phase 2詳細設計](../docs/PHASE2_DETAILED_DESIGN.md)
 - [Phase 2 STTスモーク試験](../docs/PHASE2_STT_SMOKE_TEST.md)
+- [Phase 2 STT 1時間ベンチマーク](../docs/PHASE2_STT_1H_BENCHMARK.md)
+- [Phase 2 Windows実音声スモーク試験](../docs/PHASE2_REAL_AUDIO_SMOKE_TEST.md)
