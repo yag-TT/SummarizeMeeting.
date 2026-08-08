@@ -76,39 +76,54 @@ class ScreenRecorder:
     def _run(self) -> None:
         paused = False
         self._state_callback(ComponentStatus.RUNNING, None, None)
-        while not self._stop.wait(self._interval):
-            with self._target_lock:
-                target = self._target
-            try:
-                frame = self._backend.capture(target)
-                if paused:
-                    paused = False
-                    self._detector.reset()
-                    self._state_callback(ComponentStatus.RUNNING, None, None)
-                timestamp_ms = (time.perf_counter_ns() - self._origin_ns) // 1_000_000
-                decision = self._detector.evaluate(frame, int(timestamp_ms))
-                if decision is None:
-                    continue
-                self._store.save(
-                    frame,
-                    timestamp_ms=int(timestamp_ms),
-                    reason=decision.reason,
-                    metrics={
-                        "changed_ratio": decision.metrics.changed_ratio,
-                        "mean_abs_diff": decision.metrics.mean_abs_diff,
-                    },
-                )
-                self._detector.mark_saved(decision)
-                self._count_callback(self._store.count)
-            except ScreenTargetPausedError as exc:
-                if not paused:
-                    paused = True
-                    self._state_callback(ComponentStatus.PAUSED, "SCREEN_TARGET_PAUSED", str(exc))
-            except ScreenTargetClosedError as exc:
-                self._failed.set()
-                self._state_callback(ComponentStatus.FAILED, "SCREEN_TARGET_CLOSED", str(exc))
-                return
-            except Exception as exc:
-                self._failed.set()
-                self._state_callback(ComponentStatus.FAILED, "SCREEN_CAPTURE_FAILED", str(exc))
-                return
+        try:
+            while not self._stop.wait(self._interval):
+                with self._target_lock:
+                    target = self._target
+                try:
+                    frame = self._backend.capture(target)
+                    if paused:
+                        paused = False
+                        self._detector.reset()
+                        self._state_callback(ComponentStatus.RUNNING, None, None)
+                    timestamp_ms = (time.perf_counter_ns() - self._origin_ns) // 1_000_000
+                    decision = self._detector.evaluate(frame, int(timestamp_ms))
+                    if decision is None:
+                        continue
+                    self._store.save(
+                        frame,
+                        timestamp_ms=int(timestamp_ms),
+                        reason=decision.reason,
+                        metrics={
+                            "changed_ratio": decision.metrics.changed_ratio,
+                            "mean_abs_diff": decision.metrics.mean_abs_diff,
+                        },
+                    )
+                    self._detector.mark_saved(decision)
+                    self._count_callback(self._store.count)
+                except ScreenTargetPausedError as exc:
+                    if not paused:
+                        paused = True
+                        self._state_callback(
+                            ComponentStatus.PAUSED,
+                            "SCREEN_TARGET_PAUSED",
+                            str(exc),
+                        )
+                except ScreenTargetClosedError as exc:
+                    self._failed.set()
+                    self._state_callback(
+                        ComponentStatus.FAILED,
+                        "SCREEN_TARGET_CLOSED",
+                        str(exc),
+                    )
+                    return
+                except Exception as exc:
+                    self._failed.set()
+                    self._state_callback(
+                        ComponentStatus.FAILED,
+                        "SCREEN_CAPTURE_FAILED",
+                        str(exc),
+                    )
+                    return
+        finally:
+            self._backend.close()

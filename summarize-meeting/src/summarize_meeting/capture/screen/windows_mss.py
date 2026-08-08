@@ -78,3 +78,6 @@ class WindowsMssScreenBackend:
         with mss.mss() as capture:
             bgra = np.asarray(capture.grab(monitor), dtype=np.uint8)
         return np.ascontiguousarray(bgra[:, :, :3])
+
+    def close(self) -> None:
+        """MSS creates a capture object per frame, so there is nothing to release here."""

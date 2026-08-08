@@ -12,7 +12,7 @@ from PySide6.QtCore import QObject, Signal
 from summarize_meeting.capture.audio.recorder import AudioTrackRecorder
 from summarize_meeting.capture.audio.soundcard_backend import SoundCardAudioBackend
 from summarize_meeting.capture.screen.recorder import ScreenRecorder
-from summarize_meeting.capture.screen.windows_mss import WindowsMssScreenBackend
+from summarize_meeting.capture.screen.windows_wgc import WindowsWgcScreenBackend
 from summarize_meeting.domain.capture import AudioDevice, ScreenTarget
 from summarize_meeting.domain.session import (
     ComponentKind,
@@ -42,7 +42,7 @@ class RecordingController(QObject):
         self._app_paths = app_paths
         self._repository = FileSessionRepository(app_paths.meetings_dir)
         self._audio_backend = SoundCardAudioBackend()
-        self._screen_backend = WindowsMssScreenBackend()
+        self._screen_backend = WindowsWgcScreenBackend()
         self._session: RecordingSession | None = None
         self._session_paths: SessionPaths | None = None
         self._origin_ns = 0

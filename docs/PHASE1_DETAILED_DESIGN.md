@@ -589,24 +589,26 @@ timestamp_sec = estimated_start_offset_sec + frame_index / sample_rate
 
 ## 11. 画面取得詳細
 
-### 11.1 Windows第一候補
+### 11.1 Windows Graphics Capture PoC
 
-`Windows.Graphics.Capture` を第一PoC候補とする。理由:
+画面取得backendには `Windows.Graphics.Capture` を採用する。Python側はPyWinRT 3.2.1を使用する。
 
-- OSの安全なpickerでユーザーがウィンドウを選択できる
-- アプリウィンドウ単位のCaptureが可能
-- フレームにシステム相対時刻がある
-- 対象がリサイズされた場合の再構築手段がある
+- アプリ内の列挙UIで選択したHWNDを `create_for_window(HWND)` へ渡す。OS pickerは重ねて表示しない。
+- Hardware D3D11 deviceからWinRT `IDirect3DDevice` を生成する。
+- `Direct3D11CaptureFramePool.create_free_threaded` を使用し、Screen Worker内でsessionを維持する。
+- pixel formatは `B8G8R8A8UIntNormalized`、buffer数は2とする。
+- frame surfaceは `SoftwareBitmap.create_copy_from_surface_async` でCPU側へcopyし、BGRのNumPy配列へ正規化する。
+- cursor captureとcapture borderは無効にする。無効化に失敗した場合はScreen開始失敗として扱い、音声は継続する。
+- 静止画で新規frameが来ない評価周期は、最後に取得したframeのcopyを返す。ScreenChangeDetectorが同一frameを再保存しない。
+- DWMのextended frame boundsとframe sizeを照合し、古いsizeのframeを破棄する。
+- 対象のリサイズ時はframe poolをrecreateし、新sizeのframeをbaseline候補にする。
+- session、frame pool、surface、SoftwareBitmap、D3D deviceはScreen Worker終了時に解放する。
 
-Microsoft公式仕様ではCapture中に対象へ通知枠が表示される。UI仕様と手動試験に含める。
+PoCではPySide6の自己ウィンドウについて、別Workerからの初回取得、静止中の連続評価、リサイズ追従、BGR画素値、正常解放を確認済みである。UI Threadを停止した状態では対象の再描画も止まるため、画面取得は必ずScreen Workerで実行する。
 
-PythonからのWinRT / Direct3D surface受け渡し、PySide6 HWNDとのpicker連携、最小化時の挙動は実機PoC項目とする。失敗時は以下を比較する。
+旧MSS Adapterは比較・診断用にソースを残すが、通常のRecordingControllerからは使用しない。全画面captureやMSSへの自動fallbackは行わない。
 
-1. Windows.Graphics.Captureの別Python bridge
-2. DXcamで対象モニターを取得してウィンドウ矩形をcrop
-3. Windows固有の小さなnative helperを別プロセスとして実装
-
-DXcam + cropは、他ウィンドウによる遮蔽、対象移動、DPI、複数モニター境界の影響を受けるため第一候補にはしない。
+遮蔽、複数モニター、DPI変更、HDR、保護コンテンツ、Windowsロック、Remote Desktopは手動実機試験を継続する。
 
 最小化と対象終了に対する製品動作は次で固定し、backendごとの検出方法だけをPoCで決める。
 
@@ -1130,7 +1132,7 @@ Phase 1では会議予定時間入力を必須にしないため、最低空き�
 9. SoundCard WASAPI Loopback PoC
 10. 2track同時録音と同期metadata
 11. ScreenChangeDetector
-12. Windows Graphics Capture picker / frame取得PoC
+12. Windows Graphics Capture HWND / frame取得PoC（実装済み）
 13. Screenshot Store統合
 14. 部分障害と終了処理
 15. 15分試験

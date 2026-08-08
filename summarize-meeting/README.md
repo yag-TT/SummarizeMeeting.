@@ -2,7 +2,7 @@
 
 Teams、Google Meetなどのオンライン会議について、マイク音声、PC再生音声、選択したウィンドウの重要な画面変更をローカル保存し、会議終了後に議事録を生成するデスクトップアプリケーションです。
 
-現在はPhase 1「記録基盤」のPoC段階です。Windows 11でマイクとPC音声の別トラック録音、音量メーター、表示中ウィンドウの画面変更保存、セッションJSON生成を試せます。文字起こし、話者分離、画面理解、議事録生成はまだ実装していません。
+現在はPhase 1「記録基盤」のPoC段階です。Windows 11でマイクとPC音声の別トラック録音、音量メーター、Windows Graphics Captureによる選択ウィンドウの画面変更保存、セッションJSON生成を試せます。文字起こし、話者分離、画面理解、議事録生成はまだ実装していません。
 
 ## 開発環境
 
@@ -45,6 +45,13 @@ uv run ruff check .
 uv run pytest -q
 ```
 
+対話デスクトップ上でWGCの自己ウィンドウ統合テストも実行する場合:
+
+```powershell
+$env:SUMMARIZE_MEETING_RUN_WGC_TESTS = "1"
+uv run pytest -q tests/integration/test_wgc_backend.py
+```
+
 実機録音の検証手順は [Phase 1 PoC手動検証](../docs/PHASE1_POC_MANUAL_TEST.md) を参照してください。
 
 ## 配置方針
@@ -53,8 +60,7 @@ uv run pytest -q
 
 ## 現在のPoC制約
 
-- 画面取得は最終候補のWindows Graphics Captureではなく、選択ウィンドウの表示矩形をMSSで取得する暫定Adapterです。
-- 対象ウィンドウが他のウィンドウに隠れると、隠した側の内容が画像へ入る場合があります。
+- Windows Graphics Captureの複数モニター、DPI、HDR、保護コンテンツ、Windowsロック、Remote Desktopは実機評価中です。
 - Windowsスリープ／休止状態をまたぐ録音は対象外です。
 
 ## ドキュメント
