@@ -62,6 +62,7 @@ class AudioTrackRecorder:
         queue_pressure_ratio: float = 0.8,
         queue_recovery_ratio: float = 0.5,
         queue_put_timeout_seconds: float = 1.0,
+        start_gate: threading.Event | None = None,
     ) -> None:
         self._backend = backend
         self._device = device
@@ -104,6 +105,13 @@ class AudioTrackRecorder:
         self._queue_pressure_count = 0
         self._max_queue_usage_ratio = 0.0
         self._queue_pressure_active = False
+        self._start_gate = start_gate or threading.Event()
+        if start_gate is None:
+            self._start_gate.set()
+        self._ready = threading.Event()
+        self._startup_complete = threading.Event()
+        self._startup_cancelled = threading.Event()
+        self._startup_lock = threading.Lock()
 
     def start(self) -> None:
         if self._origin_ns is None:
@@ -118,6 +126,24 @@ class AudioTrackRecorder:
 
     def request_stop(self) -> None:
         self._stop.set()
+
+    @property
+    def is_ready(self) -> bool:
+        return self._ready.is_set()
+
+    @property
+    def startup_complete(self) -> bool:
+        return self._startup_complete.is_set()
+
+    def wait_until_initialized(self, timeout: float) -> bool:
+        self._startup_complete.wait(timeout=max(0.0, timeout))
+        return self._ready.is_set()
+
+    def cancel_start(self, error_code: str, message: str) -> None:
+        self._startup_cancelled.set()
+        self._stop.set()
+        error = TimeoutError(message)
+        self._complete_startup_failure(error_code, message, error)
 
     def finish(self, timeout: float = 15.0) -> AudioTrackStats | None:
         if not self._failed.is_set():
@@ -158,6 +184,13 @@ class AudioTrackRecorder:
                 daemon=True,
             )
             self._writer_thread.start()
+            if not self._complete_startup_ready():
+                return
+            while not self._start_gate.wait(timeout=0.1):
+                if self._stop.is_set():
+                    return
+            if self._stop.is_set():
+                return
             self._state_callback(ComponentStatus.RUNNING, None, None)
             while not self._stop.is_set():
                 try:
@@ -186,14 +219,42 @@ class AudioTrackRecorder:
             self._failed.set()
             self._state_callback(ComponentStatus.FAILED, "AUDIO_QUEUE_PRESSURE", str(exc))
         except Exception as exc:
-            self._capture_error = exc
-            self._failed.set()
-            self._state_callback(ComponentStatus.FAILED, "AUDIO_CAPTURE_FAILED", str(exc))
+            if self._startup_cancelled.is_set():
+                pass
+            elif not self._complete_startup_failure("AUDIO_OPEN_FAILED", str(exc), exc):
+                self._capture_error = exc
+                self._failed.set()
+                self._state_callback(ComponentStatus.FAILED, "AUDIO_CAPTURE_FAILED", str(exc))
         finally:
+            self._startup_complete.set()
             self._capture_ended_offset_ms = self._timestamp_ms()
             if stream is not None:
                 self._close_stream(stream)
             self._enqueue_sentinel()
+
+    def _complete_startup_ready(self) -> bool:
+        with self._startup_lock:
+            if self._startup_complete.is_set() or self._stop.is_set():
+                return False
+            self._state_callback(ComponentStatus.READY, None, None)
+            self._ready.set()
+            self._startup_complete.set()
+            return True
+
+    def _complete_startup_failure(
+        self,
+        error_code: str,
+        message: str,
+        error: Exception,
+    ) -> bool:
+        with self._startup_lock:
+            if self._startup_complete.is_set():
+                return False
+            self._capture_error = error
+            self._failed.set()
+            self._state_callback(ComponentStatus.FAILED, error_code, message)
+            self._startup_complete.set()
+            return True
 
     def _reconnect(self, cause: Exception):
         assert self._writer is not None

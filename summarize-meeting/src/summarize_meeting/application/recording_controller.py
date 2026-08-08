@@ -53,6 +53,7 @@ class RecordingController(QObject):
         storage_monitor: StorageMonitor | None = None,
         settings: AppSettings | None = None,
         settings_repository: FileSettingsRepository | None = None,
+        audio_start_timeout_seconds: float = 5.0,
     ) -> None:
         super().__init__()
         self._app_paths = app_paths
@@ -67,6 +68,9 @@ class RecordingController(QObject):
             path=app_paths.meetings_dir,
             probe=SystemStorageProbe(),
         )
+        if audio_start_timeout_seconds <= 0:
+            raise ValueError("audio_start_timeout_seconds must be positive")
+        self._audio_start_timeout_seconds = audio_start_timeout_seconds
         self._session: RecordingSession | None = None
         self._session_paths: SessionPaths | None = None
         self._origin_ns = 0
@@ -143,12 +147,14 @@ class RecordingController(QObject):
         self._append_event("session_preparing")
         self._set_component(ComponentKind.SESSION_STORAGE, ComponentStatus.RUNNING)
         self._audio_recorders = {}
+        audio_start_gate = threading.Event()
         if microphone is not None:
             recorder = self._create_audio_recorder(
                 ComponentKind.MICROPHONE,
                 microphone,
                 "microphone",
                 paths,
+                audio_start_gate,
             )
             self._audio_recorders[ComponentKind.MICROPHONE] = recorder
             recorder.start()
@@ -161,12 +167,22 @@ class RecordingController(QObject):
                 system_audio,
                 "system",
                 paths,
+                audio_start_gate,
             )
             self._audio_recorders[ComponentKind.SYSTEM_AUDIO] = recorder
             recorder.start()
         else:
             self._set_component(ComponentKind.SYSTEM_AUDIO, ComponentStatus.NOT_CONFIGURED)
 
+        ready_audio = self._wait_for_audio_initialization()
+        if not ready_audio:
+            audio_start_gate.set()
+            self._fail_session_start(paths)
+            raise RuntimeError(
+                "マイクとPC音声のどちらも開始できませんでした。デバイスを再選択してください。"
+            )
+
+        audio_start_gate.set()
         if screen_target is not None:
             self._screen_recorder = self._create_screen_recorder(screen_target, paths)
             self._screen_recorder.start()
@@ -224,18 +240,91 @@ class RecordingController(QObject):
         device: AudioDevice,
         track_name: str,
         paths: SessionPaths,
+        start_gate: threading.Event,
     ) -> AudioTrackRecorder:
+        def state_callback(
+            status: ComponentStatus,
+            code: str | None,
+            message: str | None,
+        ) -> None:
+            if code == "AUDIO_OPEN_FAILED":
+                code = (
+                    "MIC_OPEN_FAILED"
+                    if kind == ComponentKind.MICROPHONE
+                    else "SYSTEM_AUDIO_OPEN_FAILED"
+                )
+            self._set_component(kind, status, code, message)
+
         return AudioTrackRecorder(
             backend=self._audio_backend,
             device=device,
             track_name=track_name,
             audio_dir=paths.audio,
-            state_callback=lambda status, code, message: self._set_component(
-                kind, status, code, message
-            ),
+            state_callback=state_callback,
             meter_callback=lambda level: self.meter_changed.emit(kind.value, level),
             origin_ns=self._origin_ns,
+            start_gate=start_gate,
         )
+
+    def _wait_for_audio_initialization(self) -> list[ComponentKind]:
+        deadline = time.monotonic() + self._audio_start_timeout_seconds
+        for recorder in self._audio_recorders.values():
+            recorder.wait_until_initialized(max(0.0, deadline - time.monotonic()))
+
+        ready: list[ComponentKind] = []
+        for kind, recorder in self._audio_recorders.items():
+            if recorder.is_ready:
+                ready.append(kind)
+                continue
+            if recorder.startup_complete:
+                continue
+            code = (
+                "MIC_OPEN_TIMEOUT"
+                if kind == ComponentKind.MICROPHONE
+                else "SYSTEM_AUDIO_OPEN_TIMEOUT"
+            )
+            recorder.cancel_start(
+                code,
+                "音声デバイスを "
+                f"{self._audio_start_timeout_seconds:g} 秒以内に開始できませんでした",
+            )
+        return ready
+
+    def _fail_session_start(self, paths: SessionPaths) -> None:
+        stats: dict[str, AudioTrackStats] = {}
+        failures: list[str] = []
+        for kind, recorder in self._audio_recorders.items():
+            recorder.request_stop()
+            try:
+                result = recorder.finish(timeout=self._audio_start_timeout_seconds)
+                if result is not None:
+                    stats[kind.value] = result
+            except Exception as exc:
+                failures.append(f"{kind.value}: {exc}")
+
+        self._set_component(ComponentKind.SESSION_STORAGE, ComponentStatus.STOPPED)
+        self._write_audio_manifest(
+            paths.audio / "manifest.json",
+            stats,
+            monotonic_origin_ns=self._origin_ns,
+        )
+        ended_ns = time.perf_counter_ns()
+        with self._lock:
+            assert self._session is not None
+            self._session.ended_at = RecordingSession.now_iso()
+            self._session.duration_ms = (ended_ns - self._origin_ns) // 1_000_000
+            self._session.status = SessionStatus.FAILED_TO_START
+            self._session.add_warning(
+                "FAILED_TO_START",
+                "選択した音声デバイスを開始できませんでした",
+                int(self._session.duration_ms),
+            )
+            for failure in failures:
+                self._session.add_warning(
+                    "START_CLEANUP_FAILED", failure, int(self._session.duration_ms)
+                )
+            self._repository.save(paths, self._session)
+        self._append_event("session_start_failed", failures=failures)
 
     def _create_screen_recorder(
         self,

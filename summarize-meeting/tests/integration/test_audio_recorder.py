@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 import wave
 from pathlib import Path
@@ -165,6 +166,42 @@ def test_audio_recorder_writes_fake_capture(tmp_path: Path) -> None:
     assert stats.queue_capacity_chunks == 300
     with wave.open(str(audio_dir / "microphone.wav"), "rb") as stream:
         assert stream.getnframes() > 0
+
+
+def test_audio_recorder_waits_at_ready_until_start_gate_is_released(
+    tmp_path: Path,
+) -> None:
+    states: list[ComponentStatus] = []
+    meters: list[float] = []
+    start_gate = threading.Event()
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    recorder = AudioTrackRecorder(
+        backend=FakeAudioBackend(),
+        device=AudioDevice("fake", "Fake", 2),
+        track_name="microphone",
+        audio_dir=audio_dir,
+        state_callback=lambda state, _code, _message: states.append(state),
+        meter_callback=meters.append,
+        block_frames=800,
+        start_gate=start_gate,
+    )
+
+    recorder.start()
+
+    assert recorder.wait_until_initialized(1.0)
+    assert recorder.is_ready
+    assert states[-1] == ComponentStatus.READY
+    time.sleep(0.03)
+    assert ComponentStatus.RUNNING not in states
+    assert meters == []
+
+    start_gate.set()
+    _wait_for(lambda: ComponentStatus.RUNNING in states)
+    stats = recorder.finish()
+
+    assert stats is not None
+    assert states[-1] == ComponentStatus.STOPPED
 
 
 def test_audio_recorder_reconnects_only_the_same_device(tmp_path: Path) -> None:
