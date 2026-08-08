@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import sys
 from logging.handlers import RotatingFileHandler
+from typing import Protocol
 
 from PySide6.QtCore import QLockFile, QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
@@ -15,6 +16,14 @@ from summarize_meeting.application.recovery_service import (
 from summarize_meeting.infrastructure.paths import AppRootNotWritableError, PortableAppPaths
 from summarize_meeting.infrastructure.settings import FileSettingsRepository, SettingsLoadResult
 from summarize_meeting.ui.main_window import MainWindow
+
+
+class ShutdownWindowPort(Protocol):
+    def prepare_for_os_shutdown(self) -> None: ...
+
+
+class ShutdownControllerPort(Protocol):
+    def stop_for_shutdown(self, timeout_seconds: float) -> bool: ...
 
 
 def _configure_logging(paths: PortableAppPaths, log_level: str) -> None:
@@ -67,6 +76,7 @@ def main() -> int:
     recovery_controller.progress.connect(window.show_information)
     recovery_controller.finished.connect(window.show_information)
     recovery_controller.failed.connect(window.show_error)
+    app.commitDataRequest.connect(lambda _manager: _handle_os_shutdown(window, controller))
     window.show()
     QTimer.singleShot(0, lambda: _offer_recovery(window, recovery_controller))
     if settings_result.error:
@@ -83,6 +93,19 @@ def _acquire_instance_lock(paths: PortableAppPaths) -> QLockFile | None:
     instance_lock = QLockFile(str(paths.lock_file))
     instance_lock.setStaleLockTime(10_000)
     return instance_lock if instance_lock.tryLock(0) else None
+
+
+def _handle_os_shutdown(
+    window: ShutdownWindowPort,
+    controller: ShutdownControllerPort,
+) -> bool:
+    window.prepare_for_os_shutdown()
+    completed = controller.stop_for_shutdown(timeout_seconds=4.0)
+    logging.getLogger(__name__).info(
+        "OS shutdown recording finalize_completed=%s",
+        completed,
+    )
+    return completed
 
 
 def _offer_recovery(window: MainWindow, controller: RecoveryController) -> None:

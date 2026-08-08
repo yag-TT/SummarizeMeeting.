@@ -92,6 +92,8 @@ class RecordingController(QObject):
         self._finalize_progress_percent = -1
         self._finalize_progress_message = ""
         self._finalize_track_ranges: dict[ComponentKind, tuple[int, int]] = {}
+        self._session_terminal = threading.Event()
+        self._session_terminal.set()
 
     @property
     def last_microphone_device_id(self) -> str | None:
@@ -194,6 +196,7 @@ class RecordingController(QObject):
             self._screen_disabled_by_storage = False
             self._screenshot_count = 0
             self._startup_cancel = threading.Event()
+            self._session_terminal.clear()
             self._finalize_progress_percent = -1
             self._finalize_progress_message = ""
             self._finalize_track_ranges = {}
@@ -377,6 +380,21 @@ class RecordingController(QObject):
         )
         self._stop_thread.start()
 
+    def stop_for_shutdown(self, timeout_seconds: float = 4.0) -> bool:
+        if timeout_seconds < 0:
+            raise ValueError("shutdown timeout must not be negative")
+        with self._lock:
+            active = self._session is not None and self._session.status in {
+                SessionStatus.PREPARING,
+                SessionStatus.RECORDING,
+                SessionStatus.STOPPING,
+                SessionStatus.FINALIZING,
+            }
+        if not active:
+            return True
+        self.stop_session()
+        return self._session_terminal.wait(timeout=timeout_seconds)
+
     def _create_audio_recorder(
         self,
         kind: ComponentKind,
@@ -559,6 +577,7 @@ class RecordingController(QObject):
             failures=failures,
         )
         self._close_session_log()
+        self._session_terminal.set()
 
     def _create_screen_recorder(
         self,
@@ -750,6 +769,7 @@ class RecordingController(QObject):
             "エラーを含む記録を保存しました" if failures else "記録を保存しました",
         )
         self._close_session_log()
+        self._session_terminal.set()
         self.session_finished.emit(str(paths.root))
 
     def _on_audio_finalize_progress(

@@ -32,6 +32,7 @@ class MainWindow(QMainWindow):
         self._session_path: Path | None = None
         self._sources_loaded = False
         self._close_requested = False
+        self._os_shutdown_requested = False
         self.setWindowTitle("Summarize Meeting - Phase 1 PoC")
         self.resize(880, 520)
 
@@ -338,8 +339,21 @@ class MainWindow(QMainWindow):
         self._save_path.setText(value)
         self._save_path.setToolTip(value)
 
+    def prepare_for_os_shutdown(self) -> None:
+        self._os_shutdown_requested = True
+        self._set_inputs_enabled(False)
+        self._start.setEnabled(False)
+        self._stop.setEnabled(False)
+        self._reselect.setEnabled(False)
+        if self._controller.is_recording:
+            self.show_information("Windowsの終了に備えて記録を保存しています。")
+
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         if self._controller.is_recording:
+            if self._os_shutdown_requested:
+                self._controller.stop_session()
+                event.accept()
+                return
             preparing = self._started_at is None
             answer = QMessageBox.question(
                 self,

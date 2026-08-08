@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QApplication
 
 from summarize_meeting.application.recording_controller import RecordingController
@@ -35,6 +36,7 @@ class _UiController(QObject):
         self.last_system_device_id = system_id
         self.meetings_directory = Path("C:/portable/data/meetings")
         self.is_recording = False
+        self.stop_count = 0
 
     def list_input_devices(self):
         return [
@@ -47,6 +49,9 @@ class _UiController(QObject):
 
     def list_screen_targets(self):
         return []
+
+    def stop_session(self) -> None:
+        self.stop_count += 1
 
 
 def test_ui_restores_devices_by_saved_id(qapp: QApplication) -> None:
@@ -132,6 +137,24 @@ def test_ui_shows_finalize_progress_and_hides_it_after_completion(
 
     assert not window._finalize_progress.isVisible()  # noqa: SLF001
     assert window._start.isEnabled()  # noqa: SLF001
+    window.close()
+
+
+def test_ui_accepts_os_shutdown_without_confirmation_while_recording(
+    qapp: QApplication,
+) -> None:
+    controller = _UiController(microphone_id=None, system_id=None)
+    controller.is_recording = True
+    window = MainWindow(controller)  # type: ignore[arg-type]
+    event = QCloseEvent()
+
+    window.prepare_for_os_shutdown()
+    window.closeEvent(event)
+
+    assert event.isAccepted()
+    assert controller.stop_count == 1
+    assert "Windowsの終了" in window._message.text()  # noqa: SLF001
+    controller.is_recording = False
     window.close()
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from summarize_meeting.bootstrap import _acquire_instance_lock
+from summarize_meeting.bootstrap import _acquire_instance_lock, _handle_os_shutdown
 from summarize_meeting.infrastructure.paths import PortableAppPaths
 
 
@@ -44,3 +44,32 @@ def test_instance_lock_recovers_lock_owned_by_missing_process(tmp_path: Path) ->
     assert recovered is not None
     assert paths.lock_file.read_text(encoding="utf-8").splitlines()[0] != "999999999"
     recovered.unlock()
+
+
+class _ShutdownWindow:
+    def __init__(self) -> None:
+        self.prepared = False
+
+    def prepare_for_os_shutdown(self) -> None:
+        self.prepared = True
+
+
+class _ShutdownController:
+    def __init__(self, *, completed: bool) -> None:
+        self._completed = completed
+        self.timeout_seconds: float | None = None
+
+    def stop_for_shutdown(self, timeout_seconds: float) -> bool:
+        self.timeout_seconds = timeout_seconds
+        return self._completed
+
+
+def test_os_shutdown_prepares_ui_and_waits_for_bounded_finalize() -> None:
+    window = _ShutdownWindow()
+    controller = _ShutdownController(completed=False)
+
+    completed = _handle_os_shutdown(window, controller)
+
+    assert not completed
+    assert window.prepared
+    assert controller.timeout_seconds == 4.0

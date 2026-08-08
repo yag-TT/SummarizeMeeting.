@@ -171,6 +171,7 @@ def test_session_starts_when_one_of_two_audio_sources_is_ready(tmp_path: Path) -
     system_summary = log_entries[-1]["details"]["audio_summary"]["system_audio"]
     assert system_summary["frames"] > 0
     assert system_summary["validated"]
+    assert controller._session_terminal.is_set()  # noqa: SLF001
 
 
 def test_session_is_failed_to_start_when_all_audio_sources_fail(
@@ -221,6 +222,7 @@ def test_session_is_failed_to_start_when_all_audio_sources_fail(
     _wait_for(lambda: bool(start_failures))
     assert start_failures and "どちらも開始できません" in start_failures[0][1]
     assert not controller.is_recording
+    assert controller._session_terminal.is_set()  # noqa: SLF001
 
 
 def test_start_session_returns_while_audio_device_is_still_opening(
@@ -298,6 +300,7 @@ def test_stop_during_preparing_cancels_start_without_beginning_recording(
         for line in (session_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     assert any(event["type"] == "session_start_cancel_requested" for event in events)
+    assert controller._session_terminal.is_set()  # noqa: SLF001
     assert events[-1]["type"] == "session_start_cancelled"
 
 

@@ -173,3 +173,21 @@ def test_audio_finalize_progress_maps_each_phase_without_regressing(
     assert percents[-1] == 85
     assert any("結合" in message for _, message in progress)
     assert any("検証" in message for _, message in progress)
+
+
+def test_shutdown_stop_requests_stop_and_reports_bounded_wait_timeout(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    controller, _session_root = _prepare_controller(tmp_path)
+    controller._session_terminal.clear()  # noqa: SLF001
+    stop_requests: list[bool] = []
+    monkeypatch.setattr(controller, "stop_session", lambda: stop_requests.append(True))
+
+    completed = controller.stop_for_shutdown(timeout_seconds=0.0)
+
+    assert not completed
+    assert stop_requests == [True]
+
+    controller._session_terminal.set()  # noqa: SLF001
+    assert controller.stop_for_shutdown(timeout_seconds=0.0)
