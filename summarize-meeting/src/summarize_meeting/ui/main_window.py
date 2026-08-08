@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 
@@ -19,18 +20,25 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from summarize_meeting.application.recording_controller import RecordingController
+from summarize_meeting.application.recording_controller import (
+    CaptureSourcesSnapshot,
+    RecordingController,
+)
 from summarize_meeting.domain.capture import AudioDevice, ScreenTarget
 from summarize_meeting.ui.status_row import CaptureStatusRow
 
 
 class MainWindow(QMainWindow):
+    _SOURCE_REFRESH_TIMEOUT_MS = 10_000
+
     def __init__(self, controller: RecordingController) -> None:
         super().__init__()
         self._controller = controller
         self._started_at: datetime | None = None
         self._session_path: Path | None = None
         self._sources_loaded = False
+        self._source_refresh_request_id = 0
+        self._source_refresh_pending = False
         self._close_requested = False
         self._os_shutdown_requested = False
         self.setWindowTitle("Summarize Meeting - Phase 1 PoC")
@@ -105,6 +113,9 @@ class MainWindow(QMainWindow):
         self._timer = QTimer(self)
         self._timer.setInterval(250)
         self._timer.timeout.connect(self._update_elapsed)
+        self._source_refresh_timeout_timer = QTimer(self)
+        self._source_refresh_timeout_timer.setSingleShot(True)
+        self._source_refresh_timeout_timer.timeout.connect(self._on_source_refresh_timeout)
         self._refresh.clicked.connect(self.refresh_sources)
         self._start.clicked.connect(self._start_recording)
         self._stop.clicked.connect(self._stop_recording)
@@ -117,6 +128,7 @@ class MainWindow(QMainWindow):
         controller.screenshot_count_changed.connect(
             lambda count: self._screenshots.setText(f"保存画像 {count}")
         )
+        controller.sources_refreshed.connect(self._on_sources_refreshed)
         controller.session_preparing.connect(self._on_session_preparing)
         controller.session_started.connect(self._on_session_started)
         controller.session_start_failed.connect(self._on_session_start_failed)
@@ -127,52 +139,96 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self.refresh_sources)
 
     def refresh_sources(self) -> None:
+        self._source_refresh_request_id += 1
+        request_id = self._source_refresh_request_id
+        self._source_refresh_pending = True
         self._refresh.setEnabled(False)
+        if not self._controller.is_recording:
+            self._start.setEnabled(False)
+        self.show_information("デバイス・ウィンドウ一覧を更新しています。")
         try:
-            missing_devices: list[str] = []
-            microphone_found = self._populate_audio_combo(
-                self._microphone,
-                self._controller.list_input_devices(),
-                "マイクなし",
-                preferred_id=(
-                    self._controller.last_microphone_device_id if not self._sources_loaded else None
-                ),
-            )
-            if not microphone_found:
-                missing_devices.append("前回のマイク")
-            system_audio_found = self._populate_audio_combo(
-                self._system_audio,
-                self._controller.list_loopback_devices(),
-                "PC音声なし",
-                preferred_id=(
-                    self._controller.last_system_device_id if not self._sources_loaded else None
-                ),
-            )
-            if not system_audio_found:
-                missing_devices.append("前回のPC音声デバイス")
-            selected_screen_id = self._current_screen_id()
-            self._screen_target.clear()
-            self._screen_target.addItem("画面取得なし", None)
-            for target in self._controller.list_screen_targets():
-                self._screen_target.addItem(target.title, target)
-                if target.id == selected_screen_id:
-                    self._screen_target.setCurrentIndex(self._screen_target.count() - 1)
-            self._sources_loaded = True
-            self._update_idle_source_names()
-            message = "PC音声は選択した出力デバイスから再生される全音声を記録します。"
-            if missing_devices:
-                missing = "、".join(missing_devices)
-                message += f" {missing}が見つからないため再選択してください。"
-            self.show_information(message)
+            self._controller.refresh_sources_async(request_id)
+            if self._source_refresh_pending and request_id == self._source_refresh_request_id:
+                self._source_refresh_timeout_timer.start(self._SOURCE_REFRESH_TIMEOUT_MS)
         except Exception as exc:
-            self.show_error(f"デバイス一覧を取得できません: {exc}")
-        finally:
+            self._source_refresh_pending = False
             self._refresh.setEnabled(True)
+            if not self._controller.is_recording:
+                self._start.setEnabled(True)
+            self.show_error(f"デバイス一覧の更新を開始できません: {exc}")
+
+    def _on_sources_refreshed(self, request_id: int, value: object) -> None:
+        if request_id != self._source_refresh_request_id:
+            return
+        if not isinstance(value, CaptureSourcesSnapshot):
+            self.show_error("デバイス一覧の更新結果を読み取れませんでした。")
+            self._restore_after_source_refresh()
+            return
+        missing_devices: list[str] = []
+        microphone_found = self._populate_audio_combo(
+            self._microphone,
+            value.microphones,
+            "マイクなし",
+            preferred_id=(
+                self._controller.last_microphone_device_id if not self._sources_loaded else None
+            ),
+        )
+        if not microphone_found:
+            missing_devices.append("前回のマイク")
+        system_audio_found = self._populate_audio_combo(
+            self._system_audio,
+            value.system_audio,
+            "PC音声なし",
+            preferred_id=(
+                self._controller.last_system_device_id if not self._sources_loaded else None
+            ),
+        )
+        if not system_audio_found:
+            missing_devices.append("前回のPC音声デバイス")
+        selected_screen_id = self._current_screen_id()
+        self._screen_target.clear()
+        self._screen_target.addItem("画面取得なし", None)
+        for target in value.screens:
+            self._screen_target.addItem(target.title, target)
+            if target.id == selected_screen_id:
+                self._screen_target.setCurrentIndex(self._screen_target.count() - 1)
+        if not value.errors:
+            self._sources_loaded = True
+        self._update_idle_source_names()
+        self._restore_after_source_refresh()
+        if value.errors:
+            self.show_error(" / ".join(value.errors))
+            return
+        message = "PC音声は選択した出力デバイスから再生される全音声を記録します。"
+        if missing_devices:
+            missing = "、".join(missing_devices)
+            message += f" {missing}が見つからないため再選択してください。"
+        self.show_information(message)
+
+    def _restore_after_source_refresh(self) -> None:
+        self._source_refresh_timeout_timer.stop()
+        self._source_refresh_pending = False
+        can_edit = not self._controller.is_recording
+        actively_recording = self._started_at is not None and self._stop.isEnabled()
+        self._refresh.setEnabled(can_edit or actively_recording)
+        if can_edit:
+            self._start.setEnabled(True)
+
+    def _on_source_refresh_timeout(self, request_id: int | None = None) -> None:
+        request_id = self._source_refresh_request_id if request_id is None else request_id
+        if request_id != self._source_refresh_request_id or not self._source_refresh_pending:
+            return
+        self._source_refresh_request_id += 1
+        self._restore_after_source_refresh()
+        self.show_error(
+            "デバイス・ウィンドウ一覧の取得が10秒以内に完了しませんでした。"
+            "接続を確認して更新を再試行してください。"
+        )
 
     def _populate_audio_combo(
         self,
         combo: QComboBox,
-        devices: list[AudioDevice],
+        devices: Sequence[AudioDevice],
         empty_label: str,
         *,
         preferred_id: str | None,

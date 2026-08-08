@@ -390,6 +390,8 @@ class ScreenStream(Protocol):
 
 `ScreenTarget` に保存するのは表示名、種類、再選択用の安全な識別情報だけとし、再利用不能な生OSハンドルを `session.json` に永続化しない。
 
+Audio deviceとScreen targetの列挙はUI threadで直接実行せず、Controllerがdaemon threadで行う。マイク、PC音声、画面は個別に例外を捕捉し、一種類の列挙失敗でも残りをimmutableな `CaptureSourcesSnapshot` としてUIへ返す。各要求に単調増加するrequest IDを付け、UIは最新IDと一致する結果だけを適用する。10秒以内に完了しない場合はUI側で要求を無効化して操作を復帰し、後から到着した古い結果を破棄する。録音中の一覧更新では候補ComboBoxだけを更新し、実際の取得元表示は画面再選択が成功するまで変更しない。
+
 ### 8.3 SessionRepository
 
 ```python

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
@@ -39,10 +40,19 @@ from summarize_meeting.infrastructure.settings import AppSettings, FileSettingsR
 from summarize_meeting.infrastructure.storage_probe import SystemStorageProbe
 
 
+@dataclass(frozen=True, slots=True)
+class CaptureSourcesSnapshot:
+    microphones: tuple[AudioDevice, ...]
+    system_audio: tuple[AudioDevice, ...]
+    screens: tuple[ScreenTarget, ...]
+    errors: tuple[str, ...] = ()
+
+
 class RecordingController(QObject):
     component_changed = Signal(str, str, str)
     meter_changed = Signal(str, float)
     screenshot_count_changed = Signal(int)
+    sources_refreshed = Signal(int, object)
     session_preparing = Signal(str)
     session_started = Signal(str)
     session_start_failed = Signal(str, str)
@@ -125,6 +135,54 @@ class RecordingController(QObject):
 
     def list_screen_targets(self) -> list[ScreenTarget]:
         return list(self._screen_backend.list_targets())
+
+    def refresh_sources_async(self, request_id: int) -> None:
+        thread = threading.Thread(
+            target=self._refresh_sources_worker,
+            args=(request_id,),
+            name=f"source-refresh-{request_id}",
+            daemon=True,
+        )
+        thread.start()
+
+    def _refresh_sources_worker(self, request_id: int) -> None:
+        errors: list[str] = []
+        try:
+            microphones = tuple(self.list_input_devices())
+        except Exception as exc:
+            microphones = ()
+            errors.append(f"マイク一覧を取得できません: {exc}")
+            logging.getLogger(__name__).warning(
+                "Microphone enumeration failed",
+                exc_info=exc,
+            )
+        try:
+            system_audio = tuple(self.list_loopback_devices())
+        except Exception as exc:
+            system_audio = ()
+            errors.append(f"PC音声一覧を取得できません: {exc}")
+            logging.getLogger(__name__).warning(
+                "Loopback enumeration failed",
+                exc_info=exc,
+            )
+        try:
+            screens = tuple(self.list_screen_targets())
+        except Exception as exc:
+            screens = ()
+            errors.append(f"画面一覧を取得できません: {exc}")
+            logging.getLogger(__name__).warning(
+                "Screen target enumeration failed",
+                exc_info=exc,
+            )
+        self.sources_refreshed.emit(
+            request_id,
+            CaptureSourcesSnapshot(
+                microphones=microphones,
+                system_audio=system_audio,
+                screens=screens,
+                errors=tuple(errors),
+            ),
+        )
 
     def start_session(
         self,

@@ -6,7 +6,10 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QApplication
 
-from summarize_meeting.application.recording_controller import RecordingController
+from summarize_meeting.application.recording_controller import (
+    CaptureSourcesSnapshot,
+    RecordingController,
+)
 from summarize_meeting.domain.capture import AudioDevice, ScreenTarget
 from summarize_meeting.domain.session import RecordingSession
 from summarize_meeting.infrastructure.paths import PortableAppPaths
@@ -22,6 +25,7 @@ class _UiController(QObject):
     component_changed = Signal(str, str, str)
     meter_changed = Signal(str, float)
     screenshot_count_changed = Signal(int)
+    sources_refreshed = Signal(int, object)
     session_preparing = Signal(str)
     session_started = Signal(str)
     session_start_failed = Signal(str, str)
@@ -53,6 +57,16 @@ class _UiController(QObject):
             ScreenTarget(id="screen-1", title="Planning deck"),
             ScreenTarget(id="screen-2", title="Demo browser"),
         ]
+
+    def refresh_sources_async(self, request_id: int) -> None:
+        self.sources_refreshed.emit(
+            request_id,
+            CaptureSourcesSnapshot(
+                microphones=tuple(self.list_input_devices()),
+                system_audio=tuple(self.list_loopback_devices()),
+                screens=tuple(self.list_screen_targets()),
+            ),
+        )
 
     def stop_session(self) -> None:
         self.stop_count += 1
@@ -141,6 +155,73 @@ def test_ui_does_not_fallback_when_saved_device_is_missing(qapp: QApplication) -
 
     assert window._microphone.currentData() is None  # noqa: SLF001
     assert "前回のマイクが見つからない" in window._message.text()  # noqa: SLF001
+    window.close()
+
+
+def test_ui_ignores_stale_source_refresh_result(qapp: QApplication) -> None:
+    controller = _UiController(microphone_id=None, system_id=None)
+    window = MainWindow(controller)  # type: ignore[arg-type]
+    window.refresh_sources()
+    current_microphones = [
+        window._microphone.itemText(index)  # noqa: SLF001
+        for index in range(window._microphone.count())  # noqa: SLF001
+    ]
+    current_request = window._source_refresh_request_id  # noqa: SLF001
+    stale = CaptureSourcesSnapshot(
+        microphones=(AudioDevice("stale", "Stale microphone", 1),),
+        system_audio=(),
+        screens=(),
+    )
+
+    window._on_sources_refreshed(current_request - 1, stale)  # noqa: SLF001
+
+    assert [
+        window._microphone.itemText(index)  # noqa: SLF001
+        for index in range(window._microphone.count())  # noqa: SLF001
+    ] == current_microphones
+    window.close()
+
+
+def test_ui_keeps_partial_sources_and_recovers_controls_after_refresh_error(
+    qapp: QApplication,
+) -> None:
+    controller = _UiController(microphone_id=None, system_id=None)
+    window = MainWindow(controller)  # type: ignore[arg-type]
+    window._source_refresh_request_id = 5  # noqa: SLF001
+    snapshot = CaptureSourcesSnapshot(
+        microphones=(),
+        system_audio=(AudioDevice("speaker", "Backup speakers", 2, is_loopback=True),),
+        screens=(),
+        errors=("マイク一覧を取得できません: unavailable",),
+    )
+
+    window._on_sources_refreshed(5, snapshot)  # noqa: SLF001
+
+    assert window._microphone.count() == 1  # noqa: SLF001
+    assert window._system_audio.count() == 2  # noqa: SLF001
+    assert window._refresh.isEnabled()  # noqa: SLF001
+    assert window._start.isEnabled()  # noqa: SLF001
+    assert "マイク一覧" in window._message.text()  # noqa: SLF001
+    window.close()
+
+
+def test_ui_recovers_controls_and_invalidates_result_after_source_refresh_timeout(
+    qapp: QApplication,
+) -> None:
+    controller = _UiController(microphone_id=None, system_id=None)
+    window = MainWindow(controller)  # type: ignore[arg-type]
+    window._source_refresh_request_id = 9  # noqa: SLF001
+    window._source_refresh_pending = True  # noqa: SLF001
+    window._refresh.setEnabled(False)  # noqa: SLF001
+    window._start.setEnabled(False)  # noqa: SLF001
+
+    window._on_source_refresh_timeout(9)  # noqa: SLF001
+
+    assert window._source_refresh_request_id == 10  # noqa: SLF001
+    assert not window._source_refresh_pending  # noqa: SLF001
+    assert window._refresh.isEnabled()  # noqa: SLF001
+    assert window._start.isEnabled()  # noqa: SLF001
+    assert "10秒以内" in window._message.text()  # noqa: SLF001
     window.close()
 
 
