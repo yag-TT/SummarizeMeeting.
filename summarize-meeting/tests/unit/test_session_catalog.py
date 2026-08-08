@@ -122,3 +122,27 @@ def test_catalog_reads_persisted_failed_job_state(tmp_path: Path) -> None:
 
     assert value.transcription_status == "FAILED"
     assert "文字起こし失敗" in value.display_label
+
+
+def test_catalog_enables_diarization_for_transcribed_system_audio(tmp_path: Path) -> None:
+    session = _session(
+        tmp_path,
+        "diarization",
+        title="話者分離会議",
+        started_at="2026-08-08T10:00:00+09:00",
+        transcript=True,
+        transcription_json=True,
+    )
+    (session / "audio" / "system.wav").write_bytes(b"wave")
+    (session / "audio" / "manifest.json").write_text(
+        '{"tracks":{"system_audio":{"file":"system.wav"}}}',
+        encoding="utf-8",
+    )
+    (session / "analysis" / "jobs.json").write_text(
+        '{"jobs":{"diarization":{"status":"FAILED"}}}', encoding="utf-8"
+    )
+
+    value = FileSessionCatalog(tmp_path).scan()[0]
+
+    assert value.can_diarize
+    assert value.diarization_status == "FAILED"

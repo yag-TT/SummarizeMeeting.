@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -102,6 +103,30 @@ class _UiTranscriptionController(QObject):
         self.is_running = False
 
 
+class _UiDiarizationController(QObject):
+    job_started = Signal(str)
+    job_progress = Signal(int, str)
+    job_finished = Signal(str, str)
+    job_failed = Signal(str, str)
+    job_canceled = Signal(str)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.is_running = False
+        self.started: list[tuple[Path, int | None]] = []
+        self.updated_names: list[dict[str, str]] = []
+
+    def start(self, path: Path, *, speaker_count: int | None = None) -> None:
+        self.started.append((path, speaker_count))
+
+    def cancel(self) -> None:
+        self.is_running = False
+
+    def update_speaker_names(self, path: Path, names: dict[str, str]) -> Path:
+        self.updated_names.append(names)
+        return path / "output" / "transcript.md"
+
+
 def _create_recorded_session(root: Path, name: str = "session") -> Path:
     session = root / name
     audio = session / "audio"
@@ -174,6 +199,54 @@ def test_ui_selects_past_session_and_starts_transcription(
     window._toggle_transcription()  # noqa: SLF001
 
     assert transcription.started_paths == [older.resolve()]
+    window.close()
+
+
+def test_ui_starts_diarization_and_updates_speaker_names(
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    session = _create_recorded_session(tmp_path)
+    (session / "audio" / "system.wav").write_bytes(b"wave")
+    (session / "audio" / "manifest.json").write_text(
+        json.dumps({"tracks": {"system_audio": {"file": "system.wav"}}}),
+        encoding="utf-8",
+    )
+    (session / "analysis" / "transcription.json").write_text(
+        json.dumps(
+            {
+                "status": "SUCCEEDED",
+                "segments": [{"source": "system", "start": 0, "end": 1, "text": "確認"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (session / "output" / "transcript.md").write_text("# Transcript\n", encoding="utf-8")
+    (session / "analysis" / "diarization.json").write_text(
+        '{"status":"SUCCEEDED"}', encoding="utf-8"
+    )
+    (session / "analysis" / "speaker_names.json").write_text(
+        '{"names":{"speaker_01":"Speaker 1"}}', encoding="utf-8"
+    )
+    recording = _UiController(microphone_id=None, system_id=None)
+    recording.meetings_directory = tmp_path
+    transcription = _UiTranscriptionController()
+    diarization = _UiDiarizationController()
+    window = MainWindow(  # type: ignore[arg-type]
+        recording,
+        transcription,  # type: ignore[arg-type]
+        FileSessionCatalog(tmp_path),
+        diarization,  # type: ignore[arg-type]
+    )
+
+    window.refresh_analysis_sessions()
+    window._speaker_count.setCurrentIndex(2)  # noqa: SLF001 - 2人
+    window._toggle_diarization()  # noqa: SLF001
+    window._speaker_name_inputs["speaker_01"].setText("田中")  # noqa: SLF001
+    window._update_speaker_names()  # noqa: SLF001
+
+    assert diarization.started == [(session.resolve(), 2)]
+    assert diarization.updated_names == [{"speaker_01": "田中"}]
     window.close()
 
 

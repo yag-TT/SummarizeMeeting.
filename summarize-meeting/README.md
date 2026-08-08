@@ -2,7 +2,7 @@
 
 Teams、Google Meetなどのオンライン会議について、マイク音声、PC再生音声、選択したウィンドウの重要な画面変更をローカル保存し、会議終了後に議事録を生成するデスクトップアプリケーションです。
 
-現在はPhase 2「STT」のPoC段階です。Phase 1の記録機能に加え、録音終了後にfaster-whisperを別プロセスで実行し、マイクとPC音声の文字起こし、timestamp付きJSON、仮の`transcript.md`生成を試せます。話者分離、画面理解、議事録生成はまだ実装していません。
+Phase 3「話者分離」の正常系PoCまで実装しています。Phase 1の記録、Phase 2のfaster-whisper文字起こしに加え、PC音声をsherpa-onnxで話者分離し、話者付き全文を生成できます。画面理解と議事録要約はまだ実装していません。
 
 ## 開発環境
 
@@ -26,6 +26,14 @@ uv run summarize-meeting
 
 文字起こしJobの開始・成功・失敗・キャンセルは`analysis/jobs.json`へatomic保存します。実行中にアプリが終了して`RUNNING`が残った場合、次回起動時は「前回中断」として表示し、再実行できます。
 
+文字起こし完了後は「話者分離」から話者数を`自動`または`1人`〜`10人`で選び、PC音声の話者を分離できます。マイク発話は`自分`、PC音声は`Speaker 1`などで表示されます。完了後に話者名を編集して保存すると、話者付きJSONと`transcript.md`を推論なしで再生成します。
+
+初回は固定URLとSHA-256検証付きスクリプトで、CPU話者分離モデルを`models/sherpa-onnx/diarization/`へ配置します。
+
+```powershell
+.\scripts\setup-diarization-models.ps1
+```
+
 RTX GPUを使う開発環境では、CUDA 12のcuBLASとcuDNN 9をアプリ内へ準備します。スクリプトは固定したarchiveをSHA-256検証後に`runtime/cuda/bin/`へ展開します。本アプリは第三者へ配布せず、ローカル環境でのみ使用します。
 
 ```powershell
@@ -48,7 +56,10 @@ data/meetings/<session>/
 │  └─ 000001.png ...
 ├─ analysis/
 │  ├─ jobs.json
-│  └─ transcription.json
+│  ├─ transcription.json
+│  ├─ diarization.json
+│  ├─ diarized_transcription.json
+│  └─ speaker_names.json
 └─ output/
    └─ transcript.md
 ```
@@ -61,6 +72,17 @@ uv run python -m summarize_meeting.processing.transcription_worker `
   --models-dir "<アプリルート/models>" `
   --cuda-runtime-dir "<アプリルート/runtime/cuda/bin>"
 ```
+
+話者分離workerだけを実行する場合:
+
+```powershell
+uv run python -m summarize_meeting.processing.diarization_worker `
+  --session "<data/meetings/セッション>" `
+  --models-dir "<アプリルート/models>" `
+  --speaker-count 2
+```
+
+話者数を自動推定する場合は`--speaker-count`を省略します。
 
 アプリ起動時に正常終了していないセッションを検出すると、復旧確認を表示します。復旧時は元の `.work` segmentを変更せず、`audio/microphone.recovered.wav` や `audio/system.recovered.wav` を新しく生成します。
 
@@ -143,3 +165,5 @@ uv run python -m summarize_meeting.devtools.validate_phase2_session `
 - [Phase 2 STTスモーク試験](../docs/PHASE2_STT_SMOKE_TEST.md)
 - [Phase 2 STT 1時間ベンチマーク](../docs/PHASE2_STT_1H_BENCHMARK.md)
 - [Phase 2 Windows実音声スモーク試験](../docs/PHASE2_REAL_AUDIO_SMOKE_TEST.md)
+- [Phase 3詳細設計](../docs/PHASE3_DETAILED_DESIGN.md)
+- [Phase 3話者分離スモーク試験](../docs/PHASE3_DIARIZATION_SMOKE_TEST.md)

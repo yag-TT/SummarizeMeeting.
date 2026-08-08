@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from summarize_meeting.application.diarization_controller import DiarizationController
 from summarize_meeting.application.recording_controller import (
     CaptureSourcesSnapshot,
     RecordingController,
@@ -42,10 +44,12 @@ class MainWindow(QMainWindow):
         controller: RecordingController,
         transcription_controller: TranscriptionController | None = None,
         session_catalog: FileSessionCatalog | None = None,
+        diarization_controller: DiarizationController | None = None,
     ) -> None:
         super().__init__()
         self._controller = controller
         self._transcription_controller = transcription_controller
+        self._diarization_controller = diarization_controller
         self._session_catalog = session_catalog or FileSessionCatalog(controller.meetings_directory)
         self._started_at: datetime | None = None
         self._session_path: Path | None = None
@@ -55,8 +59,8 @@ class MainWindow(QMainWindow):
         self._close_requested = False
         self._os_shutdown_requested = False
         self._session_error_message: str | None = None
-        self.setWindowTitle("Summarize Meeting - Phase 2 PoC")
-        self.resize(880, 620)
+        self.setWindowTitle("Summarize Meeting - Phase 3 PoC")
+        self.resize(880, 760)
 
         central = QWidget()
         root = QVBoxLayout(central)
@@ -146,6 +150,39 @@ class MainWindow(QMainWindow):
         self._transcription_progress.setVisible(False)
         root.addWidget(self._transcription_progress)
 
+        diarization = QHBoxLayout()
+        diarization.addWidget(QLabel("話者分離"))
+        self._diarization_status = QLabel("未実行")
+        diarization.addWidget(self._diarization_status)
+        diarization.addStretch(1)
+        diarization.addWidget(QLabel("話者数"))
+        self._speaker_count = QComboBox()
+        self._speaker_count.addItem("自動", None)
+        for count in range(1, 11):
+            self._speaker_count.addItem(f"{count}人", count)
+        diarization.addWidget(self._speaker_count)
+        self._diarize = QPushButton("実行")
+        self._diarize.setEnabled(False)
+        diarization.addWidget(self._diarize)
+        root.addLayout(diarization)
+        self._diarization_progress = QProgressBar()
+        self._diarization_progress.setRange(0, 100)
+        self._diarization_progress.setValue(0)
+        self._diarization_progress.setFormat("話者分離 %p%")
+        self._diarization_progress.setVisible(False)
+        root.addWidget(self._diarization_progress)
+        reset_note = QLabel("再実行すると保存済みの話者名は既定名へ戻ります。")
+        reset_note.setStyleSheet("color: #666666;")
+        root.addWidget(reset_note)
+
+        self._speaker_names_widget = QWidget()
+        self._speaker_names_layout = QFormLayout(self._speaker_names_widget)
+        self._speaker_name_inputs: dict[str, QLineEdit] = {}
+        root.addWidget(self._speaker_names_widget)
+        self._save_speaker_names = QPushButton("話者名を保存")
+        self._save_speaker_names.setVisible(False)
+        root.addWidget(self._save_speaker_names)
+
         action = QHBoxLayout()
         self._start = QPushButton("会議開始")
         self._stop = QPushButton("会議終了")
@@ -167,6 +204,8 @@ class MainWindow(QMainWindow):
         self._stop.clicked.connect(self._stop_recording)
         self._reselect.clicked.connect(self._replace_screen)
         self._transcribe.clicked.connect(self._toggle_transcription)
+        self._diarize.clicked.connect(self._toggle_diarization)
+        self._save_speaker_names.clicked.connect(self._update_speaker_names)
         self._refresh_sessions.clicked.connect(lambda: self.refresh_analysis_sessions())
         self._analysis_session.currentIndexChanged.connect(self._on_analysis_session_changed)
         self._auto_transcribe.toggled.connect(self._on_auto_transcription_toggled)
@@ -192,6 +231,12 @@ class MainWindow(QMainWindow):
             transcription_controller.job_finished.connect(self._on_transcription_finished)
             transcription_controller.job_failed.connect(self._on_transcription_failed)
             transcription_controller.job_canceled.connect(self._on_transcription_canceled)
+        if diarization_controller is not None:
+            diarization_controller.job_started.connect(self._on_diarization_started)
+            diarization_controller.job_progress.connect(self._on_diarization_progress)
+            diarization_controller.job_finished.connect(self._on_diarization_finished)
+            diarization_controller.job_failed.connect(self._on_diarization_failed)
+            diarization_controller.job_canceled.connect(self._on_diarization_canceled)
         QTimer.singleShot(0, self.refresh_sources)
         QTimer.singleShot(0, self.refresh_analysis_sessions)
 
@@ -346,6 +391,9 @@ class MainWindow(QMainWindow):
         self._screenshots.setText("保存画像 0")
         self._transcription_status.setText("未実行")
         self._transcribe.setEnabled(False)
+        self._diarization_status.setText("未実行")
+        self._diarize.setEnabled(False)
+        self._clear_speaker_names()
         self.show_information("録音デバイスを準備しています。")
 
     def _on_session_started(self, path: str) -> None:
@@ -431,6 +479,42 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.show_error(str(exc))
 
+    def _toggle_diarization(self) -> None:
+        controller = self._diarization_controller
+        if controller is None:
+            self.show_error("話者分離機能を初期化できませんでした。")
+            return
+        if controller.is_running:
+            self._diarize.setEnabled(False)
+            self._diarization_status.setText("キャンセル中")
+            controller.cancel()
+            return
+        summary = self._selected_analysis_session()
+        if summary is None:
+            self.show_error("話者分離する会議記録がありません。")
+            return
+        try:
+            controller.start(summary.path, speaker_count=self._speaker_count.currentData())
+        except Exception as exc:
+            self.show_error(str(exc))
+
+    def _update_speaker_names(self) -> None:
+        controller = self._diarization_controller
+        summary = self._selected_analysis_session()
+        if controller is None or summary is None:
+            self.show_error("話者名を保存する会議記録がありません。")
+            return
+        names = {
+            speaker_id: editor.text() for speaker_id, editor in self._speaker_name_inputs.items()
+        }
+        try:
+            output = controller.update_speaker_names(summary.path, names)
+        except Exception as exc:
+            self.show_error(str(exc))
+            return
+        self._load_speaker_names(summary.path)
+        self.show_information(f"話者名と議事録を更新しました: {output}")
+
     def _maybe_start_auto_transcription(
         self,
         session_path: Path,
@@ -508,6 +592,54 @@ class MainWindow(QMainWindow):
         self._finish_transcription_ui("キャンセル")
         self.show_information("文字起こしをキャンセルしました。")
 
+    def _on_diarization_started(self, session_path: str) -> None:
+        if not self._is_current_session(session_path):
+            return
+        self._set_inputs_enabled(False)
+        self._start.setEnabled(False)
+        self._transcribe.setEnabled(False)
+        self._diarization_status.setText("実行中")
+        self._diarize.setText("キャンセル")
+        self._diarize.setEnabled(True)
+        self._diarization_progress.setValue(0)
+        self._diarization_progress.setVisible(True)
+        self._speaker_names_widget.setEnabled(False)
+        self._save_speaker_names.setVisible(False)
+        self.show_information("PC音声から話者を分離しています。")
+
+    def _on_diarization_progress(self, percent: int, message: str) -> None:
+        self._diarization_progress.setValue(percent)
+        self._diarization_progress.setFormat(f"話者分離 %p% - {message}")
+        self.show_information(message)
+
+    def _on_diarization_finished(self, session_path: str, output_path: str) -> None:
+        if not self._is_current_session(session_path):
+            return
+        self._finish_diarization_ui("完了")
+        self.refresh_analysis_sessions(Path(session_path))
+        self.show_information(f"話者付き文字起こしを保存しました: {output_path}")
+
+    def _on_diarization_failed(self, session_path: str, message: str) -> None:
+        if not self._is_current_session(session_path):
+            return
+        self._finish_diarization_ui("失敗")
+        self.show_error(message)
+
+    def _on_diarization_canceled(self, session_path: str) -> None:
+        if not self._is_current_session(session_path):
+            return
+        self._finish_diarization_ui("キャンセル")
+        self.show_information("話者分離をキャンセルしました。")
+
+    def _finish_diarization_ui(self, status: str) -> None:
+        self._diarization_status.setText(status)
+        self._diarize.setText("再実行")
+        self._diarization_progress.setVisible(False)
+        self._speaker_names_widget.setEnabled(True)
+        self._set_inputs_enabled(True)
+        self._start.setEnabled(True)
+        self._update_analysis_availability()
+
     def _finish_transcription_ui(self, status: str) -> None:
         self._transcription_status.setText(status)
         self._transcribe.setText("再実行")
@@ -516,12 +648,28 @@ class MainWindow(QMainWindow):
         self._set_inputs_enabled(True)
         self._start.setEnabled(True)
 
-    def _update_transcription_availability(self) -> None:
+    def _update_analysis_availability(self) -> None:
         summary = self._selected_analysis_session()
         if self._transcription_controller is None or summary is None:
             self._transcribe.setEnabled(False)
-            return
-        self._transcribe.setEnabled(summary.can_transcribe)
+        else:
+            self._transcribe.setEnabled(
+                summary.can_transcribe
+                and not (
+                    self._diarization_controller is not None
+                    and self._diarization_controller.is_running
+                )
+            )
+        if self._diarization_controller is None or summary is None:
+            self._diarize.setEnabled(False)
+        else:
+            self._diarize.setEnabled(
+                summary.can_diarize
+                and not (
+                    self._transcription_controller is not None
+                    and self._transcription_controller.is_running
+                )
+            )
 
     def _is_current_session(self, value: str) -> bool:
         summary = self._selected_analysis_session()
@@ -555,6 +703,10 @@ class MainWindow(QMainWindow):
             self._transcription_status.setText("対象なし")
             self._transcribe.setText("実行")
             self._transcribe.setEnabled(False)
+            self._diarization_status.setText("対象なし")
+            self._diarize.setText("実行")
+            self._diarize.setEnabled(False)
+            self._clear_speaker_names()
             return
         status = {
             "SUCCEEDED": "完了",
@@ -569,7 +721,42 @@ class MainWindow(QMainWindow):
         self._transcribe.setText(
             "再実行" if summary.transcription_status != "NOT_STARTED" else "実行"
         )
-        self._update_transcription_availability()
+        diarization_status = {
+            "SUCCEEDED": "完了",
+            "NOT_STARTED": "未実行",
+            "UNKNOWN": "状態不明",
+            "FAILED": "失敗",
+            "CANCELED": "キャンセル",
+            "RUNNING": "前回中断",
+        }.get(summary.diarization_status, summary.diarization_status)
+        self._diarization_status.setText(diarization_status)
+        self._diarize.setText("再実行" if summary.diarization_status != "NOT_STARTED" else "実行")
+        self._load_speaker_names(summary.path)
+        self._update_analysis_availability()
+
+    def _clear_speaker_names(self) -> None:
+        while self._speaker_names_layout.rowCount():
+            self._speaker_names_layout.removeRow(0)
+        self._speaker_name_inputs.clear()
+        self._save_speaker_names.setVisible(False)
+
+    def _load_speaker_names(self, session_path: Path) -> None:
+        self._clear_speaker_names()
+        path = session_path / "analysis" / "speaker_names.json"
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        names = value.get("names") if isinstance(value, dict) else None
+        if not isinstance(names, dict):
+            return
+        for speaker_id, name in names.items():
+            if not isinstance(speaker_id, str) or not isinstance(name, str):
+                continue
+            editor = QLineEdit(name)
+            self._speaker_name_inputs[speaker_id] = editor
+            self._speaker_names_layout.addRow(speaker_id, editor)
+        self._save_speaker_names.setVisible(bool(self._speaker_name_inputs))
 
     def _selected_analysis_session(self) -> SessionSummary | None:
         value = self._analysis_session.currentData()
@@ -613,6 +800,9 @@ class MainWindow(QMainWindow):
         self._analysis_session.setEnabled(enabled)
         self._refresh_sessions.setEnabled(enabled)
         self._auto_transcribe.setEnabled(enabled)
+        self._speaker_count.setEnabled(enabled)
+        self._speaker_names_widget.setEnabled(enabled)
+        self._save_speaker_names.setEnabled(enabled)
 
     def show_information(self, message: str) -> None:
         self._message.setText(message)
@@ -669,6 +859,8 @@ class MainWindow(QMainWindow):
             self.show_information("Windowsの終了に備えて記録を保存しています。")
         if self._transcription_controller is not None:
             self._transcription_controller.cancel()
+        if self._diarization_controller is not None:
+            self._diarization_controller.cancel()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         if self._controller.is_recording:
@@ -697,4 +889,6 @@ class MainWindow(QMainWindow):
             return
         if self._transcription_controller is not None:
             self._transcription_controller.cancel()
+        if self._diarization_controller is not None:
+            self._diarization_controller.cancel()
         event.accept()

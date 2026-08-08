@@ -14,6 +14,8 @@ class SessionSummary:
     recording_status: str
     transcription_status: str
     can_transcribe: bool
+    diarization_status: str
+    can_diarize: bool
 
     @property
     def display_label(self) -> str:
@@ -50,9 +52,19 @@ class FileSessionCatalog:
             started_at = _non_empty_string(metadata.get("started_at"))
             recording_status = _non_empty_string(metadata.get("status")) or "UNKNOWN"
             transcription_status = _transcription_status(directory)
+            diarization_status = _analysis_status(
+                directory,
+                job="diarization",
+                result_name="diarization.json",
+            )
             audio_directory = directory / "audio"
             can_transcribe = (audio_directory / "manifest.json").is_file() and any(
                 audio_directory.glob("*.wav")
+            )
+            can_diarize = (
+                recording_status == "RECORDED"
+                and transcription_status == "SUCCEEDED"
+                and _has_system_audio(directory)
             )
             summary = SessionSummary(
                 path=directory.resolve(),
@@ -61,6 +73,8 @@ class FileSessionCatalog:
                 recording_status=recording_status,
                 transcription_status=transcription_status,
                 can_transcribe=can_transcribe,
+                diarization_status=diarization_status,
+                can_diarize=can_diarize,
             )
             summaries.append((_sort_timestamp(directory, started_at), summary))
         summaries.sort(key=lambda value: (value[0], value[1].path.name), reverse=True)
@@ -87,6 +101,45 @@ def _transcription_status(directory: Path) -> str:
             if status is not None:
                 return status
     return "UNKNOWN" if result_exists else "NOT_STARTED"
+
+
+def _analysis_status(directory: Path, *, job: str, result_name: str) -> str:
+    result = _read_object(directory / "analysis" / result_name)
+    result_exists = (directory / "analysis" / result_name).is_file()
+    status = _non_empty_string(result.get("status"))
+    if status is not None:
+        return status
+    jobs = _read_object(directory / "analysis" / "jobs.json").get("jobs")
+    if isinstance(jobs, dict):
+        state = jobs.get(job)
+        if isinstance(state, dict):
+            status = _non_empty_string(state.get("status"))
+            if status is not None:
+                return status
+    return "UNKNOWN" if result_exists else "NOT_STARTED"
+
+
+def _has_system_audio(directory: Path) -> bool:
+    manifest = _read_object(directory / "audio" / "manifest.json")
+    tracks = manifest.get("tracks")
+    if not isinstance(tracks, dict):
+        return False
+    track = tracks.get("system_audio") or tracks.get("system")
+    if not isinstance(track, dict):
+        return False
+    value = track.get("file")
+    if not isinstance(value, str) or not value:
+        return False
+    relative = Path(value)
+    if relative.is_absolute():
+        return False
+    if relative.parts == (relative.name,):
+        audio_path = directory / "audio" / relative
+    elif relative.parts == ("audio", relative.name):
+        audio_path = directory / relative
+    else:
+        return False
+    return audio_path.is_file()
 
 
 def _read_object(path: Path) -> dict[str, object]:
