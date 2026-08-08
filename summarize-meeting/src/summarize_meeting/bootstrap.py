@@ -38,9 +38,8 @@ def main() -> int:
         QMessageBox.critical(None, "起動できません", str(exc))
         return 1
 
-    instance_lock = QLockFile(str(paths.lock_file))
-    instance_lock.setStaleLockTime(10_000)
-    if not instance_lock.tryLock(0):
+    instance_lock = _acquire_instance_lock(paths)
+    if instance_lock is None:
         QMessageBox.warning(
             None,
             "既に起動しています",
@@ -72,10 +71,18 @@ def main() -> int:
     QTimer.singleShot(0, lambda: _offer_recovery(window, recovery_controller))
     if settings_result.error:
         QTimer.singleShot(100, lambda: _show_settings_fallback(window, settings_result))
-    exit_code = app.exec()
+    try:
+        exit_code = app.exec()
+    finally:
+        instance_lock.unlock()
     logging.getLogger(__name__).info("Application stopped exit_code=%s", exit_code)
-    instance_lock.unlock()
     return exit_code
+
+
+def _acquire_instance_lock(paths: PortableAppPaths) -> QLockFile | None:
+    instance_lock = QLockFile(str(paths.lock_file))
+    instance_lock.setStaleLockTime(10_000)
+    return instance_lock if instance_lock.tryLock(0) else None
 
 
 def _offer_recovery(window: MainWindow, controller: RecoveryController) -> None:

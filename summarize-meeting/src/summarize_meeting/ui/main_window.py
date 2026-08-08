@@ -43,10 +43,14 @@ class MainWindow(QMainWindow):
         self._microphone = QComboBox()
         self._system_audio = QComboBox()
         self._screen_target = QComboBox()
+        self._save_path = QLineEdit(str(controller.meetings_directory))
+        self._save_path.setReadOnly(True)
+        self._save_path.setToolTip(str(controller.meetings_directory))
         form.addRow("会議名", self._title)
         form.addRow("マイク", self._microphone)
         form.addRow("PC音声", self._system_audio)
         form.addRow("取得画面", self._screen_target)
+        form.addRow("保存先", self._save_path)
         root.addLayout(form)
 
         selector_buttons = QHBoxLayout()
@@ -211,6 +215,7 @@ class MainWindow(QMainWindow):
 
     def _on_session_preparing(self, path: str) -> None:
         self._session_path = Path(path)
+        self._show_save_path(self._session_path)
         self._started_at = None
         self._timer.stop()
         self._set_inputs_enabled(False)
@@ -222,6 +227,7 @@ class MainWindow(QMainWindow):
 
     def _on_session_started(self, path: str) -> None:
         self._session_path = Path(path)
+        self._show_save_path(self._session_path)
         self._started_at = datetime.now()
         self._timer.start()
         self._set_inputs_enabled(False)
@@ -234,6 +240,8 @@ class MainWindow(QMainWindow):
         self.show_information(f"記録中: {path}")
 
     def _on_session_finished(self, path: str) -> None:
+        self._session_path = Path(path)
+        self._show_save_path(self._session_path)
         self._reset_after_session()
         self.show_information(f"記録を保存しました: {path}")
         self._close_if_requested()
@@ -250,12 +258,14 @@ class MainWindow(QMainWindow):
 
     def _on_session_start_failed(self, path: str, message: str) -> None:
         self._session_path = Path(path)
+        self._show_save_path(self._session_path)
         self._reset_after_session()
         self.show_error(message)
         self._close_if_requested()
 
     def _on_session_start_cancelled(self, path: str) -> None:
         self._session_path = Path(path)
+        self._show_save_path(self._session_path)
         self._reset_after_session()
         self.show_information("録音の開始をキャンセルしました。")
         self._close_if_requested()
@@ -322,6 +332,11 @@ class MainWindow(QMainWindow):
     def _current_screen_id(self) -> str | None:
         value = self._screen_target.currentData()
         return value.id if isinstance(value, ScreenTarget) else None
+
+    def _show_save_path(self, path: Path) -> None:
+        value = str(path)
+        self._save_path.setText(value)
+        self._save_path.setToolTip(value)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         if self._controller.is_recording:

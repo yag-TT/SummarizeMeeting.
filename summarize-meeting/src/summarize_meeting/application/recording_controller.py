@@ -102,6 +102,10 @@ class RecordingController(QObject):
         return self._settings.last_system_device_id
 
     @property
+    def meetings_directory(self) -> Path:
+        return self._app_paths.meetings_dir
+
+    @property
     def is_recording(self) -> bool:
         with self._lock:
             return self._session is not None and self._session.status in {

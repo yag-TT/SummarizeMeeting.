@@ -33,6 +33,7 @@ class _UiController(QObject):
         super().__init__()
         self.last_microphone_device_id = microphone_id
         self.last_system_device_id = system_id
+        self.meetings_directory = Path("C:/portable/data/meetings")
         self.is_recording = False
 
     def list_input_devices(self):
@@ -56,6 +57,23 @@ def test_ui_restores_devices_by_saved_id(qapp: QApplication) -> None:
 
     assert window._microphone.currentData().id == "mic-2"  # noqa: SLF001
     assert window._system_audio.currentData().id == "system-1"  # noqa: SLF001
+    window.close()
+
+
+def test_ui_shows_meetings_directory_then_actual_session_path(
+    qapp: QApplication,
+) -> None:
+    controller = _UiController(microphone_id=None, system_id=None)
+    window = MainWindow(controller)  # type: ignore[arg-type]
+
+    assert window._save_path.text() == str(controller.meetings_directory)  # noqa: SLF001
+
+    window._on_session_preparing("C:/portable/data/meetings/session-001")  # noqa: SLF001
+
+    assert window._save_path.text() == str(  # noqa: SLF001
+        Path("C:/portable/data/meetings/session-001")
+    )
+    assert window._save_path.toolTip() == window._save_path.text()  # noqa: SLF001
     window.close()
 
 
