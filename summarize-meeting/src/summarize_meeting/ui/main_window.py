@@ -27,6 +27,9 @@ from summarize_meeting.application.recording_controller import (
     CaptureSourcesSnapshot,
     RecordingController,
 )
+from summarize_meeting.application.screen_analysis_controller import (
+    ScreenAnalysisController,
+)
 from summarize_meeting.application.transcription_controller import TranscriptionController
 from summarize_meeting.domain.capture import AudioDevice, ScreenTarget
 from summarize_meeting.infrastructure.session_catalog import (
@@ -45,11 +48,13 @@ class MainWindow(QMainWindow):
         transcription_controller: TranscriptionController | None = None,
         session_catalog: FileSessionCatalog | None = None,
         diarization_controller: DiarizationController | None = None,
+        screen_analysis_controller: ScreenAnalysisController | None = None,
     ) -> None:
         super().__init__()
         self._controller = controller
         self._transcription_controller = transcription_controller
         self._diarization_controller = diarization_controller
+        self._screen_analysis_controller = screen_analysis_controller
         self._session_catalog = session_catalog or FileSessionCatalog(controller.meetings_directory)
         self._started_at: datetime | None = None
         self._session_path: Path | None = None
@@ -59,8 +64,8 @@ class MainWindow(QMainWindow):
         self._close_requested = False
         self._os_shutdown_requested = False
         self._session_error_message: str | None = None
-        self.setWindowTitle("Summarize Meeting - Phase 3 PoC")
-        self.resize(880, 760)
+        self.setWindowTitle("Summarize Meeting - Phase 4 PoC")
+        self.resize(880, 830)
 
         central = QWidget()
         root = QVBoxLayout(central)
@@ -183,6 +188,22 @@ class MainWindow(QMainWindow):
         self._save_speaker_names.setVisible(False)
         root.addWidget(self._save_speaker_names)
 
+        screen_analysis = QHBoxLayout()
+        screen_analysis.addWidget(QLabel("画面解析"))
+        self._screen_analysis_status = QLabel("未実行")
+        screen_analysis.addWidget(self._screen_analysis_status)
+        screen_analysis.addStretch(1)
+        self._analyze_screens = QPushButton("実行")
+        self._analyze_screens.setEnabled(False)
+        screen_analysis.addWidget(self._analyze_screens)
+        root.addLayout(screen_analysis)
+        self._screen_analysis_progress = QProgressBar()
+        self._screen_analysis_progress.setRange(0, 100)
+        self._screen_analysis_progress.setValue(0)
+        self._screen_analysis_progress.setFormat("画面解析 %p%")
+        self._screen_analysis_progress.setVisible(False)
+        root.addWidget(self._screen_analysis_progress)
+
         action = QHBoxLayout()
         self._start = QPushButton("会議開始")
         self._stop = QPushButton("会議終了")
@@ -206,6 +227,7 @@ class MainWindow(QMainWindow):
         self._transcribe.clicked.connect(self._toggle_transcription)
         self._diarize.clicked.connect(self._toggle_diarization)
         self._save_speaker_names.clicked.connect(self._update_speaker_names)
+        self._analyze_screens.clicked.connect(self._toggle_screen_analysis)
         self._refresh_sessions.clicked.connect(lambda: self.refresh_analysis_sessions())
         self._analysis_session.currentIndexChanged.connect(self._on_analysis_session_changed)
         self._auto_transcribe.toggled.connect(self._on_auto_transcription_toggled)
@@ -237,6 +259,12 @@ class MainWindow(QMainWindow):
             diarization_controller.job_finished.connect(self._on_diarization_finished)
             diarization_controller.job_failed.connect(self._on_diarization_failed)
             diarization_controller.job_canceled.connect(self._on_diarization_canceled)
+        if screen_analysis_controller is not None:
+            screen_analysis_controller.job_started.connect(self._on_screen_analysis_started)
+            screen_analysis_controller.job_progress.connect(self._on_screen_analysis_progress)
+            screen_analysis_controller.job_finished.connect(self._on_screen_analysis_finished)
+            screen_analysis_controller.job_failed.connect(self._on_screen_analysis_failed)
+            screen_analysis_controller.job_canceled.connect(self._on_screen_analysis_canceled)
         QTimer.singleShot(0, self.refresh_sources)
         QTimer.singleShot(0, self.refresh_analysis_sessions)
 
@@ -393,6 +421,8 @@ class MainWindow(QMainWindow):
         self._transcribe.setEnabled(False)
         self._diarization_status.setText("未実行")
         self._diarize.setEnabled(False)
+        self._screen_analysis_status.setText("未実行")
+        self._analyze_screens.setEnabled(False)
         self._clear_speaker_names()
         self.show_information("録音デバイスを準備しています。")
 
@@ -498,6 +528,25 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.show_error(str(exc))
 
+    def _toggle_screen_analysis(self) -> None:
+        controller = self._screen_analysis_controller
+        if controller is None:
+            self.show_error("画面解析機能を初期化できませんでした。")
+            return
+        if controller.is_running:
+            self._analyze_screens.setEnabled(False)
+            self._screen_analysis_status.setText("キャンセル中")
+            controller.cancel()
+            return
+        summary = self._selected_analysis_session()
+        if summary is None:
+            self.show_error("画面解析する会議記録がありません。")
+            return
+        try:
+            controller.start(summary.path)
+        except Exception as exc:
+            self.show_error(str(exc))
+
     def _update_speaker_names(self) -> None:
         controller = self._diarization_controller
         summary = self._selected_analysis_session()
@@ -562,6 +611,8 @@ class MainWindow(QMainWindow):
         self._transcription_status.setText("実行中")
         self._transcribe.setText("キャンセル")
         self._transcribe.setEnabled(True)
+        self._diarize.setEnabled(False)
+        self._analyze_screens.setEnabled(False)
         self._transcription_progress.setValue(0)
         self._transcription_progress.setVisible(True)
         self.show_information(
@@ -598,6 +649,7 @@ class MainWindow(QMainWindow):
         self._set_inputs_enabled(False)
         self._start.setEnabled(False)
         self._transcribe.setEnabled(False)
+        self._analyze_screens.setEnabled(False)
         self._diarization_status.setText("実行中")
         self._diarize.setText("キャンセル")
         self._diarize.setEnabled(True)
@@ -631,6 +683,52 @@ class MainWindow(QMainWindow):
         self._finish_diarization_ui("キャンセル")
         self.show_information("話者分離をキャンセルしました。")
 
+    def _on_screen_analysis_started(self, session_path: str) -> None:
+        if not self._is_current_session(session_path):
+            return
+        self._set_inputs_enabled(False)
+        self._start.setEnabled(False)
+        self._transcribe.setEnabled(False)
+        self._diarize.setEnabled(False)
+        self._screen_analysis_status.setText("実行中")
+        self._analyze_screens.setText("キャンセル")
+        self._analyze_screens.setEnabled(True)
+        self._screen_analysis_progress.setValue(0)
+        self._screen_analysis_progress.setVisible(True)
+        self.show_information("保存済みスクリーンショットを解析しています。")
+
+    def _on_screen_analysis_progress(self, percent: int, message: str) -> None:
+        self._screen_analysis_progress.setValue(percent)
+        self._screen_analysis_progress.setFormat(f"画面解析 %p% - {message}")
+        self.show_information(message)
+
+    def _on_screen_analysis_finished(self, session_path: str, output_path: str) -> None:
+        if not self._is_current_session(session_path):
+            return
+        self._finish_screen_analysis_ui("完了")
+        self.refresh_analysis_sessions(Path(session_path))
+        self.show_information(f"画面解析結果を保存しました: {output_path}")
+
+    def _on_screen_analysis_failed(self, session_path: str, message: str) -> None:
+        if not self._is_current_session(session_path):
+            return
+        self._finish_screen_analysis_ui("失敗")
+        self.show_error(message)
+
+    def _on_screen_analysis_canceled(self, session_path: str) -> None:
+        if not self._is_current_session(session_path):
+            return
+        self._finish_screen_analysis_ui("キャンセル")
+        self.show_information("画面解析をキャンセルしました。")
+
+    def _finish_screen_analysis_ui(self, status: str) -> None:
+        self._screen_analysis_status.setText(status)
+        self._analyze_screens.setText("再実行")
+        self._screen_analysis_progress.setVisible(False)
+        self._set_inputs_enabled(True)
+        self._start.setEnabled(True)
+        self._update_analysis_availability()
+
     def _finish_diarization_ui(self, status: str) -> None:
         self._diarization_status.setText(status)
         self._diarize.setText("再実行")
@@ -647,6 +745,7 @@ class MainWindow(QMainWindow):
         self._transcription_progress.setVisible(False)
         self._set_inputs_enabled(True)
         self._start.setEnabled(True)
+        self._update_analysis_availability()
 
     def _update_analysis_availability(self) -> None:
         summary = self._selected_analysis_session()
@@ -659,6 +758,10 @@ class MainWindow(QMainWindow):
                     self._diarization_controller is not None
                     and self._diarization_controller.is_running
                 )
+                and not (
+                    self._screen_analysis_controller is not None
+                    and self._screen_analysis_controller.is_running
+                )
             )
         if self._diarization_controller is None or summary is None:
             self._diarize.setEnabled(False)
@@ -668,6 +771,24 @@ class MainWindow(QMainWindow):
                 and not (
                     self._transcription_controller is not None
                     and self._transcription_controller.is_running
+                )
+                and not (
+                    self._screen_analysis_controller is not None
+                    and self._screen_analysis_controller.is_running
+                )
+            )
+        if self._screen_analysis_controller is None or summary is None:
+            self._analyze_screens.setEnabled(False)
+        else:
+            self._analyze_screens.setEnabled(
+                summary.can_analyze_screens
+                and not (
+                    self._transcription_controller is not None
+                    and self._transcription_controller.is_running
+                )
+                and not (
+                    self._diarization_controller is not None
+                    and self._diarization_controller.is_running
                 )
             )
 
@@ -706,6 +827,9 @@ class MainWindow(QMainWindow):
             self._diarization_status.setText("対象なし")
             self._diarize.setText("実行")
             self._diarize.setEnabled(False)
+            self._screen_analysis_status.setText("対象なし")
+            self._analyze_screens.setText("実行")
+            self._analyze_screens.setEnabled(False)
             self._clear_speaker_names()
             return
         status = {
@@ -731,6 +855,18 @@ class MainWindow(QMainWindow):
         }.get(summary.diarization_status, summary.diarization_status)
         self._diarization_status.setText(diarization_status)
         self._diarize.setText("再実行" if summary.diarization_status != "NOT_STARTED" else "実行")
+        screen_analysis_status = {
+            "SUCCEEDED": "完了",
+            "NOT_STARTED": "未実行",
+            "UNKNOWN": "状態不明",
+            "FAILED": "失敗",
+            "CANCELED": "キャンセル",
+            "RUNNING": "前回中断",
+        }.get(summary.screen_analysis_status, summary.screen_analysis_status)
+        self._screen_analysis_status.setText(screen_analysis_status)
+        self._analyze_screens.setText(
+            "再実行" if summary.screen_analysis_status != "NOT_STARTED" else "実行"
+        )
         self._load_speaker_names(summary.path)
         self._update_analysis_availability()
 
@@ -861,6 +997,8 @@ class MainWindow(QMainWindow):
             self._transcription_controller.cancel()
         if self._diarization_controller is not None:
             self._diarization_controller.cancel()
+        if self._screen_analysis_controller is not None:
+            self._screen_analysis_controller.cancel()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         if self._controller.is_recording:
@@ -891,4 +1029,6 @@ class MainWindow(QMainWindow):
             self._transcription_controller.cancel()
         if self._diarization_controller is not None:
             self._diarization_controller.cancel()
+        if self._screen_analysis_controller is not None:
+            self._screen_analysis_controller.cancel()
         event.accept()

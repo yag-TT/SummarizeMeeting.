@@ -127,6 +127,25 @@ class _UiDiarizationController(QObject):
         return path / "output" / "transcript.md"
 
 
+class _UiScreenAnalysisController(QObject):
+    job_started = Signal(str)
+    job_progress = Signal(int, str)
+    job_finished = Signal(str, str)
+    job_failed = Signal(str, str)
+    job_canceled = Signal(str)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.is_running = False
+        self.started_paths: list[Path] = []
+
+    def start(self, path: Path) -> None:
+        self.started_paths.append(path)
+
+    def cancel(self) -> None:
+        self.is_running = False
+
+
 def _create_recorded_session(root: Path, name: str = "session") -> Path:
     session = root / name
     audio = session / "audio"
@@ -247,6 +266,34 @@ def test_ui_starts_diarization_and_updates_speaker_names(
 
     assert diarization.started == [(session.resolve(), 2)]
     assert diarization.updated_names == [{"speaker_01": "田中"}]
+    window.close()
+
+
+def test_ui_starts_screen_analysis(qapp: QApplication, tmp_path: Path) -> None:
+    session = _create_recorded_session(tmp_path)
+    screenshots = session / "screenshots"
+    screenshots.mkdir()
+    (screenshots / "events.jsonl").write_text(
+        '{"sequence":1,"file":"000001.png"}\n', encoding="utf-8"
+    )
+    (screenshots / "000001.png").write_bytes(b"image")
+    recording = _UiController(microphone_id=None, system_id=None)
+    recording.meetings_directory = tmp_path
+    transcription = _UiTranscriptionController()
+    diarization = _UiDiarizationController()
+    screen_analysis = _UiScreenAnalysisController()
+    window = MainWindow(  # type: ignore[arg-type]
+        recording,
+        transcription,  # type: ignore[arg-type]
+        FileSessionCatalog(tmp_path),
+        diarization,  # type: ignore[arg-type]
+        screen_analysis,  # type: ignore[arg-type]
+    )
+
+    window.refresh_analysis_sessions()
+    window._toggle_screen_analysis()  # noqa: SLF001
+
+    assert screen_analysis.started_paths == [session.resolve()]
     window.close()
 
 

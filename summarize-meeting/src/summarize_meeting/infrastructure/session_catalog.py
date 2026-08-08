@@ -16,6 +16,8 @@ class SessionSummary:
     can_transcribe: bool
     diarization_status: str
     can_diarize: bool
+    screen_analysis_status: str
+    can_analyze_screens: bool
 
     @property
     def display_label(self) -> str:
@@ -57,6 +59,11 @@ class FileSessionCatalog:
                 job="diarization",
                 result_name="diarization.json",
             )
+            screen_analysis_status = _analysis_status(
+                directory,
+                job="screen_analysis",
+                result_name="screens.json",
+            )
             audio_directory = directory / "audio"
             can_transcribe = (audio_directory / "manifest.json").is_file() and any(
                 audio_directory.glob("*.wav")
@@ -66,6 +73,7 @@ class FileSessionCatalog:
                 and transcription_status == "SUCCEEDED"
                 and _has_system_audio(directory)
             )
+            can_analyze_screens = recording_status == "RECORDED" and _has_screenshots(directory)
             summary = SessionSummary(
                 path=directory.resolve(),
                 title=title,
@@ -75,6 +83,8 @@ class FileSessionCatalog:
                 can_transcribe=can_transcribe,
                 diarization_status=diarization_status,
                 can_diarize=can_diarize,
+                screen_analysis_status=screen_analysis_status,
+                can_analyze_screens=can_analyze_screens,
             )
             summaries.append((_sort_timestamp(directory, started_at), summary))
         summaries.sort(key=lambda value: (value[0], value[1].path.name), reverse=True)
@@ -140,6 +150,25 @@ def _has_system_audio(directory: Path) -> bool:
     else:
         return False
     return audio_path.is_file()
+
+
+def _has_screenshots(directory: Path) -> bool:
+    screenshots = directory / "screenshots"
+    events = screenshots / "events.jsonl"
+    if not events.is_file():
+        return False
+    try:
+        if not any(line.strip() for line in events.read_text(encoding="utf-8").splitlines()):
+            return False
+    except OSError:
+        return False
+    try:
+        return any(
+            path.is_file() and path.suffix.casefold() in {".png", ".jpg", ".jpeg", ".webp"}
+            for path in screenshots.iterdir()
+        )
+    except OSError:
+        return False
 
 
 def _read_object(path: Path) -> dict[str, object]:

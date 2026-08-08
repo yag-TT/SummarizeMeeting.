@@ -146,3 +146,26 @@ def test_catalog_enables_diarization_for_transcribed_system_audio(tmp_path: Path
 
     assert value.can_diarize
     assert value.diarization_status == "FAILED"
+
+
+def test_catalog_enables_screen_analysis_for_recorded_images(tmp_path: Path) -> None:
+    session = _session(
+        tmp_path,
+        "screens",
+        title="画面解析会議",
+        started_at="2026-08-08T10:00:00+09:00",
+    )
+    screenshots = session / "screenshots"
+    screenshots.mkdir()
+    (screenshots / "events.jsonl").write_text(
+        '{"sequence":1,"file":"000001.png"}\n', encoding="utf-8"
+    )
+    (screenshots / "000001.png").write_bytes(b"image")
+    (session / "analysis" / "jobs.json").write_text(
+        '{"jobs":{"screen_analysis":{"status":"FAILED"}}}', encoding="utf-8"
+    )
+
+    value = FileSessionCatalog(tmp_path).scan()[0]
+
+    assert value.can_analyze_screens
+    assert value.screen_analysis_status == "FAILED"

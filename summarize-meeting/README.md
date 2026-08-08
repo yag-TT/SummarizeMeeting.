@@ -2,7 +2,7 @@
 
 Teams、Google Meetなどのオンライン会議について、マイク音声、PC再生音声、選択したウィンドウの重要な画面変更をローカル保存し、会議終了後に議事録を生成するデスクトップアプリケーションです。
 
-Phase 3「話者分離」の正常系PoCまで実装しています。Phase 1の記録、Phase 2のfaster-whisper文字起こしに加え、PC音声をsherpa-onnxで話者分離し、話者付き全文を生成できます。画面理解と議事録要約はまだ実装していません。
+Phase 4「画面解析」の正常系PoCまで実装しています。Phase 1の記録、Phase 2のfaster-whisper文字起こし、Phase 3の話者分離に加え、保存済みスクリーンショットをWindows 11内蔵OCRで解析し、timestamp付き画面情報を生成できます。統合議事録の要約はまだ実装していません。
 
 ## 開発環境
 
@@ -27,6 +27,8 @@ uv run summarize-meeting
 文字起こしJobの開始・成功・失敗・キャンセルは`analysis/jobs.json`へatomic保存します。実行中にアプリが終了して`RUNNING`が残った場合、次回起動時は「前回中断」として表示し、再実行できます。
 
 文字起こし完了後は「話者分離」から話者数を`自動`または`1人`〜`10人`で選び、PC音声の話者を分離できます。マイク発話は`自分`、PC音声は`Speaker 1`などで表示されます。完了後に話者名を編集して保存すると、話者付きJSONと`transcript.md`を推論なしで再生成します。
+
+録音済みセッションにスクリーンショットがある場合は「画面解析」を実行できます。Windows 11の日本語OCR言語パックを使用し、画像、OCR結果、画面種別、タイトル候補、重要行を外部サービスへ送信せず`analysis/screens.json`へ保存します。
 
 初回は固定URLとSHA-256検証付きスクリプトで、CPU話者分離モデルを`models/sherpa-onnx/diarization/`へ配置します。
 
@@ -59,7 +61,8 @@ data/meetings/<session>/
 │  ├─ transcription.json
 │  ├─ diarization.json
 │  ├─ diarized_transcription.json
-│  └─ speaker_names.json
+│  ├─ speaker_names.json
+│  └─ screens.json
 └─ output/
    └─ transcript.md
 ```
@@ -83,6 +86,16 @@ uv run python -m summarize_meeting.processing.diarization_worker `
 ```
 
 話者数を自動推定する場合は`--speaker-count`を省略します。
+
+画面解析workerだけを実行する場合:
+
+```powershell
+uv run python -m summarize_meeting.processing.screen_analysis_worker `
+  --session "<data/meetings/セッション>" `
+  --language ja
+```
+
+日本語OCR言語パックがWindowsにない場合は、Windowsの言語設定から追加して再実行します。
 
 アプリ起動時に正常終了していないセッションを検出すると、復旧確認を表示します。復旧時は元の `.work` segmentを変更せず、`audio/microphone.recovered.wav` や `audio/system.recovered.wav` を新しく生成します。
 
@@ -167,3 +180,5 @@ uv run python -m summarize_meeting.devtools.validate_phase2_session `
 - [Phase 2 Windows実音声スモーク試験](../docs/PHASE2_REAL_AUDIO_SMOKE_TEST.md)
 - [Phase 3詳細設計](../docs/PHASE3_DETAILED_DESIGN.md)
 - [Phase 3話者分離スモーク試験](../docs/PHASE3_DIARIZATION_SMOKE_TEST.md)
+- [Phase 4詳細設計](../docs/PHASE4_DETAILED_DESIGN.md)
+- [Phase 4 Windows画面解析スモーク試験](../docs/PHASE4_SCREEN_ANALYSIS_SMOKE_TEST.md)

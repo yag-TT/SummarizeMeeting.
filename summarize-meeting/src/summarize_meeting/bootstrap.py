@@ -14,6 +14,9 @@ from summarize_meeting.application.recovery_service import (
     RecoveryController,
     SessionRecoveryService,
 )
+from summarize_meeting.application.screen_analysis_controller import (
+    ScreenAnalysisController,
+)
 from summarize_meeting.application.transcription_controller import TranscriptionController
 from summarize_meeting.infrastructure.paths import AppRootNotWritableError, PortableAppPaths
 from summarize_meeting.infrastructure.settings import FileSettingsRepository, SettingsLoadResult
@@ -75,10 +78,12 @@ def main() -> int:
     )
     transcription_controller = TranscriptionController(paths)
     diarization_controller = DiarizationController(paths)
+    screen_analysis_controller = ScreenAnalysisController(paths)
     window = MainWindow(
         controller,
         transcription_controller,
         diarization_controller=diarization_controller,
+        screen_analysis_controller=screen_analysis_controller,
     )
     recovery_controller = RecoveryController(SessionRecoveryService(paths.meetings_dir))
     recovery_controller.progress.connect(window.show_information)

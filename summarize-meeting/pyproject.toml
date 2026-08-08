@@ -16,6 +16,8 @@ dependencies = [
     "soundcard>=0.4.6",
     "sounddevice>=0.5.5",
     "winrt-windows-foundation>=3.2.1",
+    "winrt-windows-foundation-collections>=3.2.1,<4",
+    "winrt-windows-globalization>=3.2.1,<4",
     "winrt-windows-graphics>=3.2.1",
     "winrt-windows-graphics-capture>=3.2.1",
     "winrt-windows-graphics-capture-interop>=3.2.1",
@@ -23,6 +25,7 @@ dependencies = [
     "winrt-windows-graphics-directx-direct3d11>=3.2.1",
     "winrt-windows-graphics-directx-direct3d11-interop>=3.2.1",
     "winrt-windows-graphics-imaging>=3.2.1",
+    "winrt-windows-media-ocr>=3.2.1,<4",
     "winrt-windows-storage-streams>=3.2.1",
 ]
 
