@@ -812,6 +812,8 @@ SupervisorはWorker内部のCapture APIを直接操作せず、start/stop契約�
 - Audio Writerのqueue drain: 30秒
 - WAV統合: ファイルサイズ依存のため固定timeoutを設けず、進捗表示する
 
+Capture停止とqueue drainは個別のtimeoutとして扱う。queue drainが30秒を超えた場合はWriterを別threadから強制closeせず、Sessionを `INTERRUPTED` として `.work/<track>/` のsegmentとmanifestを保持し、次回起動時の復旧対象にする。PREPARINGのキャンセル処理だけは、開始待ちを長引かせないため明示した共通timeoutを両方へ適用できる。
+
 停止開始から最終保存まで、Controllerはセッション全体の進捗を0〜100%の単調増加値としてUIへ通知する。画面停止、各音声のCapture停止、queue drain、segment統合、最終WAV検証、一時ファイル整理、manifest保存、Session保存を段階名として併記する。2つの音声trackがある場合はそれぞれに進捗範囲を割り当てる。Writerが通知する実処理量はPCM frame数を基準とし、進捗通知先の例外や表示失敗によって音声保存を失敗させない。失敗したComponentがあっても残りの確定処理を続け、最終的に100%を通知してから完了イベントへ遷移する。
 
 録音中にユーザーがアプリウィンドウを閉じた場合は、「録音を終了してアプリを閉じますか？」という確認を表示する。キャンセル時は録音を継続する。確認後の終了、またはOS終了要求を受けた場合は同じ停止処理を通す。OS終了時には確認ダイアログを表示せずbest-effortでfinalizeする。強制終了しかできない状態ではセッションを `INTERRUPTED` として残す。

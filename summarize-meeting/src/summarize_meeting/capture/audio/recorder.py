@@ -152,21 +152,36 @@ class AudioTrackRecorder:
         if self._complete_startup_failure(error_code, message, error):
             self._notify_exception(error_code, error)
 
-    def finish(self, timeout: float = 15.0) -> AudioTrackStats | None:
+    def finish(
+        self,
+        timeout: float | None = None,
+        *,
+        capture_timeout: float = 5.0,
+        writer_timeout: float = 30.0,
+    ) -> AudioTrackStats | None:
+        if timeout is not None:
+            capture_timeout = timeout
+            writer_timeout = timeout
+        if capture_timeout <= 0 or writer_timeout <= 0:
+            raise ValueError("audio stop timeouts must be positive")
         if not self._failed.is_set():
             self._state_callback(ComponentStatus.STOPPING, None, None)
         self.request_stop()
         self._report_finalize_progress("stopping_capture", 0, 1)
         if self._capture_thread is not None:
-            self._capture_thread.join(timeout=timeout)
+            self._capture_thread.join(timeout=capture_timeout)
         if self._capture_thread is not None and self._capture_thread.is_alive():
-            raise TimeoutError(f"{self._track_name} capture did not stop")
+            raise TimeoutError(
+                f"{self._track_name} capture did not stop within {capture_timeout:g}s"
+            )
         self._report_finalize_progress("stopping_capture", 1, 1)
         self._report_finalize_progress("draining", 0, 1)
         if self._writer_thread is not None:
-            self._writer_thread.join(timeout=timeout)
+            self._writer_thread.join(timeout=writer_timeout)
         if self._writer_thread is not None and self._writer_thread.is_alive():
-            raise TimeoutError(f"{self._track_name} writer did not stop")
+            raise TimeoutError(
+                f"{self._track_name} writer queue did not drain within {writer_timeout:g}s"
+            )
         self._report_finalize_progress("draining", 1, 1)
         if self._writer_error is not None:
             raise self._writer_error

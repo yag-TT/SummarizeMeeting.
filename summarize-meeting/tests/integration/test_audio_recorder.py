@@ -6,6 +6,7 @@ import wave
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from summarize_meeting.capture.audio.recorder import AudioTrackRecorder
 from summarize_meeting.domain.capture import AudioDevice, AudioFormat
@@ -127,6 +128,18 @@ class SlowWaveWriter(SegmentedWaveWriter):
         super().write(samples)
 
 
+class _ThreadProbe:
+    def __init__(self, *, alive: bool) -> None:
+        self._alive = alive
+        self.join_timeout: float | None = None
+
+    def join(self, timeout: float | None = None) -> None:
+        self.join_timeout = timeout
+
+    def is_alive(self) -> bool:
+        return self._alive
+
+
 def _wait_for(predicate, timeout: float = 2.0) -> None:
     deadline = time.monotonic() + timeout
     while not predicate() and time.monotonic() < deadline:
@@ -166,6 +179,41 @@ def test_audio_recorder_writes_fake_capture(tmp_path: Path) -> None:
     assert stats.queue_capacity_chunks == 300
     with wave.open(str(audio_dir / "microphone.wav"), "rb") as stream:
         assert stream.getnframes() > 0
+
+
+def test_audio_recorder_uses_separate_stop_timeouts_and_keeps_segments_on_drain_timeout(
+    tmp_path: Path,
+) -> None:
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    recorder = AudioTrackRecorder(
+        backend=FakeAudioBackend(),
+        device=AudioDevice("fake", "Fake", 2),
+        track_name="microphone",
+        audio_dir=audio_dir,
+        state_callback=lambda _state, _code, _message: None,
+        meter_callback=lambda _level: None,
+    )
+    writer = SegmentedWaveWriter(
+        audio_dir,
+        "microphone",
+        AudioFormat(sample_rate=100, channels=1),
+    )
+    writer.write(np.full((20, 1), 0.1, dtype=np.float32))
+    capture_thread = _ThreadProbe(alive=False)
+    writer_thread = _ThreadProbe(alive=True)
+    recorder._capture_thread = capture_thread  # type: ignore[assignment]  # noqa: SLF001
+    recorder._writer_thread = writer_thread  # type: ignore[assignment]  # noqa: SLF001
+    recorder._writer = writer  # noqa: SLF001
+
+    with pytest.raises(TimeoutError, match="writer queue did not drain within 30s"):
+        recorder.finish()
+
+    assert capture_thread.join_timeout == 5.0
+    assert writer_thread.join_timeout == 30.0
+    assert (audio_dir / ".work" / "microphone" / "000000.wav").is_file()
+    assert not (audio_dir / "microphone.wav").exists()
+    writer.abort()
 
 
 def test_audio_recorder_waits_at_ready_until_start_gate_is_released(
@@ -329,11 +377,7 @@ def test_two_tracks_record_estimated_start_offset_from_common_origin(tmp_path: P
     assert system_stats is not None
     assert microphone_stats.estimated_start_offset_ms is not None
     assert system_stats.estimated_start_offset_ms is not None
-    assert (
-        system_stats.estimated_start_offset_ms
-        - microphone_stats.estimated_start_offset_ms
-        >= 50
-    )
+    assert system_stats.estimated_start_offset_ms - microphone_stats.estimated_start_offset_ms >= 50
 
 
 def test_queue_pressure_is_reported_without_dropping_chunks(tmp_path: Path) -> None:
