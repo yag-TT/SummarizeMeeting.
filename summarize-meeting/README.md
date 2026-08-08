@@ -26,7 +26,7 @@ uv run summarize-meeting
 
 文字起こしJobの開始・成功・失敗・キャンセルは`analysis/jobs.json`へatomic保存します。実行中にアプリが終了して`RUNNING`が残った場合、次回起動時は「前回中断」として表示し、再実行できます。
 
-RTX GPUを使う開発環境では、CUDA 12のcuBLASとcuDNN 9をアプリ内へ準備します。スクリプトは固定したarchiveをSHA-256検証後に`runtime/cuda/bin/`へ展開します。DLLを配布物へ含める前にNVIDIAおよびarchiveの再配布条件を別途確認してください。
+RTX GPUを使う開発環境では、CUDA 12のcuBLASとcuDNN 9をアプリ内へ準備します。スクリプトは固定したarchiveをSHA-256検証後に`runtime/cuda/bin/`へ展開します。本アプリは第三者へ配布せず、ローカル環境でのみ使用します。
 
 ```powershell
 .\scripts\setup-cuda-runtime.ps1
@@ -65,6 +65,8 @@ uv run python -m summarize_meeting.processing.transcription_worker `
 アプリ起動時に正常終了していないセッションを検出すると、復旧確認を表示します。復旧時は元の `.work` segmentを変更せず、`audio/microphone.recovered.wav` や `audio/system.recovered.wav` を新しく生成します。
 
 録音中に音声デバイスが切断された場合は、別デバイスへ切り替えず、同じdevice IDへ最大5回、約10秒間再接続を試します。切断区間は `audio/manifest.json` の `gaps` に記録されます。
+
+PC音声loopbackにはSoundCardを使用します。物理マイクの音声形式をSoundCardで開始できない場合は、同名のsounddevice Windows WASAPI入力へ自動的にフォールバックします。
 
 会議開始前に保存先の空き容量を確認し、5 GiB未満では録音を開始しません。録音中は60秒ごとに確認し、5 GiB未満になった場合は新しい画面保存を停止して音声録音を優先します。データを自動削除して容量を確保することはありません。
 
@@ -110,6 +112,17 @@ uv run python -m summarize_meeting.devtools.real_audio_smoke `
 ```
 
 指定名は各デバイス一覧で1件に絞れる部分文字列にします。このコマンドは指定した再生先へWAVを流し、録音セッションを`data/meetings/`へ保存します。
+
+録音・文字起こし済みセッションのPhase 2正常系を一括検証する場合:
+
+```powershell
+uv run python -m summarize_meeting.devtools.validate_phase2_session `
+  --session "data\meetings\<対象セッション>" `
+  --expect-microphone "マイクへ話した確認文" `
+  --expect-system "PCで再生した確認文"
+```
+
+成功時は終了コード0と`passed: true`を返します。WAVはストリーミング検査するため、長時間セッションでもファイル全体をメモリへ読み込みません。
 
 実機録音の検証手順は [Phase 1 PoC手動検証](../docs/PHASE1_POC_MANUAL_TEST.md) を参照してください。
 

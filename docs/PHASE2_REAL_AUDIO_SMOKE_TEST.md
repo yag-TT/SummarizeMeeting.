@@ -86,4 +86,49 @@ uv run python -m summarize_meeting.devtools.real_audio_smoke `
 7. Jobが「完了」になり、両方の文、発話元、timestampが出力されることを確認する。
 8. `audio/manifest.json`でoverflow、queue pressure、gap、duration driftを確認する。
 
+録音と文字起こしの完了後、セッションフォルダを指定して自動判定できる。発話した既知文を指定すると、発話元ごとの認識結果も検証する。
+
+```powershell
+uv run python -m summarize_meeting.devtools.validate_phase2_session `
+  --session "data\meetings\<対象セッション>" `
+  --expect-microphone "マイクへ話した確認文" `
+  --expect-system "PCで再生した確認文"
+```
+
+終了コード0かつ`passed: true`であれば、WAV音量、録音診断、文字起こしJob、timestamp、発話元、JSONとMarkdownの件数が正常である。
+
 この手動確認は物理マイクから周囲音を取得するため、ユーザーがテスト音声だけを扱える状態で実行する。
+
+## 7. 物理デバイス初回試験で検出した互換性問題
+
+Brio 100を選択した初回試験では、PC音声54.4秒は正常に保存・文字起こしできたが、マイクは`MIC_OPEN_FAILED`となった。SoundCard 0.4.6のWindows実装が、Brio 100のmix formatを`WAVEFORMATEXTENSIBLE`と仮定して内部assertに失敗したことが原因だった。
+
+物理マイクに限り、SoundCardで開始できない場合はsounddeviceのWindows WASAPI入力へフォールバックするよう修正した。PC音声loopbackは正常動作しているSoundCard経路を維持する。修正後、Brio 100を48 kHz、monoで1秒間読み取り、48,000 frameと非ゼロの音量を取得できた。確認データは保存していない。
+
+同じ試験では画面保存も`PNG verification failed`となった。保存済みPNG一時ファイルは正常な画像だったが、`.png.tmp`パスを`cv2.imread`へ渡したことでWindows上のdecodeに失敗していた。tempファイルのbyte列を`cv2.imdecode`する検証へ変更し、失敗時に残った77,339 byteの画像を890×797 pixelとして正常にdecodeできることを確認した。
+
+## 8. 修正後の物理デバイス最終試験
+
+セッション`2026-08-08_191326_Phase2 物理デバイス試験_f57b5771`で、物理マイク、実PC出力、画面取得、自動文字起こしをGUIから連続実行した。
+
+| 確認項目 | 結果 |
+|---|---|
+| セッション状態 | `RECORDED` |
+| Brio 100 | 緑ランプ、31.6秒、48 kHz、mono |
+| マイク音量 | peak 0.220703、RMS 0.017301 |
+| PC音声 | 31.3秒、48 kHz、stereo |
+| PC音声音量 | peak 0.023193、RMS 0.001574 |
+| overflow / queue pressure / gap | 両トラックとも0 |
+| WAV検証 | 両トラック`validated: true` |
+| 文字起こしJob | `SUCCEEDED` |
+| 推論device | 両トラック`cuda` |
+| segment | マイク1件、PC音声1件 |
+| JSON / Markdown整合 | 2件で一致 |
+| 画面保存 | PNG 1枚、77,339 byte |
+
+認識結果:
+
+- microphone: `ご視聴ありがとうございました`
+- system: `来週の金曜日までに、テスト結果を共有します。`
+
+マイク側は任意指定した期待文との完全一致評価には使用しない。Phase 2では認識精度の数値閾値を定めておらず、物理マイクの日本語発話が発話元とtimestamp付きで出力される正常経路を受入対象とするため、本試験を合格と判定する。

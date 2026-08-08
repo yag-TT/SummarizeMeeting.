@@ -11,6 +11,7 @@ dependencies = [
     "opencv-python-headless>=5.0.0.93",
     "pyside6>=6.11.1",
     "soundcard>=0.4.6",
+    "sounddevice>=0.5.5",
     "winrt-windows-foundation>=3.2.1",
     "winrt-windows-graphics>=3.2.1",
     "winrt-windows-graphics-capture>=3.2.1",

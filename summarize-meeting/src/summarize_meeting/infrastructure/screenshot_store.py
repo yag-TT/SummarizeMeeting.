@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import cv2
+import numpy as np
 
 from summarize_meeting.capture.screen.base import BgrFrame
 
@@ -47,7 +48,8 @@ class ScreenshotStore:
                     stream.write(encoded.tobytes())
                     stream.flush()
                     os.fsync(stream.fileno())
-                decoded = cv2.imread(str(temporary), cv2.IMREAD_UNCHANGED)
+                stored = np.frombuffer(temporary.read_bytes(), dtype=np.uint8)
+                decoded = cv2.imdecode(stored, cv2.IMREAD_UNCHANGED)
                 expected_size = (int(frame.shape[0]), int(frame.shape[1]))
                 if decoded is None or decoded.shape[:2] != expected_size:
                     raise ScreenshotSaveError("PNG verification failed")

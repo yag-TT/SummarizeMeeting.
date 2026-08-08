@@ -5,6 +5,7 @@ from typing import Any
 
 import numpy as np
 import soundcard as sc
+import sounddevice as sd
 
 from summarize_meeting.capture.audio.base import FloatAudio
 from summarize_meeting.domain.capture import AudioDevice, AudioFormat
@@ -54,6 +55,57 @@ class SoundCardAudioStream:
         self._context.__exit__(None, None, None)
 
 
+class SoundDeviceInputStream:
+    def __init__(
+        self,
+        device_name: str,
+        *,
+        sample_rate: int,
+        block_frames: int,
+        channels: int,
+    ) -> None:
+        device_index, max_channels = _find_wasapi_input(device_name)
+        selected_channels = max(1, min(channels, max_channels))
+        self._format = AudioFormat(sample_rate, selected_channels)
+        stream = sd.InputStream(
+            device=device_index,
+            samplerate=sample_rate,
+            channels=selected_channels,
+            dtype="float32",
+            blocksize=max(block_frames * 2, block_frames),
+            latency="low",
+        )
+        try:
+            stream.start()
+        except Exception:
+            stream.close()
+            raise
+        self._stream = stream
+        self._closed = False
+
+    @property
+    def audio_format(self) -> AudioFormat:
+        return self._format
+
+    def read(self, frames: int) -> FloatAudio:
+        samples, overflowed = self._stream.read(frames)
+        if overflowed:
+            raise RuntimeError("sounddevice input overflow")
+        value = np.asarray(samples, dtype=np.float32)
+        if value.ndim == 1:
+            value = value[:, np.newaxis]
+        return value
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._stream.stop()
+        finally:
+            self._stream.close()
+
+
 class SoundCardAudioBackend:
     def list_input_devices(self) -> Sequence[AudioDevice]:
         return [
@@ -79,8 +131,52 @@ class SoundCardAudioBackend:
         microphone = sc.get_microphone(device_id, include_loopback=True)
         if microphone is None:
             raise RuntimeError(f"Audio device not found: {device_id}")
-        return SoundCardAudioStream(
-            microphone,
-            sample_rate=sample_rate,
-            block_frames=block_frames,
+        try:
+            return SoundCardAudioStream(
+                microphone,
+                sample_rate=sample_rate,
+                block_frames=block_frames,
+            )
+        except Exception as soundcard_error:
+            if microphone.isloopback:
+                raise
+            try:
+                return SoundDeviceInputStream(
+                    str(microphone.name),
+                    sample_rate=sample_rate,
+                    block_frames=block_frames,
+                    channels=int(microphone.channels),
+                )
+            except Exception as sounddevice_error:
+                raise RuntimeError(
+                    "マイクをSoundCardまたはsounddeviceで開始できません: "
+                    f"SoundCard={type(soundcard_error).__name__}: {soundcard_error}; "
+                    f"sounddevice={type(sounddevice_error).__name__}: {sounddevice_error}"
+                ) from sounddevice_error
+
+
+def _find_wasapi_input(device_name: str) -> tuple[int, int]:
+    host_apis = sd.query_hostapis()
+    wasapi_indexes = {
+        index
+        for index, value in enumerate(host_apis)
+        if isinstance(value, dict) and value.get("name") == "Windows WASAPI"
+    }
+    matches: list[tuple[int, int]] = []
+    for index, value in enumerate(sd.query_devices()):
+        if not isinstance(value, dict) or value.get("hostapi") not in wasapi_indexes:
+            continue
+        name = value.get("name")
+        max_channels = value.get("max_input_channels")
+        if (
+            isinstance(name, str)
+            and name.casefold() == device_name.casefold()
+            and isinstance(max_channels, int | float)
+            and max_channels > 0
+        ):
+            matches.append((index, int(max_channels)))
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"WASAPI入力デバイスを1件に特定できません: {device_name} (matches={len(matches)})"
         )
+    return matches[0]

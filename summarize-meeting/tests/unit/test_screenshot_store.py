@@ -42,7 +42,7 @@ def test_screenshot_store_keeps_temp_when_decode_verification_fails(
 ) -> None:
     store = ScreenshotStore(tmp_path)
     frame = np.zeros((10, 12, 3), dtype=np.uint8)
-    monkeypatch.setattr(store_module.cv2, "imread", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(store_module.cv2, "imdecode", lambda *_args, **_kwargs: None)
 
     with pytest.raises(ScreenshotSaveError, match="verification"):
         store.save(

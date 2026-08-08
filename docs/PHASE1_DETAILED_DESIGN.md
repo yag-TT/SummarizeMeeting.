@@ -101,6 +101,7 @@ uv run ruff check .
 | Runtime | PySide6 | GUIとスレッド間Signal | 採用予定 |
 | Runtime | numpy | 音声変換、RMS、画像差分補助 | 採用予定 |
 | Runtime | SoundCard | WASAPIマイク・Loopback PoC | PoC対象 |
+| Runtime | sounddevice | SoundCard非互換マイクのWASAPIフォールバック | 実機試験で採用 |
 | Runtime | opencv-python-headless | 画像縮小・差分・保存 | 採用予定 |
 | Runtime | Windows Runtime bridge | Windows.Graphics.Capture接続 | PoCで選定 |
 | Dev | pytest | 単体・結合テスト | 採用予定 |
@@ -108,7 +109,7 @@ uv run ruff check .
 | Dev | ruff | lint・format | 採用予定 |
 | Dev | mypy | Port境界の型検査 | 採用予定 |
 
-SoundCardはWindows/WASAPIとLoopbackを提供するが、公式READMEにはWindowsでの単一チャンネル録音、blocksize無視、buffer underrunに関する既知事項が記載されている。このため、SoundCardを最終実装と決め打ちせず、`AudioBackend` Portの背後で実機評価する。
+SoundCardはWindows/WASAPIとLoopbackを提供するが、公式READMEにはWindowsでの単一チャンネル録音、blocksize無視、buffer underrunに関する既知事項が記載されている。このため、`AudioBackend` Portの背後で実機評価する。PC音声loopbackはSoundCardを使用し、物理マイクをSoundCardで開始できない場合はsounddeviceのWindows WASAPI入力へフォールバックする。
 
 ### 4.2 保存形式の初期値
 
@@ -468,7 +469,7 @@ channels: backend既定またはPoCで確認した複数channel map
 - マイクとPC音声のsample rate・channel数は同一でなくてよい。
 - Phase 1では会議中にresampleやmono downmixを行わない。
 - STT用の16 kHz mono変換はPhase 2の派生処理とする。
-- Windows/SoundCardの単一channel既知問題を避けるため、PoCでは「単一channelを明示要求」と「backend既定channel」の両方を録音比較する。
+- Windows/SoundCardの単一channel既知問題により物理マイクを開始できない場合、同じデバイス名のsounddevice Windows WASAPI入力を使う。PC音声loopbackはSoundCard経路を維持する。
 
 ### 10.3 WorkerとQueue
 
