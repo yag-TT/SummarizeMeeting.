@@ -166,6 +166,18 @@ uv run pytest -q tests/integration/test_wgc_backend.py
 8. `events.jsonl` の `low_disk_space` に `free_bytes` と `minimum_free_bytes` があることを確認する。
 9. `session.json` の `session_storage` と `screen` が `FAILED`、warning codeが `LOW_DISK_SPACE` であることを確認する。
 
+### 4.7 設定の保存と破損復旧
+
+1. マイクとPC音声を選択して短いテスト録音を開始し、終了する。
+2. `data/settings.json` が作成され、選択した2つのdevice IDが保存されていることを確認する。
+3. アプリを再起動し、同じdevice IDのマイクとPC音声が選択されることを確認する。
+4. アプリを終了し、テスト対象デバイスを外してから再起動する。
+5. 別デバイスへ自動切替されず「なし」のままで、前回デバイスが見つからない案内が表示されることを確認する。
+6. アプリを終了し、`settings.json` をテスト用の不正JSONへ置き換える。
+7. 再起動後、既定値で画面が開き、設定破損の赤い案内が表示されることを確認する。
+8. `data/settings.corrupt-<timestamp>.json` に不正JSONの原本がそのまま退避されていることを確認する。
+9. 新しい録音開始後に正常な `settings.json` がatomic保存されることを確認する。
+
 ## 5. 15分テスト
 
 2分スモークテスト成功後に実施する。

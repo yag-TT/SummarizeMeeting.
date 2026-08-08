@@ -4,7 +4,7 @@ import json
 import os
 import threading
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
@@ -17,6 +17,7 @@ from summarize_meeting.application.storage_monitor import (
 )
 from summarize_meeting.capture.audio.recorder import AudioTrackRecorder
 from summarize_meeting.capture.audio.soundcard_backend import SoundCardAudioBackend
+from summarize_meeting.capture.screen.change_detector import ScreenChangeDetector
 from summarize_meeting.capture.screen.recorder import ScreenRecorder
 from summarize_meeting.capture.screen.windows_wgc import WindowsWgcScreenBackend
 from summarize_meeting.domain.capture import AudioDevice, ScreenTarget
@@ -33,6 +34,7 @@ from summarize_meeting.infrastructure.session_repository import (
     FileSessionRepository,
     SessionPaths,
 )
+from summarize_meeting.infrastructure.settings import AppSettings, FileSettingsRepository
 from summarize_meeting.infrastructure.storage_probe import SystemStorageProbe
 
 
@@ -49,12 +51,18 @@ class RecordingController(QObject):
         app_paths: PortableAppPaths,
         *,
         storage_monitor: StorageMonitor | None = None,
+        settings: AppSettings | None = None,
+        settings_repository: FileSettingsRepository | None = None,
     ) -> None:
         super().__init__()
         self._app_paths = app_paths
         self._repository = FileSessionRepository(app_paths.meetings_dir)
         self._audio_backend = SoundCardAudioBackend()
         self._screen_backend = WindowsWgcScreenBackend()
+        self._settings_repository = settings_repository or FileSettingsRepository(
+            app_paths.settings_file
+        )
+        self._settings = settings or self._settings_repository.load().settings
         self._storage_monitor = storage_monitor or StorageMonitor(
             path=app_paths.meetings_dir,
             probe=SystemStorageProbe(),
@@ -68,6 +76,14 @@ class RecordingController(QObject):
         self._stop_thread: threading.Thread | None = None
         self._audio_unavailable_notified = False
         self._screen_disabled_by_storage = False
+
+    @property
+    def last_microphone_device_id(self) -> str | None:
+        return self._settings.last_microphone_device_id
+
+    @property
+    def last_system_device_id(self) -> str | None:
+        return self._settings.last_system_device_id
 
     @property
     def is_recording(self) -> bool:
@@ -106,6 +122,7 @@ class RecordingController(QObject):
         self._storage_monitor.check_start_allowed()
 
         session = RecordingSession(title=title, status=SessionStatus.PREPARING)
+        session.retention = asdict(self._settings.retention)
         self._origin_ns = time.perf_counter_ns()
         session.monotonic_origin_ns = self._origin_ns
         session.started_at = RecordingSession.now_iso()
@@ -151,19 +168,7 @@ class RecordingController(QObject):
             self._set_component(ComponentKind.SYSTEM_AUDIO, ComponentStatus.NOT_CONFIGURED)
 
         if screen_target is not None:
-            self._screen_recorder = ScreenRecorder(
-                backend=self._screen_backend,
-                target=screen_target,
-                store=ScreenshotStore(paths.screenshots),
-                origin_ns=self._origin_ns,
-                state_callback=lambda status, code, message: self._set_component(
-                    ComponentKind.SCREEN,
-                    status,
-                    code,
-                    message,
-                ),
-                count_callback=self.screenshot_count_changed.emit,
-            )
+            self._screen_recorder = self._create_screen_recorder(screen_target, paths)
             self._screen_recorder.start()
         else:
             self._screen_recorder = None
@@ -178,6 +183,7 @@ class RecordingController(QObject):
             check_failed_callback=self._on_storage_check_failed,
         )
         self.session_started.emit(str(paths.root))
+        self._remember_devices(microphone, system_audio)
         self._notify_if_all_audio_failed()
         return paths.root
 
@@ -190,16 +196,7 @@ class RecordingController(QObject):
         if self._screen_recorder is None:
             if self._session_paths is None:
                 return
-            self._screen_recorder = ScreenRecorder(
-                backend=self._screen_backend,
-                target=target,
-                store=ScreenshotStore(self._session_paths.screenshots),
-                origin_ns=self._origin_ns,
-                state_callback=lambda status, code, message: self._set_component(
-                    ComponentKind.SCREEN, status, code, message
-                ),
-                count_callback=self.screenshot_count_changed.emit,
-            )
+            self._screen_recorder = self._create_screen_recorder(target, self._session_paths)
             self._screen_recorder.start()
         else:
             self._screen_recorder.replace_target(target)
@@ -239,6 +236,53 @@ class RecordingController(QObject):
             meter_callback=lambda level: self.meter_changed.emit(kind.value, level),
             origin_ns=self._origin_ns,
         )
+
+    def _create_screen_recorder(
+        self,
+        target: ScreenTarget,
+        paths: SessionPaths,
+    ) -> ScreenRecorder:
+        thresholds = self._settings.screen_change_thresholds
+        detector = ScreenChangeDetector(
+            pixel_diff_threshold=thresholds.pixel_diff_threshold,
+            changed_area_ratio_threshold=thresholds.changed_area_ratio_threshold,
+            mean_abs_diff_threshold=thresholds.mean_abs_diff_threshold,
+            debounce_ms=thresholds.debounce_ms,
+            stable_changed_area_ratio=thresholds.stable_changed_area_ratio,
+            timeout_ms=thresholds.timeout_ms,
+        )
+        return ScreenRecorder(
+            backend=self._screen_backend,
+            target=target,
+            store=ScreenshotStore(paths.screenshots),
+            origin_ns=self._origin_ns,
+            state_callback=lambda status, code, message: self._set_component(
+                ComponentKind.SCREEN,
+                status,
+                code,
+                message,
+            ),
+            count_callback=self.screenshot_count_changed.emit,
+            evaluation_fps=self._settings.screen_evaluation_fps,
+            detector=detector,
+        )
+
+    def _remember_devices(
+        self,
+        microphone: AudioDevice | None,
+        system_audio: AudioDevice | None,
+    ) -> None:
+        self._settings = replace(
+            self._settings,
+            last_microphone_device_id=microphone.id if microphone is not None else None,
+            last_system_device_id=system_audio.id if system_audio is not None else None,
+        )
+        try:
+            self._settings_repository.save(self._settings)
+        except OSError as exc:
+            message = f"前回使用したデバイス設定を保存できませんでした: {exc}"
+            self._append_event("settings_write_failed", message=message)
+            self.fatal_error.emit(message)
 
     def _stop_session_worker(self) -> None:
         with self._lock:

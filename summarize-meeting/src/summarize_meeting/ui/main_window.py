@@ -29,6 +29,7 @@ class MainWindow(QMainWindow):
         self._controller = controller
         self._started_at: datetime | None = None
         self._session_path: Path | None = None
+        self._sources_loaded = False
         self.setWindowTitle("Summarize Meeting - Phase 1 PoC")
         self.resize(880, 520)
 
@@ -107,16 +108,31 @@ class MainWindow(QMainWindow):
     def refresh_sources(self) -> None:
         self._refresh.setEnabled(False)
         try:
-            self._populate_audio_combo(
+            missing_devices: list[str] = []
+            microphone_found = self._populate_audio_combo(
                 self._microphone,
                 self._controller.list_input_devices(),
                 "マイクなし",
+                preferred_id=(
+                    self._controller.last_microphone_device_id
+                    if not self._sources_loaded
+                    else None
+                ),
             )
-            self._populate_audio_combo(
+            if not microphone_found:
+                missing_devices.append("前回のマイク")
+            system_audio_found = self._populate_audio_combo(
                 self._system_audio,
                 self._controller.list_loopback_devices(),
                 "PC音声なし",
+                preferred_id=(
+                    self._controller.last_system_device_id
+                    if not self._sources_loaded
+                    else None
+                ),
             )
+            if not system_audio_found:
+                missing_devices.append("前回のPC音声デバイス")
             selected_screen_id = self._current_screen_id()
             self._screen_target.clear()
             self._screen_target.addItem("画面取得なし", None)
@@ -124,7 +140,12 @@ class MainWindow(QMainWindow):
                 self._screen_target.addItem(target.title, target)
                 if target.id == selected_screen_id:
                     self._screen_target.setCurrentIndex(self._screen_target.count() - 1)
-            self.show_information("PC音声は選択した出力デバイスから再生される全音声を記録します。")
+            self._sources_loaded = True
+            message = "PC音声は選択した出力デバイスから再生される全音声を記録します。"
+            if missing_devices:
+                missing = "、".join(missing_devices)
+                message += f" {missing}が見つからないため再選択してください。"
+            self.show_information(message)
         except Exception as exc:
             self.show_error(f"デバイス一覧を取得できません: {exc}")
         finally:
@@ -135,14 +156,19 @@ class MainWindow(QMainWindow):
         combo: QComboBox,
         devices: list[AudioDevice],
         empty_label: str,
-    ) -> None:
-        selected_id = self._current_audio_id(combo)
+        *,
+        preferred_id: str | None,
+    ) -> bool:
+        selected_id = self._current_audio_id(combo) or preferred_id
+        selected_found = selected_id is None
         combo.clear()
         combo.addItem(empty_label, None)
         for device in devices:
             combo.addItem(f"{device.name} ({device.channels}ch)", device)
             if device.id == selected_id:
                 combo.setCurrentIndex(combo.count() - 1)
+                selected_found = True
+        return selected_found
 
     def _start_recording(self) -> None:
         try:

@@ -893,6 +893,17 @@ log_level
 - 機密データやAPIキーはPhase 1設定に含めない。
 - デバイスが見つからなければ黙って別デバイスへ切り替えず、UIで再選択を求める。
 
+実装は `schema_version: 1` の型付き `AppSettings` と `FileSettingsRepository` を使用する。保存時は同一ディレクトリの `settings.json.tmp` へUTF-8 JSONを書き、flush、`fsync`、`os.replace` の順でatomicに確定する。
+
+- ファイルがない場合と、フィールドが省略されている場合は既定値で補完する。
+- JSON破損、型不正、許容範囲外の値はファイル全体の破損として扱う。
+- 破損ファイルは `settings.corrupt-<timestamp>.json` へ移動し、既定値で起動してUIへ通知する。退避にも失敗した場合は原本を変更せず既定値で起動する。
+- `screen_evaluation_fps` は0.1から10.0、画面差分閾値は定義済み範囲だけを許可する。
+- `log_level` は `DEBUG / INFO / WARNING / ERROR` だけを許可し、Bootstrapのfile loggingへ適用する。
+- 前回デバイスIDは録音開始成功後に更新する。次回起動の初回列挙だけID一致で復元し、不一致なら「なし」のまま再選択を案内する。
+- 画面評価fpsと差分閾値はScreen Recorder作成時にsnapshotし、録音中に設定ファイルが変わっても現在のWorkerへ動的反映しない。
+- retention設定はsessionへsnapshotする。Phase 1では自動削除処理を実装しない。
+
 ## 16. UI詳細
 
 Phase 1のUI、エラーメッセージ、ログ閲覧用のユーザー向け文言は日本語のみとする。内部error codeと構造化フィールド名は英語で統一する。

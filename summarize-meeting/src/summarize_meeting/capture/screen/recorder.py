@@ -29,6 +29,7 @@ class ScreenRecorder:
         state_callback: StateCallback,
         count_callback: CountCallback,
         evaluation_fps: float = 2.0,
+        detector: ScreenChangeDetector | None = None,
     ) -> None:
         self._backend = backend
         self._target = target
@@ -37,7 +38,7 @@ class ScreenRecorder:
         self._state_callback = state_callback
         self._count_callback = count_callback
         self._interval = 1.0 / evaluation_fps
-        self._detector = ScreenChangeDetector()
+        self._detector = detector or ScreenChangeDetector()
         self._stop = threading.Event()
         self._failed = threading.Event()
         self._target_lock = threading.Lock()

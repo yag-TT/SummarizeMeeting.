@@ -13,10 +13,11 @@ from summarize_meeting.application.recovery_service import (
     SessionRecoveryService,
 )
 from summarize_meeting.infrastructure.paths import AppRootNotWritableError, PortableAppPaths
+from summarize_meeting.infrastructure.settings import FileSettingsRepository, SettingsLoadResult
 from summarize_meeting.ui.main_window import MainWindow
 
 
-def _configure_logging(paths: PortableAppPaths) -> None:
+def _configure_logging(paths: PortableAppPaths, log_level: str) -> None:
     handler = RotatingFileHandler(
         paths.logs_dir / "application.log",
         maxBytes=5 * 1024 * 1024,
@@ -24,7 +25,7 @@ def _configure_logging(paths: PortableAppPaths) -> None:
         encoding="utf-8",
     )
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
-    logging.basicConfig(level=logging.INFO, handlers=[handler])
+    logging.basicConfig(level=getattr(logging, log_level), handlers=[handler])
 
 
 def main() -> int:
@@ -47,9 +48,21 @@ def main() -> int:
         )
         return 1
 
-    _configure_logging(paths)
+    settings_repository = FileSettingsRepository(paths.settings_file)
+    settings_result = settings_repository.load()
+    _configure_logging(paths, settings_result.settings.log_level)
     logging.getLogger(__name__).info("Application started app_root=%s", paths.app_root)
-    controller = RecordingController(paths)
+    if settings_result.error:
+        logging.getLogger(__name__).warning(
+            "Settings fallback backup=%s error=%s",
+            settings_result.backup_path,
+            settings_result.error,
+        )
+    controller = RecordingController(
+        paths,
+        settings=settings_result.settings,
+        settings_repository=settings_repository,
+    )
     window = MainWindow(controller)
     recovery_controller = RecoveryController(SessionRecoveryService(paths.meetings_dir))
     recovery_controller.progress.connect(window.show_information)
@@ -57,6 +70,8 @@ def main() -> int:
     recovery_controller.failed.connect(window.show_error)
     window.show()
     QTimer.singleShot(0, lambda: _offer_recovery(window, recovery_controller))
+    if settings_result.error:
+        QTimer.singleShot(100, lambda: _show_settings_fallback(window, settings_result))
     exit_code = app.exec()
     logging.getLogger(__name__).info("Application stopped exit_code=%s", exit_code)
     instance_lock.unlock()
@@ -81,3 +96,16 @@ def _offer_recovery(window: MainWindow, controller: RecoveryController) -> None:
     )
     if answer == QMessageBox.StandardButton.Yes:
         controller.recover_all(candidates)
+
+
+def _show_settings_fallback(window: MainWindow, result: SettingsLoadResult) -> None:
+    if result.backup_path is not None:
+        window.show_error(
+            "設定ファイルが壊れていたため既定値で起動しました。"
+            f"元の設定は {result.backup_path} へ退避しました。"
+        )
+    else:
+        window.show_error(
+            "設定ファイルを読み込めなかったため既定値で起動しました。"
+            "元のファイルは変更していません。"
+        )
