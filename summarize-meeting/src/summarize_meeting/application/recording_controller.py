@@ -9,6 +9,12 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
+from summarize_meeting.application.storage_monitor import (
+    StorageCapacity,
+    StorageCapacityCheckError,
+    StorageMonitor,
+    format_gib,
+)
 from summarize_meeting.capture.audio.recorder import AudioTrackRecorder
 from summarize_meeting.capture.audio.soundcard_backend import SoundCardAudioBackend
 from summarize_meeting.capture.screen.recorder import ScreenRecorder
@@ -27,6 +33,7 @@ from summarize_meeting.infrastructure.session_repository import (
     FileSessionRepository,
     SessionPaths,
 )
+from summarize_meeting.infrastructure.storage_probe import SystemStorageProbe
 
 
 class RecordingController(QObject):
@@ -37,12 +44,21 @@ class RecordingController(QObject):
     session_finished = Signal(str)
     fatal_error = Signal(str)
 
-    def __init__(self, app_paths: PortableAppPaths) -> None:
+    def __init__(
+        self,
+        app_paths: PortableAppPaths,
+        *,
+        storage_monitor: StorageMonitor | None = None,
+    ) -> None:
         super().__init__()
         self._app_paths = app_paths
         self._repository = FileSessionRepository(app_paths.meetings_dir)
         self._audio_backend = SoundCardAudioBackend()
         self._screen_backend = WindowsWgcScreenBackend()
+        self._storage_monitor = storage_monitor or StorageMonitor(
+            path=app_paths.meetings_dir,
+            probe=SystemStorageProbe(),
+        )
         self._session: RecordingSession | None = None
         self._session_paths: SessionPaths | None = None
         self._origin_ns = 0
@@ -51,6 +67,7 @@ class RecordingController(QObject):
         self._lock = threading.RLock()
         self._stop_thread: threading.Thread | None = None
         self._audio_unavailable_notified = False
+        self._screen_disabled_by_storage = False
 
     @property
     def is_recording(self) -> bool:
@@ -86,6 +103,7 @@ class RecordingController(QObject):
         title = title.strip()
         if not title:
             raise ValueError("会議名を入力してください")
+        self._storage_monitor.check_start_allowed()
 
         session = RecordingSession(title=title, status=SessionStatus.PREPARING)
         self._origin_ns = time.perf_counter_ns()
@@ -103,8 +121,10 @@ class RecordingController(QObject):
             self._session = session
             self._session_paths = paths
             self._audio_unavailable_notified = False
+            self._screen_disabled_by_storage = False
 
         self._append_event("session_preparing")
+        self._set_component(ComponentKind.SESSION_STORAGE, ComponentStatus.RUNNING)
         self._audio_recorders = {}
         if microphone is not None:
             recorder = self._create_audio_recorder(
@@ -153,11 +173,20 @@ class RecordingController(QObject):
             session.status = SessionStatus.RECORDING
             self._repository.save(paths, session)
         self._append_event("session_started")
+        self._storage_monitor.start(
+            low_capacity_callback=self._on_low_disk_space,
+            check_failed_callback=self._on_storage_check_failed,
+        )
         self.session_started.emit(str(paths.root))
         self._notify_if_all_audio_failed()
         return paths.root
 
     def replace_screen_target(self, target: ScreenTarget) -> None:
+        with self._lock:
+            if self._screen_disabled_by_storage:
+                raise RuntimeError(
+                    "空き容量不足のため画面保存は停止しています。会議終了後に空き容量を確保してください。"
+                )
         if self._screen_recorder is None:
             if self._session_paths is None:
                 return
@@ -220,6 +249,7 @@ class RecordingController(QObject):
             session.status = SessionStatus.STOPPING
             self._repository.save(paths, session)
         self._append_event("session_stopping")
+        self._storage_monitor.request_stop()
 
         for recorder in self._audio_recorders.values():
             recorder.request_stop()
@@ -247,6 +277,19 @@ class RecordingController(QObject):
                 failures.append(f"{kind.value}: {exc}")
                 self._set_component(kind, ComponentStatus.FAILED, "FINALIZE_FAILED", str(exc))
 
+        try:
+            self._storage_monitor.finish()
+        except Exception as exc:
+            failures.append(f"storage monitor: {exc}")
+
+        with self._lock:
+            storage_failed = (
+                session.components[ComponentKind.SESSION_STORAGE.value].status
+                == ComponentStatus.FAILED
+            )
+        if not storage_failed:
+            self._set_component(ComponentKind.SESSION_STORAGE, ComponentStatus.STOPPED)
+
         self._write_audio_manifest(paths.audio / "manifest.json", stats)
         ended_ns = time.perf_counter_ns()
         with self._lock:
@@ -260,6 +303,47 @@ class RecordingController(QObject):
         if failures:
             self.fatal_error.emit("一部の記録を正常に確定できませんでした: " + "; ".join(failures))
         self.session_finished.emit(str(paths.root))
+
+    def _on_low_disk_space(self, capacity: StorageCapacity) -> None:
+        with self._lock:
+            if self._session is None or self._session.status != SessionStatus.RECORDING:
+                return
+            if self._screen_disabled_by_storage:
+                return
+            self._screen_disabled_by_storage = True
+            screen_recorder = self._screen_recorder
+        message = (
+            f"保存先の空き容量が {format_gib(capacity.free_bytes)} GiB まで減少しました。"
+            "画面保存を停止し、音声録音を継続します。"
+        )
+        if screen_recorder is not None:
+            screen_recorder.fail("LOW_DISK_SPACE", message)
+        self._append_event(
+            "low_disk_space",
+            free_bytes=capacity.free_bytes,
+            minimum_free_bytes=capacity.minimum_free_bytes,
+        )
+        self._set_component(
+            ComponentKind.SESSION_STORAGE,
+            ComponentStatus.FAILED,
+            "LOW_DISK_SPACE",
+            message,
+        )
+        self.fatal_error.emit(message)
+
+    def _on_storage_check_failed(self, error: StorageCapacityCheckError) -> None:
+        with self._lock:
+            if self._session is None or self._session.status != SessionStatus.RECORDING:
+                return
+        message = f"録音中に保存先の空き容量を確認できなくなりました。音声録音は継続します。{error}"
+        self._append_event("storage_capacity_check_failed", message=str(error))
+        self._set_component(
+            ComponentKind.SESSION_STORAGE,
+            ComponentStatus.FAILED,
+            "STORAGE_CAPACITY_CHECK_FAILED",
+            message,
+        )
+        self.fatal_error.emit(message)
 
     def _set_component(
         self,

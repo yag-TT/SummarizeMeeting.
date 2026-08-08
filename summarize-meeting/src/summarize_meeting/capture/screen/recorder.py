@@ -62,6 +62,13 @@ class ScreenRecorder:
     def request_stop(self) -> None:
         self._stop.set()
 
+    def fail(self, error_code: str, message: str) -> None:
+        if self._failed.is_set():
+            return
+        self._failed.set()
+        self._state_callback(ComponentStatus.FAILED, error_code, message)
+        self.request_stop()
+
     def finish(self, timeout: float = 5.0) -> None:
         if not self._failed.is_set():
             self._state_callback(ComponentStatus.STOPPING, None, None)
@@ -82,6 +89,8 @@ class ScreenRecorder:
                     target = self._target
                 try:
                     frame = self._backend.capture(target)
+                    if self._failed.is_set():
+                        return
                     if paused:
                         paused = False
                         self._detector.reset()

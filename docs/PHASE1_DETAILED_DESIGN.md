@@ -982,12 +982,18 @@ estimated_audio = sum(track bytes_per_sec) * expected_duration
 
 Phase 1では会議予定時間入力を必須にしないため、最低空き容量の初期基準を5 GiBとし、実測後に調整する。録音中は60秒ごとに空き容量を確認する。
 
+実装では `StorageMonitor` とOS依存の `SystemStorageProbe` を分離する。開始前checkはセッションディレクトリ作成より先に同期実行し、5 GiB未満または容量取得失敗時は録音を開始しない。録音中のcheckは専用daemon threadで行い、停止要求は `Event` で即時解除する。
+
 空き容量不足時:
 
 - 新規スクリーンショット保存を先に停止する。
 - 音声保存は可能な限り継続する。
 - 音声Writerが失敗したら対象trackをFAILEDにして即時通知する。
 - 原本を自動削除して容量を作らない。
+
+録音中に閾値未満を検出した場合は `low_disk_space` eventへ `free_bytes` と `minimum_free_bytes` を保存し、`SESSION_STORAGE` と、画面取得が構成済みなら `SCREEN` を `FAILED / LOW_DISK_SPACE` にする。Screen Workerは進行中のcapture完了後も新しいPNGを保存せず終了し、Audio Workerには停止要求を送らない。画面の再選択による保存再開も、そのセッション中は許可しない。
+
+容量取得自体が失敗した場合は `STORAGE_CAPACITY_CHECK_FAILED` を記録して強い警告を表示する。実際の低容量を確認できていないため、この場合はScreenとAudioを自動停止しない。
 
 ## 19. 復旧設計
 
