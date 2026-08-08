@@ -32,9 +32,7 @@ class AppSettings:
     last_microphone_device_id: str | None = None
     last_system_device_id: str | None = None
     screen_evaluation_fps: float = 2.0
-    screen_change_thresholds: ScreenChangeSettings = field(
-        default_factory=ScreenChangeSettings
-    )
+    screen_change_thresholds: ScreenChangeSettings = field(default_factory=ScreenChangeSettings)
     retention: RetentionSettings = field(default_factory=RetentionSettings)
     log_level: str = "INFO"
 

@@ -36,9 +36,7 @@ def test_session_log_redacts_registered_values_and_sensitive_fields(
             nested={"target": secret_title, "count": 3},
         )
         try:
-            raise RuntimeError(
-                f"capture failed for {secret_device_id} in {secret_root}"
-            )
+            raise RuntimeError(f"capture failed for {secret_device_id} in {secret_root}")
         except RuntimeError as exc:
             writer.write_exception(
                 "capture_failed",
@@ -76,9 +74,7 @@ def test_session_log_supports_concurrent_json_line_writes(tmp_path: Path) -> Non
         thread.join()
     writer.close()
 
-    entries = [
-        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
-    ]
+    entries = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     assert len(entries) == 100
     assert all(entry["event"] == "worker_event" for entry in entries)
 

@@ -141,10 +141,7 @@ class SessionLogWriter:
         return True
 
     def _sanitize_mapping(self, value: Mapping[str, Any]) -> dict[str, Any]:
-        return {
-            str(key): self._sanitize_value(item, key=str(key))
-            for key, item in value.items()
-        }
+        return {str(key): self._sanitize_value(item, key=str(key)) for key, item in value.items()}
 
     def _sanitize_value(self, value: Any, *, key: str | None = None) -> Any:
         if key is not None and key.casefold() in _SENSITIVE_FIELD_NAMES:

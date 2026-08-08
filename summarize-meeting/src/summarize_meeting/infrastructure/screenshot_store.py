@@ -64,9 +64,7 @@ class ScreenshotStore:
                     "metrics": metrics,
                 }
                 with self._events.open("a", encoding="utf-8", newline="\n") as stream:
-                    stream.write(
-                        json.dumps(event, ensure_ascii=False, separators=(",", ":"))
-                    )
+                    stream.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
                     stream.write("\n")
                     stream.flush()
                     os.fsync(stream.fileno())

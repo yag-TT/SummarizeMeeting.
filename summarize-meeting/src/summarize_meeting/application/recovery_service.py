@@ -236,13 +236,9 @@ class SessionRecoveryService:
         expected_duration = expectation.get("audio_duration_ms")
         if expected_duration is not None:
             try:
-                duration_difference = abs(
-                    validation.duration_ms - float(expected_duration)
-                )
+                duration_difference = abs(validation.duration_ms - float(expected_duration))
             except (TypeError, ValueError) as exc:
-                warnings.append(
-                    f"audio/{path.name}: manifestのdurationを比較できません: {exc}"
-                )
+                warnings.append(f"audio/{path.name}: manifestのdurationを比較できません: {exc}")
             else:
                 if duration_difference > 0.001:
                     raise WaveValidationError(
@@ -412,8 +408,7 @@ class SessionRecoveryService:
         warnings: Sequence[str],
     ) -> str:
         return (
-            f"復旧トラック {len(tracks)}件、"
-            f"復旧画像 {len(screenshots)}件、警告 {len(warnings)}件"
+            f"復旧トラック {len(tracks)}件、復旧画像 {len(screenshots)}件、警告 {len(warnings)}件"
         )
 
 

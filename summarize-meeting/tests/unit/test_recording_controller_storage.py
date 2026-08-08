@@ -114,10 +114,7 @@ def test_controller_stops_only_screen_and_records_low_space_event(tmp_path: Path
     assert screen.failures[0][0] == "LOW_DISK_SPACE"
     assert not audio.stop_requested
     assert messages and "音声録音を継続" in messages[0]
-    events = [
-        json.loads(line)
-        for line in paths.events.read_text(encoding="utf-8").splitlines()
-    ]
+    events = [json.loads(line) for line in paths.events.read_text(encoding="utf-8").splitlines()]
     low_space = next(event for event in events if event["type"] == "low_disk_space")
     assert low_space["free_bytes"] == 50
     assert low_space["minimum_free_bytes"] == 100
