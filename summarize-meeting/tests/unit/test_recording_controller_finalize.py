@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+import wave
 from pathlib import Path
 
 from summarize_meeting.application.recording_controller import RecordingController
@@ -246,3 +247,59 @@ def test_final_metadata_write_failure_does_not_abort_finalize_worker(
     assert any("セッション情報を保存できません" in error for error in errors)
     persisted = json.loads((session_root / "session.json").read_text(encoding="utf-8"))
     assert persisted["status"] == SessionStatus.FINALIZING
+
+
+def test_audio_manifest_write_failure_keeps_final_wav_and_completes_terminal_flow(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    controller, session_root = _prepare_controller(tmp_path)
+    audio_path = session_root / "audio" / "microphone.wav"
+    with wave.open(str(audio_path), "wb") as stream:
+        stream.setnchannels(1)
+        stream.setsampwidth(2)
+        stream.setframerate(100)
+        stream.writeframes(b"\0\0" * 20)
+    stats = AudioTrackStats(
+        file="audio/microphone.wav",
+        sample_rate=100,
+        channels=1,
+        sample_width_bytes=2,
+        frames_written=20,
+        segments=1,
+        audio_duration_ms=200.0,
+        validated=True,
+        work_files_removed=True,
+    )
+    controller._audio_recorders = {  # type: ignore[dict-item]  # noqa: SLF001
+        ComponentKind.MICROPHONE: _FakeAudioRecorder(result=stats)
+    }
+
+    def fail_manifest(*_args, **_kwargs) -> None:
+        raise OSError("manifest destination is unavailable")
+
+    monkeypatch.setattr(
+        RecordingController,
+        "_write_audio_manifest",
+        staticmethod(fail_manifest),
+    )
+    errors: list[str] = []
+    finished: list[str] = []
+    controller.fatal_error.connect(errors.append)
+    controller.session_finished.connect(finished.append)
+
+    controller._stop_session_worker()  # noqa: SLF001
+
+    assert audio_path.is_file()
+    with wave.open(str(audio_path), "rb") as stream:
+        assert stream.getnframes() == 20
+    assert not (session_root / "audio" / "manifest.json").exists()
+    persisted = json.loads((session_root / "session.json").read_text(encoding="utf-8"))
+    assert persisted["status"] == SessionStatus.INTERRUPTED
+    assert any(
+        warning["code"] == "FINALIZE_FAILED" and "audio manifest" in warning["message"]
+        for warning in persisted["warnings"]
+    )
+    assert controller._session_terminal.is_set()  # noqa: SLF001
+    assert finished == [str(session_root)]
+    assert any("audio manifest" in error for error in errors)

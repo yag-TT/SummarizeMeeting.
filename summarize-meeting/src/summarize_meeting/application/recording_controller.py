@@ -618,11 +618,20 @@ class RecordingController(QObject):
                 error_code="START_CLEANUP_FAILED",
             )
         self._set_component(ComponentKind.SESSION_STORAGE, ComponentStatus.STOPPED)
-        self._write_audio_manifest(
-            paths.audio / "manifest.json",
-            stats,
-            monotonic_origin_ns=self._origin_ns,
-        )
+        try:
+            self._write_audio_manifest(
+                paths.audio / "manifest.json",
+                stats,
+                monotonic_origin_ns=self._origin_ns,
+            )
+        except OSError as exc:
+            failures.append(f"audio manifest: {exc}")
+            self._log_session_exception(
+                "session_start_cleanup_failed",
+                exc,
+                component=ComponentKind.SESSION_STORAGE.value,
+                error_code="START_CLEANUP_FAILED",
+            )
         ended_ns = time.perf_counter_ns()
         with self._lock:
             assert self._session is not None
@@ -790,11 +799,20 @@ class RecordingController(QObject):
         if not storage_failed:
             self._set_component(ComponentKind.SESSION_STORAGE, ComponentStatus.STOPPED)
 
-        self._write_audio_manifest(
-            paths.audio / "manifest.json",
-            stats,
-            monotonic_origin_ns=self._origin_ns,
-        )
+        try:
+            self._write_audio_manifest(
+                paths.audio / "manifest.json",
+                stats,
+                monotonic_origin_ns=self._origin_ns,
+            )
+        except OSError as exc:
+            failures.append(f"audio manifest: {exc}")
+            self._log_session_exception(
+                "finalize_failed",
+                exc,
+                component=ComponentKind.SESSION_STORAGE.value,
+                error_code="FINALIZE_FAILED",
+            )
         self._emit_finalize_progress(95, "セッション情報を保存しています")
         cleanup_warnings = [
             f"{track}: {track_stats.work_cleanup_error}"

@@ -324,3 +324,41 @@ def test_session_log_open_failure_prevents_recording_start(
     assert metadata["status"] == SessionStatus.FAILED_TO_START
     assert any(warning["code"] == "SESSION_LOG_OPEN_FAILED" for warning in metadata["warnings"])
     assert not controller.is_recording
+
+
+def test_start_cleanup_manifest_failure_still_reaches_terminal_state(
+    tmp_path: Path,
+    qapp: QApplication,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = _make_controller(tmp_path, failing_device_ids={"mic"})
+
+    def fail_manifest(*_args, **_kwargs) -> None:
+        raise OSError("manifest destination is unavailable")
+
+    monkeypatch.setattr(
+        RecordingController,
+        "_write_audio_manifest",
+        staticmethod(fail_manifest),
+    )
+    failures: list[tuple[str, str]] = []
+    controller.session_start_failed.connect(lambda path, message: failures.append((path, message)))
+
+    session_path = controller.start_session(
+        title="cleanup manifest failure",
+        microphone=AudioDevice("mic", "Broken mic", 1),
+        system_audio=None,
+        screen_target=None,
+    )
+    _wait_for(
+        lambda: not controller.is_recording and controller._session_log is None  # noqa: SLF001
+    )
+
+    metadata = json.loads((session_path / "session.json").read_text(encoding="utf-8"))
+    assert metadata["status"] == SessionStatus.FAILED_TO_START
+    assert any(
+        warning["code"] == "START_CLEANUP_FAILED" and "audio manifest" in warning["message"]
+        for warning in metadata["warnings"]
+    )
+    assert controller._session_terminal.is_set()  # noqa: SLF001
+    _wait_for(lambda: bool(failures))

@@ -256,6 +256,17 @@ uv run pytest -q tests/integration/test_wgc_backend.py
 5. `session.json` のwarningに `SESSION_METADATA_WRITE_FAILED` が1件だけ保存されることを確認する。
 6. 最終 `session.json` 保存だけを失敗させる試験では、finalize処理が完了してWAVが開け、次回起動時に中断セッションとして復旧できることを確認する。
 
+### 4.13 Audio manifestの保存失敗
+
+テスト専用のmanifest失敗注入を使用する。
+
+1. 短い録音を開始し、会議終了時の最終WAV検証までは成功させる。
+2. `audio/manifest.json` のatomic保存だけを `OSError` にする。
+3. finalizeが停止せず100%まで進み、保存問題の赤い結果表示と保存先が残ることを確認する。
+4. `session.json` が `INTERRUPTED`、warningが `FINALIZE_FAILED` で、検証済みの最終WAVを再生できることを確認する。
+5. アプリを再起動して復旧し、最終WAVが `source: final_wav` として採用され、同じtrackの `.recovered.wav` が重複生成されないことを確認する。
+6. 全音声が開始失敗したcleanupでもmanifest保存を失敗させ、Sessionが `FAILED_TO_START` となりアプリが次の録音を開始できることを確認する。
+
 ## 5. 15分テスト
 
 2分スモークテスト成功後に実施する。
