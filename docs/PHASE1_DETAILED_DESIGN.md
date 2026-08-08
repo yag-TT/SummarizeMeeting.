@@ -929,7 +929,7 @@ Phase 1スキーマ例:
 
 `<app-root>` はコピーされたアプリフォルダを指す。Application層は具体的なパスを直接組み立てず `PortableAppPathProvider` から取得する。開発実行時は `summarize-meeting/` を `<app-root>` とみなし、`summarize-meeting/data/` を使用する。テストでは一時ディレクトリを注入する。
 
-起動時に `data/`、`data/logs/`、`data/meetings/` の作成と書込みprobeを行う。書込みできない場合は録音画面へ進まず、「アプリフォルダを書込み可能な場所へコピーしてください」と表示する。
+起動時に `data/`、`data/logs/`、`data/meetings/` の作成と書込みprobeを行う。ディレクトリ作成、probe作成、write、flush、`fsync`、削除のいずれかが `OSError` になった場合も `AppRootNotWritableError` へ統一し、録音画面へ進まず「アプリフォルダを書込み可能な場所へコピーしてください」と表示する。probeは同時起動preflight同士で競合しないUUID付き一時名を使い、失敗時もbest-effortで削除する。固定名のprobeを共有しない。
 
 Phase 1設定:
 
