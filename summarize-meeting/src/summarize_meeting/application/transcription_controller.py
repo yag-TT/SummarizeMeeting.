@@ -75,6 +75,8 @@ class TranscriptionController(QObject):
             str(session_directory),
             "--models-dir",
             str(self._app_paths.models_dir),
+            "--cuda-runtime-dir",
+            str(self._app_paths.cuda_runtime_dir),
             "--model",
             self._model_name,
             "--language",

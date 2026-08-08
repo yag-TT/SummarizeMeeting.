@@ -17,6 +17,7 @@ def test_portable_paths_create_runtime_directories(tmp_path: Path) -> None:
     assert paths.meetings_dir.is_dir()
     assert paths.logs_dir.is_dir()
     assert paths.models_dir.is_dir()
+    assert paths.cuda_runtime_dir == tmp_path / "runtime" / "cuda" / "bin"
     assert list(paths.data_dir.glob(".write-probe-*")) == []
 
 

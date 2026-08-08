@@ -20,6 +20,12 @@ uv run summarize-meeting
 
 録音終了後、画面下部の「文字起こし」から実行します。既定モデルは`large-v3-turbo`、言語は日本語です。初回実行時はモデルを`models/faster-whisper/`へ取得するため時間とインターネット接続が必要です。会議音声と文字起こし結果は外部サービスへ送信しません。
 
+RTX GPUを使う開発環境では、CUDA 12のcuBLASとcuDNN 9をアプリ内へ準備します。スクリプトは固定したarchiveをSHA-256検証後に`runtime/cuda/bin/`へ展開します。DLLを配布物へ含める前にNVIDIAおよびarchiveの再配布条件を別途確認してください。
+
+```powershell
+.\scripts\setup-cuda-runtime.ps1
+```
+
 記録データは次へ保存されます。
 
 ```text
@@ -45,7 +51,8 @@ data/meetings/<session>/
 ```powershell
 uv run python -m summarize_meeting.processing.transcription_worker `
   --session "<data/meetings/セッション>" `
-  --models-dir "<アプリルート/models>"
+  --models-dir "<アプリルート/models>" `
+  --cuda-runtime-dir "<アプリルート/runtime/cuda/bin>"
 ```
 
 アプリ起動時に正常終了していないセッションを検出すると、復旧確認を表示します。復旧時は元の `.work` segmentを変更せず、`audio/microphone.recovered.wav` や `audio/system.recovered.wav` を新しく生成します。
@@ -90,3 +97,4 @@ uv run pytest -q tests/integration/test_wgc_backend.py
 - [引き継ぎ資料](../docs/CODEX_HANDOFF_MEETING_MINUTES_TOOL.md)
 - [Phase 1詳細設計](../docs/PHASE1_DETAILED_DESIGN.md)
 - [Phase 2詳細設計](../docs/PHASE2_DETAILED_DESIGN.md)
+- [Phase 2 STTスモーク試験](../docs/PHASE2_STT_SMOKE_TEST.md)

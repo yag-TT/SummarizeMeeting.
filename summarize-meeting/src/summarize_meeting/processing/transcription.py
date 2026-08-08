@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -32,6 +33,7 @@ class BackendTranscription:
     detected_language: str
     language_probability: float
     duration_seconds: float
+    runtime_device: str = "unknown"
 
 
 class TranscriptionBackend(Protocol):
@@ -49,6 +51,8 @@ class FasterWhisperBackend:
         self._model_name = model_name
         self._models_directory = models_directory
         self._model: Any | None = None
+        self._device: str | None = None
+        self._force_cpu = False
 
     def transcribe(
         self,
@@ -56,6 +60,35 @@ class FasterWhisperBackend:
         *,
         language: str,
         progress_callback: Callable[[float], None] | None = None,
+    ) -> BackendTranscription:
+        try:
+            return self._transcribe_with_model(
+                audio_path,
+                language=language,
+                progress_callback=progress_callback,
+            )
+        except RuntimeError as exc:
+            if self._device != "cuda" or not _is_cuda_runtime_error(exc):
+                raise
+            logging.getLogger(__name__).warning(
+                "CUDA runtime is unavailable; retrying transcription on CPU: %s",
+                exc,
+            )
+            self._model = None
+            self._device = None
+            self._force_cpu = True
+            return self._transcribe_with_model(
+                audio_path,
+                language=language,
+                progress_callback=progress_callback,
+            )
+
+    def _transcribe_with_model(
+        self,
+        audio_path: Path,
+        *,
+        language: str,
+        progress_callback: Callable[[float], None] | None,
     ) -> BackendTranscription:
         model = self._load_model()
         segments, info = model.transcribe(
@@ -90,6 +123,7 @@ class FasterWhisperBackend:
             detected_language=str(info.language),
             language_probability=float(info.language_probability),
             duration_seconds=duration,
+            runtime_device=self._device or "unknown",
         )
 
     def _load_model(self) -> Any:
@@ -98,10 +132,11 @@ class FasterWhisperBackend:
             from faster_whisper import WhisperModel
 
             self._models_directory.mkdir(parents=True, exist_ok=True)
-            has_cuda = ctranslate2.get_cuda_device_count() > 0
+            has_cuda = not self._force_cpu and ctranslate2.get_cuda_device_count() > 0
+            self._device = "cuda" if has_cuda else "cpu"
             self._model = WhisperModel(
                 self._model_name,
-                device="cuda" if has_cuda else "cpu",
+                device=self._device,
                 compute_type="float16" if has_cuda else "int8",
                 download_root=str(self._models_directory),
             )
@@ -188,6 +223,7 @@ class TranscriptionService:
                     language_probability=result.language_probability,
                     duration_seconds=result.duration_seconds,
                     segment_count=len(converted),
+                    runtime_device=result.runtime_device,
                 )
             )
 
@@ -293,3 +329,17 @@ def _format_timestamp(value: float) -> str:
     minutes, remainder = divmod(remainder, 60_000)
     seconds, milliseconds = divmod(remainder, 1000)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+
+
+def _is_cuda_runtime_error(error: RuntimeError) -> bool:
+    message = str(error).lower()
+    return any(
+        marker in message
+        for marker in (
+            "cuda",
+            "cublas",
+            "cudnn",
+            "curand",
+            "nvrtc",
+        )
+    )

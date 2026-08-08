@@ -41,10 +41,12 @@ PC音声の話者表示はPhase 3まで暫定的に`PC音声`とする。マイ�
 | task | transcribe |
 | VAD | faster-whisper内蔵VADを有効化 |
 | beam size | 5 |
-| device | CUDA認識時は`cuda`、それ以外は`cpu` |
+| device | CUDA認識時は`cuda`、それ以外は`cpu`。CUDA runtime不足時はCPUへ再試行 |
 | compute type | CUDA時は`float16`、CPU時は`int8` |
 
 モデルは初回実行時に取得し、`<app_root>/models/faster-whisper/`へ保持する。モデル取得以外の処理はローカルで完結し、会議音声や文字起こし結果を外部サービスへ送信しない。
+
+Windowsのポータブル開発構成ではCUDA 12.4のcuBLASとcuDNN 9.5 DLLを`<app_root>/runtime/cuda/bin/`へ置く。worker起動時だけこのディレクトリをDLL検索対象とし、OSの`System32`やシステムPATHを変更しない。
 
 モデルおよび依存ライブラリのライセンス確認とモデル同梱方式の確定は配布工程までの必須課題とする。
 
@@ -110,7 +112,8 @@ session_end_seconds   = estimated_start_offset_ms / 1000 + segment.end
       "detected_language": "ja",
       "language_probability": 0.99,
       "duration_seconds": 3600.0,
-      "segment_count": 120
+      "segment_count": 120,
+      "runtime_device": "cuda"
     }
   ],
   "segments": [
@@ -173,6 +176,8 @@ session_end_seconds   = estimated_start_offset_ms / 1000 + segment.end
 
 失敗しても録音済み原本と既存の成功済み出力は削除しない。再実行を許可する。
 
+CUDAデバイスを認識していても必要なCUDA runtime DLLをロードできない場合は、同じJob内でCPU `int8`へ一度だけ切り替えて再試行する。CPUでも失敗した場合はJob失敗とする。
+
 ## 11. 正常系受入条件
 
 基準端末はWindows 11、RTX 4060 8GB、RAM 64GBとする。
@@ -201,10 +206,9 @@ STT精度の数値閾値は社内会議音声の評価データと正解文を�
 
 ## 12. Phase 2残作業
 
-1. Windows実機でモデル初回取得とCUDA推論を確認する
-2. 実音声による短時間正常系試験を行う
-3. 過去セッション選択UIを追加する
-4. 自動文字起こし設定を追加する
-5. Job状態をsession metadataへ永続化する
-6. 1時間音声で処理時間、VRAM、segment品質を測定する
-7. ライセンスとモデル配布方式を確認する
+1. 実マイク・実PC再生音声による短時間正常系試験を行う
+2. 過去セッション選択UIを追加する
+3. 自動文字起こし設定を追加する
+4. Job状態をsession metadataへ永続化する
+5. 1時間音声で処理時間、VRAM、segment品質を測定する
+6. CUDA DLL、依存ライブラリ、モデルの再配布ライセンスを確認する

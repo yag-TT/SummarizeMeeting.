@@ -34,6 +34,10 @@ class PortableAppPaths:
         return self.app_root / "models"
 
     @property
+    def cuda_runtime_dir(self) -> Path:
+        return self.app_root / "runtime" / "cuda" / "bin"
+
+    @property
     def meetings_dir(self) -> Path:
         return self.data_dir / "meetings"
 

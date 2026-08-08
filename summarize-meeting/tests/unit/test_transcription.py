@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import wave
 from pathlib import Path
 
@@ -9,9 +10,12 @@ import pytest
 from summarize_meeting.processing.transcription import (
     BackendSegment,
     BackendTranscription,
+    FasterWhisperBackend,
     TranscriptionError,
     TranscriptionService,
+    _is_cuda_runtime_error,
 )
+from summarize_meeting.processing.transcription_worker import _configure_cuda_runtime
 
 
 class _Backend:
@@ -93,6 +97,7 @@ def test_transcription_merges_tracks_on_session_timeline(tmp_path: Path) -> None
         ("system", 0.8),
     ]
     assert [item["start_offset_ms"] for item in value["tracks"]] == [100, 700]
+    assert [item["runtime_device"] for item in value["tracks"]] == ["unknown", "unknown"]
     markdown = output.read_text(encoding="utf-8")
     assert "## 00:00:00.600" in markdown
     assert "**自分**" in markdown
@@ -120,3 +125,47 @@ def test_transcription_requires_at_least_one_supported_track(tmp_path: Path) -> 
 
     with pytest.raises(TranscriptionError, match="文字起こし可能な音声"):
         TranscriptionService(_Backend(), model_name="test-model").run(session)
+
+
+def test_faster_whisper_retries_cuda_runtime_failure_on_cpu(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = FasterWhisperBackend(model_name="test-model", models_directory=tmp_path)
+    calls = 0
+    expected = BackendTranscription((), "ja", 1.0, 0.0)
+
+    def transcribe(_audio_path: Path, *, language: str, progress_callback=None):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            backend._device = "cuda"
+            raise RuntimeError("Library cublas64_12.dll is not found")
+        assert language == "ja"
+        return expected
+
+    monkeypatch.setattr(backend, "_transcribe_with_model", transcribe)
+
+    result = backend.transcribe(tmp_path / "audio.wav", language="ja")
+
+    assert result is expected
+    assert calls == 2
+    assert backend._force_cpu
+
+
+def test_cuda_runtime_error_detection_does_not_hide_regular_inference_errors() -> None:
+    assert _is_cuda_runtime_error(RuntimeError("cudnn library cannot be loaded"))
+    assert not _is_cuda_runtime_error(RuntimeError("invalid audio tensor"))
+
+
+def test_worker_adds_portable_cuda_runtime_to_dll_search_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PATH", "existing-path")
+
+    handle = _configure_cuda_runtime(tmp_path)
+
+    assert handle is not None
+    assert os.environ["PATH"].split(os.pathsep)[0] == str(tmp_path.resolve())
+    handle.close()

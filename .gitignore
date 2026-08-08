@@ -205,6 +205,8 @@ tempCodeRunnerFile.py
 
 # Summarize Meeting portable runtime data
 summarize-meeting/data/
+summarize-meeting/models/
+summarize-meeting/runtime/
 
 # Ruff stuff:
 .ruff_cache/
