@@ -103,28 +103,6 @@ class _UiTranscriptionController(QObject):
         self.is_running = False
 
 
-class _UiAudioEnhancementController(QObject):
-    job_started = Signal(str)
-    job_progress = Signal(int, str)
-    job_finished = Signal(str, str)
-    job_failed = Signal(str, str)
-    job_canceled = Signal(str)
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.is_running = False
-        self.started_paths: list[Path] = []
-        self.cancel_count = 0
-
-    def start(self, path: Path) -> None:
-        self.started_paths.append(path)
-        self.is_running = True
-
-    def cancel(self) -> None:
-        self.cancel_count += 1
-        self.is_running = False
-
-
 class _UiDiarizationController(QObject):
     job_started = Signal(str)
     job_progress = Signal(int, str)
@@ -366,88 +344,6 @@ def test_ui_starts_transcription_after_successful_recording(
 
     assert transcription.started_paths == [session.resolve()]
     assert "自動実行" in window._message.text()  # noqa: SLF001
-    window.close()
-
-
-def test_ui_enhances_microphone_before_auto_transcription(
-    qapp: QApplication,
-    tmp_path: Path,
-) -> None:
-    session = _create_recorded_session(tmp_path)
-    _add_microphone_track(session)
-    recording = _UiController(microphone_id=None, system_id=None)
-    recording.meetings_directory = tmp_path
-    recording.auto_transcribe_after_recording = True
-    transcription = _UiTranscriptionController()
-    enhancement = _UiAudioEnhancementController()
-    window = MainWindow(  # type: ignore[arg-type]
-        recording,
-        transcription,  # type: ignore[arg-type]
-        FileSessionCatalog(tmp_path),
-        audio_enhancement_controller=enhancement,  # type: ignore[arg-type]
-    )
-
-    window._on_session_finished(str(session))  # noqa: SLF001
-
-    assert enhancement.started_paths == [session.resolve()]
-    assert transcription.started_paths == []
-    enhancement.is_running = False
-    enhancement.job_finished.emit(
-        str(session.resolve()),
-        str(session / "audio" / "microphone.enhanced.wav"),
-    )
-    assert transcription.started_paths == [session.resolve()]
-    window.close()
-
-
-def test_ui_falls_back_to_raw_when_auto_enhancement_fails(
-    qapp: QApplication,
-    tmp_path: Path,
-) -> None:
-    session = _create_recorded_session(tmp_path)
-    _add_microphone_track(session)
-    recording = _UiController(microphone_id=None, system_id=None)
-    recording.meetings_directory = tmp_path
-    recording.auto_transcribe_after_recording = True
-    transcription = _UiTranscriptionController()
-    enhancement = _UiAudioEnhancementController()
-    window = MainWindow(  # type: ignore[arg-type]
-        recording,
-        transcription,  # type: ignore[arg-type]
-        FileSessionCatalog(tmp_path),
-        audio_enhancement_controller=enhancement,  # type: ignore[arg-type]
-    )
-
-    window._on_session_finished(str(session))  # noqa: SLF001
-    enhancement.is_running = False
-    enhancement.job_failed.emit(str(session.resolve()), "モデルがありません")
-
-    assert transcription.started_paths == [session.resolve()]
-    assert "原音" in window._message.text()  # noqa: SLF001
-    window.close()
-
-
-def test_ui_can_start_and_cancel_manual_audio_enhancement(
-    qapp: QApplication,
-    tmp_path: Path,
-) -> None:
-    session = _create_recorded_session(tmp_path)
-    _add_microphone_track(session)
-    recording = _UiController(microphone_id=None, system_id=None)
-    recording.meetings_directory = tmp_path
-    enhancement = _UiAudioEnhancementController()
-    window = MainWindow(  # type: ignore[arg-type]
-        recording,
-        session_catalog=FileSessionCatalog(tmp_path),
-        audio_enhancement_controller=enhancement,  # type: ignore[arg-type]
-    )
-    window.refresh_analysis_sessions()
-
-    window._toggle_audio_enhancement()  # noqa: SLF001
-    window._toggle_audio_enhancement()  # noqa: SLF001
-
-    assert enhancement.started_paths == [session.resolve()]
-    assert enhancement.cancel_count == 1
     window.close()
 
 

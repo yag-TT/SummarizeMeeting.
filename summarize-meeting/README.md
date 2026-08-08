@@ -33,7 +33,7 @@ uv run summarize-meeting
 
 初回の依存取得後、アプリ画面で会議名、マイク、PC音声、取得画面を選択して「会議開始」を押します。PC音声は選択した出力デバイスから再生される全音声が対象です。
 
-マイク音声は原音を`audio/microphone.wav`へ保存し、録音終了後にローカルのDPDFNetでノイズ除去、80 Hzハイパス、-20 LUFS目標の音量正規化、-1.5 dBFSリミッターを適用した`audio/microphone.enhanced.wav`を自動生成します。過去の録音は「マイク音声改善」から実行・再実行できます。文字起こしは正常な改善版を優先し、モデル不足や処理失敗時は原音を使用します。
+マイク音声は原音を`audio/microphone.wav`へ保存し、文字起こしもこの原音を使用します。派生WAVは生成しません。
 
 録音終了後、画面下部の「文字起こし」から実行します。既定モデルは`large-v3-turbo`、言語は日本語です。初回実行時はモデルを`models/faster-whisper/`へ取得するため時間とインターネット接続が必要です。会議音声と文字起こし結果は外部サービスへ送信しません。
 
@@ -65,12 +65,6 @@ uv run summarize-meeting
 uv run python scripts/setup_models.py diarization
 ```
 
-マイク音声改善モデルも固定URLとSHA-256検証付きスクリプトで`models/sherpa-onnx/speech-enhancement/`へ配置します。モデルはリポジトリや配布物へ含めません。
-
-```console
-uv run python scripts/setup_models.py audio-enhancement
-```
-
 OCRモデルは固定revisionから取得し、ONNXファイルのSHA-256を検証して`models/paddleocr/`へ配置します。
 
 ```console
@@ -97,7 +91,6 @@ data/meetings/<session>/
 ├─ events.jsonl
 ├─ audio/
 │  ├─ microphone.wav
-│  ├─ microphone.enhanced.wav
 │  ├─ system.wav
 │  ├─ manifest.json
 │  └─ .work/
@@ -106,7 +99,6 @@ data/meetings/<session>/
 │  └─ 000001.png ...
 ├─ analysis/
 │  ├─ jobs.json
-│  ├─ audio_enhancement.json
 │  ├─ transcription.json
 │  ├─ diarization.json
 │  ├─ diarized_transcription.json
@@ -123,12 +115,6 @@ data/meetings/<session>/
 
 ```console
 uv run python -m summarize_meeting.processing.transcription_worker --session "<data/meetings/セッション>" --models-dir "<アプリルート/models>"
-```
-
-マイク音声改善workerだけを実行する場合:
-
-```console
-uv run python -m summarize_meeting.processing.audio_enhancement_worker --session "<data/meetings/セッション>" --models-dir "<アプリルート/models>"
 ```
 
 話者分離workerだけを実行する場合:
@@ -157,7 +143,7 @@ uv run python -m summarize_meeting.processing.minutes_worker --session "<data/me
 
 PC音声loopbackにはSoundCardを使用します。WindowsではWASAPI loopback、UbuntuではPulseAudio互換のmonitor sourceを列挙します。物理マイクの音声形式をSoundCardで開始できない場合は、同名のsounddevice入力へ自動的にフォールバックします。
 
-会議開始前に保存先の空き容量を確認し、5 GiB未満では録音を開始しません。マイクを選択した場合は、改善版1時間分の約330 MiBも開始時の必要容量へ加算します。録音中は60秒ごとに確認し、5 GiB未満になった場合は新しい画面保存を停止して音声録音を優先します。データを自動削除して容量を確保することはありません。
+会議開始前に保存先の空き容量を確認し、5 GiB未満では録音を開始しません。録音中は60秒ごとに確認し、5 GiB未満になった場合は新しい画面保存を停止して音声録音を優先します。データを自動削除して容量を確保することはありません。
 
 前回使用したマイクとPC音声のdevice ID、画面変更検知設定、保持方針、自動文字起こし、ログレベルは `data/settings.json` に保存します。壊れた設定は `data/settings.corrupt-<timestamp>.json` へ退避し、既定値で起動します。保存済みdevice IDが見つからない場合、別デバイスへ自動切替はしません。
 

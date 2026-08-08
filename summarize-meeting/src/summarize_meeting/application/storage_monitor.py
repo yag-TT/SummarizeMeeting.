@@ -8,7 +8,6 @@ from typing import Protocol
 
 MINIMUM_FREE_BYTES = 5 * 1024**3
 DEFAULT_CHECK_INTERVAL_SECONDS = 60.0
-ENHANCED_MICROPHONE_RESERVE_BYTES = 48_000 * 2 * 60 * 60
 
 
 class StorageProbe(Protocol):
@@ -63,17 +62,11 @@ class StorageMonitor:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
-    def check_start_allowed(self, *, additional_required_bytes: int = 0) -> StorageCapacity:
-        if additional_required_bytes < 0:
-            raise ValueError("additional_required_bytes must not be negative")
+    def check_start_allowed(self) -> StorageCapacity:
         capacity = self.check()
-        adjusted = StorageCapacity(
-            free_bytes=capacity.free_bytes,
-            minimum_free_bytes=capacity.minimum_free_bytes + additional_required_bytes,
-        )
-        if adjusted.is_low:
-            raise InsufficientDiskSpaceError(adjusted)
-        return adjusted
+        if capacity.is_low:
+            raise InsufficientDiskSpaceError(capacity)
+        return capacity
 
     def check(self) -> StorageCapacity:
         try:

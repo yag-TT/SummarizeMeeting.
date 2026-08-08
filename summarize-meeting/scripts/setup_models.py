@@ -20,25 +20,16 @@ EMBEDDING_URL = (
     "speaker-recongition-models/nemo_en_titanet_small.onnx"
 )
 EMBEDDING_SHA256 = "AD4A1802485D8B34C722D2A9D04249662F2ECE5D28A7A039063CA22F515A789E"
-ENHANCEMENT_URL = (
-    "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
-    "speech-enhancement-models/dpdfnet2_48khz_hr.onnx"
-)
-ENHANCEMENT_SHA256 = "0B399F8A58DC4D70D8CD97541F5C39869406145193B957D00A03B66070944928"
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Download verified local inference models")
     parser.add_argument(
         "model",
-        choices=("diarization", "audio-enhancement", "ocr", "all"),
+        choices=("diarization", "ocr", "all"),
     )
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
     if args.model in {"diarization", "all"}:
         setup_diarization(force=args.force)
-    if args.model in {"audio-enhancement", "all"}:
-        setup_audio_enhancement(force=args.force)
     if args.model in {"ocr", "all"}:
         setup_ocr(force=args.force)
     return 0
@@ -79,27 +70,6 @@ def setup_diarization(*, force: bool) -> None:
     if not all(path.is_file() and path.stat().st_size > 0 for path in required):
         raise RuntimeError("Model setup completed but required files are missing")
     print(f"Speaker diarization models are ready: {model_root}")
-
-
-def setup_audio_enhancement(*, force: bool) -> None:
-    model_path = (
-        PROJECT_ROOT
-        / "models"
-        / "sherpa-onnx"
-        / "speech-enhancement"
-        / "dpdfnet2_48khz_hr.onnx"
-    )
-    if not force and _matches_hash(model_path, ENHANCEMENT_SHA256):
-        print(f"Audio enhancement model is already available: {model_path}")
-        return
-    model_path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="setup-", dir=model_path.parent) as temporary_value:
-        download = Path(temporary_value) / model_path.name
-        _download_verified(ENHANCEMENT_URL, download, ENHANCEMENT_SHA256)
-        _copy_atomic(download, model_path)
-    if not _matches_hash(model_path, ENHANCEMENT_SHA256):
-        raise RuntimeError(f"Model setup completed but the model is invalid: {model_path}")
-    print(f"Audio enhancement model is ready: {model_path}")
 
 
 def setup_ocr(*, force: bool) -> None:

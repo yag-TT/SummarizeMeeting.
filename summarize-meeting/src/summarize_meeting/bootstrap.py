@@ -8,9 +8,6 @@ from typing import Protocol
 from PySide6.QtCore import QLockFile, QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from summarize_meeting.application.audio_enhancement_controller import (
-    AudioEnhancementController,
-)
 from summarize_meeting.application.diarization_controller import DiarizationController
 from summarize_meeting.application.minutes_controller import MinutesController
 from summarize_meeting.application.recording_controller import RecordingController
@@ -81,7 +78,6 @@ def main() -> int:
         settings_repository=settings_repository,
     )
     transcription_controller = TranscriptionController(paths)
-    audio_enhancement_controller = AudioEnhancementController(paths)
     diarization_controller = DiarizationController(paths)
     screen_analysis_controller = ScreenAnalysisController(paths)
     minutes_controller = MinutesController(paths)
@@ -91,7 +87,6 @@ def main() -> int:
         diarization_controller=diarization_controller,
         screen_analysis_controller=screen_analysis_controller,
         minutes_controller=minutes_controller,
-        audio_enhancement_controller=audio_enhancement_controller,
     )
     recovery_controller = RecoveryController(SessionRecoveryService(paths.meetings_dir))
     recovery_controller.progress.connect(window.show_information)

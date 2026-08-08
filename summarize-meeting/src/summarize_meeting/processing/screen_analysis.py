@@ -18,17 +18,18 @@ from summarize_meeting.domain.screen_analysis import OcrLine, ScreenRecognition
 ProgressCallback = Callable[[int, str], None]
 
 _PADDLE_MODELS = (
+    # The last value is the SHA-256 from Hugging Face's LFS oid, not the Xet hash.
     (
         "PP-OCRv6_medium_det",
         "PaddlePaddle/PP-OCRv6_medium_det_onnx",
         "61323801669c338b7891481ec7bac61ce31b576a",
-        "463732affa49c479c2d6319a0962c5c0889f6044fa999a9b93edbda807cefe2c",
+        "eb13b44b25bb36f89528b68720af8a61d9cf381176107f465db1757b65d086e1",
     ),
     (
         "PP-OCRv6_medium_rec",
         "PaddlePaddle/PP-OCRv6_medium_rec_onnx",
         "50c7eacafc52fa7bcf4194e8cd08e46f8558504b",
-        "ebc14563f1f93a58f5061fb87f0681d8d0afffc5cddfeda6a8cfed444cabd3c8",
+        "9c09abf0957f7968c7586464b7397b84ad2387a0497a351af40e9acc71b673ba",
     ),
 )
 
