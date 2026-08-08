@@ -428,6 +428,13 @@ class RecordingController(QObject):
             stats,
             monotonic_origin_ns=self._origin_ns,
         )
+        cleanup_warnings = [
+            f"{track}: {track_stats.work_cleanup_error}"
+            for track, track_stats in stats.items()
+            if track_stats.work_cleanup_error is not None
+        ]
+        for warning in cleanup_warnings:
+            self._append_event("audio_work_cleanup_failed", message=warning)
         ended_ns = time.perf_counter_ns()
         with self._lock:
             session.ended_at = RecordingSession.now_iso()
@@ -435,6 +442,10 @@ class RecordingController(QObject):
             session.status = SessionStatus.INTERRUPTED if failures else SessionStatus.RECORDED
             for failure in failures:
                 session.add_warning("FINALIZE_FAILED", failure, session.duration_ms)
+            for warning in cleanup_warnings:
+                session.add_warning(
+                    "AUDIO_WORK_CLEANUP_FAILED", warning, session.duration_ms
+                )
             self._repository.save(paths, session)
         self._append_event("session_finished", failures=failures)
         if failures:

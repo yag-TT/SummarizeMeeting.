@@ -536,6 +536,8 @@ audio/
 - 完了segmentごとにframe数とbyte数をmanifestへatomic保存する。
 - 正常停止時は現在segmentをcloseし、同一formatのsegmentを順に結合する。
 - 最終WAVを検証してから `.work` を削除する。
+- 最終WAVは再openし、PCM形式、sample rate、channel数、sample幅、header上のframe数、末尾まで実際に読めたframe数、durationを検証する。
+- WAV検証失敗時はfinalize失敗としてsegmentを保持する。検証成功後の `.work` 削除だけが失敗した場合は、WAVを有効として `AUDIO_WORK_CLEANUP_FAILED` warningを記録する。
 - 統合中に失敗した場合はsegmentを残し、再試行可能にする。
 - 次回起動時に未完了segmentを検出したら、開けるsegmentだけでrecovered WAVを生成する。
 - 最終ファイルが4 GiBへ近づく構成では標準RIFF WAVの上限が問題になるため、事前容量計算で警告する。1時間・PCM16・48 kHzの想定内で実測する。
@@ -564,6 +566,9 @@ audio/
       "max_queue_usage_ratio": 0.12,
       "queue_capacity_chunks": 300,
       "segments": 60,
+      "validated": true,
+      "work_files_removed": true,
+      "work_cleanup_error": null,
       "gaps": []
     },
     "system": {
@@ -581,6 +586,9 @@ audio/
       "max_queue_usage_ratio": 0.83,
       "queue_capacity_chunks": 300,
       "segments": 60,
+      "validated": true,
+      "work_files_removed": true,
+      "work_cleanup_error": null,
       "gaps": []
     }
   }

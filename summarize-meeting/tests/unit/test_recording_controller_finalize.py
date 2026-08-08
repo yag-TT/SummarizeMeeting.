@@ -1,0 +1,118 @@
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+
+from summarize_meeting.application.recording_controller import RecordingController
+from summarize_meeting.domain.session import (
+    ComponentKind,
+    ComponentStatus,
+    RecordingSession,
+    SessionStatus,
+)
+from summarize_meeting.infrastructure.audio_writer import (
+    AudioTrackStats,
+    WaveValidationError,
+)
+from summarize_meeting.infrastructure.paths import PortableAppPaths
+
+
+class _NoopStorageMonitor:
+    def request_stop(self) -> None:
+        pass
+
+    def finish(self) -> None:
+        pass
+
+
+class _FakeAudioRecorder:
+    def __init__(
+        self,
+        *,
+        result: AudioTrackStats | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self._result = result
+        self._error = error
+
+    def request_stop(self) -> None:
+        pass
+
+    def finish(self) -> AudioTrackStats | None:
+        if self._error is not None:
+            raise self._error
+        return self._result
+
+
+def _prepare_controller(tmp_path: Path) -> tuple[RecordingController, Path]:
+    app_paths = PortableAppPaths(tmp_path)
+    app_paths.ensure_writable()
+    controller = RecordingController(
+        app_paths,
+        storage_monitor=_NoopStorageMonitor(),  # type: ignore[arg-type]
+    )
+    session = RecordingSession(title="finalize", status=SessionStatus.RECORDING)
+    session.audio[ComponentKind.MICROPHONE.value] = {"id": "mic"}
+    session.set_component(ComponentKind.MICROPHONE, ComponentStatus.RUNNING)
+    session.set_component(ComponentKind.SESSION_STORAGE, ComponentStatus.RUNNING)
+    paths = controller._repository.create(session)  # noqa: SLF001
+    controller._session = session  # noqa: SLF001
+    controller._session_paths = paths  # noqa: SLF001
+    controller._origin_ns = time.perf_counter_ns()  # noqa: SLF001
+    return controller, paths.root
+
+
+def test_finalize_validation_failure_interrupts_session(tmp_path: Path) -> None:
+    controller, session_root = _prepare_controller(tmp_path)
+    controller._audio_recorders = {  # type: ignore[dict-item]  # noqa: SLF001
+        ComponentKind.MICROPHONE: _FakeAudioRecorder(
+            error=WaveValidationError("Final WAV cannot be opened")
+        )
+    }
+
+    controller._stop_session_worker()  # noqa: SLF001
+
+    metadata = json.loads((session_root / "session.json").read_text(encoding="utf-8"))
+    assert metadata["status"] == SessionStatus.INTERRUPTED
+    assert metadata["components"][ComponentKind.MICROPHONE.value]["status"] == (
+        ComponentStatus.FAILED
+    )
+    assert metadata["components"][ComponentKind.MICROPHONE.value]["error_code"] == (
+        "FINALIZE_FAILED"
+    )
+    assert any(warning["code"] == "FINALIZE_FAILED" for warning in metadata["warnings"])
+
+
+def test_finalize_cleanup_failure_is_recorded_as_warning(tmp_path: Path) -> None:
+    controller, session_root = _prepare_controller(tmp_path)
+    stats = AudioTrackStats(
+        file="audio/microphone.wav",
+        sample_rate=48_000,
+        channels=1,
+        sample_width_bytes=2,
+        frames_written=48_000,
+        segments=1,
+        audio_duration_ms=1_000.0,
+        validated=True,
+        work_files_removed=False,
+        work_cleanup_error="work directory is busy",
+    )
+    controller._audio_recorders = {  # type: ignore[dict-item]  # noqa: SLF001
+        ComponentKind.MICROPHONE: _FakeAudioRecorder(result=stats)
+    }
+
+    controller._stop_session_worker()  # noqa: SLF001
+
+    metadata = json.loads((session_root / "session.json").read_text(encoding="utf-8"))
+    assert metadata["status"] == SessionStatus.RECORDED
+    warning = next(
+        warning
+        for warning in metadata["warnings"]
+        if warning["code"] == "AUDIO_WORK_CLEANUP_FAILED"
+    )
+    assert "work directory is busy" in warning["message"]
+    manifest = json.loads(
+        (session_root / "audio" / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert not manifest["tracks"]["microphone"]["work_files_removed"]

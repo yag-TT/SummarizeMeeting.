@@ -206,7 +206,8 @@ uv run pytest -q tests/integration/test_wgc_backend.py
 - `events.jsonl` に予期しない `AUDIO_CAPTURE_FAILED` がない
 - 会議終了後に2つのWAVを開ける
 - WAV時間と `duration_ms` の差を記録する
-- `audio/.work/` のsegment数と最終WAVのframe数を記録する
+- `audio/manifest.json` のsegment数と最終WAVのframe数を記録する
+- 正常終了後に対象trackの `audio/.work/` が削除されていることを確認する
 - 2trackの `estimated_start_offset_ms` 差と `duration_drift_ms` を記録する
 - `queue_pressure_count`、`max_queue_usage_ratio`、`overflow_count` を記録する
 - PNG枚数と合計容量を記録する
