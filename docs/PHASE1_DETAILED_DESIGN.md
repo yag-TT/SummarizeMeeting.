@@ -1063,6 +1063,8 @@ Phase 1では会議予定時間入力を必須にしないため、最低空き�
 7. `session.json` を `INTERRUPTED` に更新し、復旧結果をwarningへ追加する。
 8. 画面一時ファイルはdecode可能なら正式名へ復旧し、不可能なら残してログへ記録する。
 
+完成済みWAVが存在する場合は、音声manifestがあればformat、frame数、durationを照合し、PCMデータを末尾まで読めることを確認する。manifestが未作成または項目不足の場合は、WAV headerから得たformatとframe数を使って自己整合性を検証する。検証済みの最終WAVは復旧結果の `source` を `final_wav` として採用し、同じtrackのsegmentから重複したrecovered WAVを作らない。最終WAVが破損しているかmanifestと不一致の場合はwarningを記録し、`.work` segmentからの復旧へフォールバックする。segmentから生成した結果の `source` は `segments` とする。
+
 画面temp復旧では `screenshots/*.png.tmp` を再decodeする。同名の正式PNGがなくdecode可能な場合だけ `.tmp` を外してatomic renameし、復旧した相対パスを `session.json.recovery.screenshots` と `session_recovered` eventへ記録する。decode不能、同名正式PNGあり、rename失敗の場合はtemp原本を変更せずwarningへ記録する。
 
 復旧処理は自動検出するが、原本削除や破損segmentの切り捨てはユーザー確認なしに行わない。

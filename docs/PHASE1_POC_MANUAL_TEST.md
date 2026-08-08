@@ -117,6 +117,8 @@ screenshots/*.png
 8. `audio/microphone.recovered.wav` または `audio/system.recovered.wav` を再生できることを確認する。
 9. `session.json` が `INTERRUPTED` となり、`recovery` に復旧結果が記録されることを確認する。
 
+finalize中断を再現できる場合は、完成済みの最終WAVと `.work` が両方残った状態で復旧する。`session.json` の `recovery.tracks[].source` が `final_wav` となり、同じtrackの `.recovered.wav` が重複生成されないことを確認する。最終WAVを破損させる試験は必ずテストデータのコピーで行い、検証失敗warningとsegment復旧へのフォールバックを確認する。
+
 ### 4.4 音声デバイスの再接続
 
 安全に抜き差しできるUSBマイクまたはテスト用仮想Audioデバイスで実施する。業務会議中には行わない。

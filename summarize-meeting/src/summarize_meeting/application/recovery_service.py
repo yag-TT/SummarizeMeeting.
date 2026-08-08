@@ -14,7 +14,14 @@ from typing import Any
 import cv2
 from PySide6.QtCore import QObject, Signal
 
+from summarize_meeting.domain.capture import AudioFormat
 from summarize_meeting.domain.session import SessionStatus
+from summarize_meeting.infrastructure.audio_writer import (
+    WaveValidation,
+    WaveValidationError,
+    inspect_wave_file,
+    validate_wave_file,
+)
 
 _INTERRUPTED_STATUSES = {
     SessionStatus.PREPARING.value,
@@ -41,6 +48,7 @@ class RecoveredTrack:
     channels: int
     recovered_segments: int
     skipped_segments: int
+    source: str = "segments"
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,18 +87,21 @@ class SessionRecoveryService:
 
     def recover(self, candidate: InterruptedSession) -> RecoveryResult:
         warnings: list[str] = []
-        recovered_tracks: list[RecoveredTrack] = []
+        session_value = json.loads(candidate.session_json.read_text(encoding="utf-8"))
+        final_tracks = self._inspect_final_tracks(candidate.root, warnings)
+        recovered_tracks: list[RecoveredTrack] = list(final_tracks.values())
         work_root = candidate.root / "audio" / ".work"
         if work_root.is_dir():
             for track_dir in sorted(path for path in work_root.iterdir() if path.is_dir()):
+                if track_dir.name in final_tracks:
+                    continue
                 result = self._recover_track(candidate.root, track_dir, warnings)
                 if result is not None:
                     recovered_tracks.append(result)
-        else:
+        elif not final_tracks:
             warnings.append("audio/.work が見つかりません")
         recovered_screenshots = self._recover_screenshots(candidate.root, warnings)
 
-        session_value = json.loads(candidate.session_json.read_text(encoding="utf-8"))
         recovered_at = datetime.now().astimezone().isoformat(timespec="seconds")
         session_value["status"] = SessionStatus.INTERRUPTED.value
         session_value["recovery"] = {
@@ -131,6 +142,115 @@ class SessionRecoveryService:
             recovered_screenshots=recovered_screenshots,
             warnings=tuple(warnings),
         )
+
+    def _inspect_final_tracks(
+        self,
+        session_root: Path,
+        warnings: list[str],
+    ) -> dict[str, RecoveredTrack]:
+        audio_dir = session_root / "audio"
+        if not audio_dir.is_dir():
+            return {}
+        expectations = self._load_audio_manifest(audio_dir, warnings)
+        validated: dict[str, RecoveredTrack] = {}
+        for path in sorted(audio_dir.glob("*.wav")):
+            if path.name.endswith(".recovered.wav"):
+                continue
+            try:
+                validation = self._validate_final_wave(
+                    path,
+                    expectations.get(path.name),
+                    warnings,
+                )
+            except WaveValidationError as exc:
+                warnings.append(f"audio/{path.name}: 最終WAV検証失敗: {exc}")
+                continue
+            track = path.stem
+            validated[track] = RecoveredTrack(
+                track=track,
+                output=str(path.relative_to(session_root)).replace("\\", "/"),
+                frames=validation.frames,
+                sample_rate=validation.sample_rate,
+                channels=validation.channels,
+                recovered_segments=0,
+                skipped_segments=0,
+                source="final_wav",
+            )
+        return validated
+
+    @staticmethod
+    def _load_audio_manifest(
+        audio_dir: Path,
+        warnings: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        path = audio_dir / "manifest.json"
+        if not path.is_file():
+            return {}
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            tracks = value.get("tracks", {})
+            if not isinstance(tracks, dict):
+                raise ValueError("tracksがobjectではありません")
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            warnings.append(f"audio/manifest.json: 読み込めません: {exc}")
+            return {}
+
+        expectations: dict[str, dict[str, Any]] = {}
+        for track_name, track in tracks.items():
+            if not isinstance(track, dict):
+                warnings.append(f"audio/manifest.json: {track_name} がobjectではありません")
+                continue
+            file_value = track.get("file")
+            if not isinstance(file_value, str):
+                warnings.append(f"audio/manifest.json: {track_name}.file がありません")
+                continue
+            expectations[Path(file_value).name] = track
+        return expectations
+
+    @staticmethod
+    def _validate_final_wave(
+        path: Path,
+        expectation: dict[str, Any] | None,
+        warnings: list[str],
+    ) -> WaveValidation:
+        if expectation is None:
+            return inspect_wave_file(path)
+        try:
+            expected_format = AudioFormat(
+                sample_rate=int(expectation["sample_rate"]),
+                channels=int(expectation["channels"]),
+                sample_width_bytes=int(expectation["sample_width_bytes"]),
+            )
+            expected_frames = int(expectation["frames_written"])
+        except (KeyError, TypeError, ValueError) as exc:
+            warnings.append(
+                f"audio/{path.name}: manifest項目が不完全なためWAV単体で検証します: {exc}"
+            )
+            return inspect_wave_file(path)
+
+        validation = validate_wave_file(
+            path,
+            expected_format=expected_format,
+            expected_frames=expected_frames,
+        )
+        expected_duration = expectation.get("audio_duration_ms")
+        if expected_duration is not None:
+            try:
+                duration_difference = abs(
+                    validation.duration_ms - float(expected_duration)
+                )
+            except (TypeError, ValueError) as exc:
+                warnings.append(
+                    f"audio/{path.name}: manifestのdurationを比較できません: {exc}"
+                )
+            else:
+                if duration_difference > 0.001:
+                    raise WaveValidationError(
+                        "Final WAV duration mismatch: "
+                        f"{path} expected={expected_duration} "
+                        f"actual={validation.duration_ms}"
+                    )
+        return validation
 
     @staticmethod
     def _recover_screenshots(session_root: Path, warnings: list[str]) -> tuple[str, ...]:

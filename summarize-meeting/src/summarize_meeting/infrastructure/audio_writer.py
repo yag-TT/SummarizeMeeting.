@@ -58,6 +58,24 @@ class WaveValidationError(RuntimeError):
     pass
 
 
+def inspect_wave_file(path: Path) -> WaveValidation:
+    try:
+        with wave.open(str(path), "rb") as stream:
+            expected_format = AudioFormat(
+                sample_rate=stream.getframerate(),
+                channels=stream.getnchannels(),
+                sample_width_bytes=stream.getsampwidth(),
+            )
+            expected_frames = stream.getnframes()
+    except (EOFError, OSError, wave.Error) as exc:
+        raise WaveValidationError(f"WAV cannot be opened: {path}: {exc}") from exc
+    return validate_wave_file(
+        path,
+        expected_format=expected_format,
+        expected_frames=expected_frames,
+    )
+
+
 def validate_wave_file(
     path: Path,
     *,
