@@ -24,6 +24,7 @@ from summarize_meeting.application.recording_controller import (
     CaptureSourcesSnapshot,
     RecordingController,
 )
+from summarize_meeting.application.transcription_controller import TranscriptionController
 from summarize_meeting.domain.capture import AudioDevice, ScreenTarget
 from summarize_meeting.ui.status_row import CaptureStatusRow
 
@@ -31,9 +32,14 @@ from summarize_meeting.ui.status_row import CaptureStatusRow
 class MainWindow(QMainWindow):
     _SOURCE_REFRESH_TIMEOUT_MS = 10_000
 
-    def __init__(self, controller: RecordingController) -> None:
+    def __init__(
+        self,
+        controller: RecordingController,
+        transcription_controller: TranscriptionController | None = None,
+    ) -> None:
         super().__init__()
         self._controller = controller
+        self._transcription_controller = transcription_controller
         self._started_at: datetime | None = None
         self._session_path: Path | None = None
         self._sources_loaded = False
@@ -42,8 +48,8 @@ class MainWindow(QMainWindow):
         self._close_requested = False
         self._os_shutdown_requested = False
         self._session_error_message: str | None = None
-        self.setWindowTitle("Summarize Meeting - Phase 1 PoC")
-        self.resize(880, 520)
+        self.setWindowTitle("Summarize Meeting - Phase 2 PoC")
+        self.resize(880, 620)
 
         central = QWidget()
         root = QVBoxLayout(central)
@@ -101,6 +107,22 @@ class MainWindow(QMainWindow):
         self._finalize_progress.setVisible(False)
         root.addWidget(self._finalize_progress)
 
+        analysis = QHBoxLayout()
+        analysis.addWidget(QLabel("文字起こし"))
+        self._transcription_status = QLabel("未実行")
+        analysis.addWidget(self._transcription_status)
+        analysis.addStretch(1)
+        self._transcribe = QPushButton("実行")
+        self._transcribe.setEnabled(False)
+        analysis.addWidget(self._transcribe)
+        root.addLayout(analysis)
+        self._transcription_progress = QProgressBar()
+        self._transcription_progress.setRange(0, 100)
+        self._transcription_progress.setValue(0)
+        self._transcription_progress.setFormat("文字起こし %p%")
+        self._transcription_progress.setVisible(False)
+        root.addWidget(self._transcription_progress)
+
         action = QHBoxLayout()
         self._start = QPushButton("会議開始")
         self._stop = QPushButton("会議終了")
@@ -121,6 +143,7 @@ class MainWindow(QMainWindow):
         self._start.clicked.connect(self._start_recording)
         self._stop.clicked.connect(self._stop_recording)
         self._reselect.clicked.connect(self._replace_screen)
+        self._transcribe.clicked.connect(self._toggle_transcription)
         self._microphone.currentIndexChanged.connect(self._update_idle_source_names)
         self._system_audio.currentIndexChanged.connect(self._update_idle_source_names)
         self._screen_target.currentIndexChanged.connect(self._update_idle_source_names)
@@ -137,6 +160,12 @@ class MainWindow(QMainWindow):
         controller.finalize_progress.connect(self._on_finalize_progress)
         controller.session_finished.connect(self._on_session_finished)
         controller.fatal_error.connect(self._on_fatal_error)
+        if transcription_controller is not None:
+            transcription_controller.job_started.connect(self._on_transcription_started)
+            transcription_controller.job_progress.connect(self._on_transcription_progress)
+            transcription_controller.job_finished.connect(self._on_transcription_finished)
+            transcription_controller.job_failed.connect(self._on_transcription_failed)
+            transcription_controller.job_canceled.connect(self._on_transcription_canceled)
         QTimer.singleShot(0, self.refresh_sources)
 
     def refresh_sources(self) -> None:
@@ -288,6 +317,8 @@ class MainWindow(QMainWindow):
         self._stop.setEnabled(True)
         self._reselect.setEnabled(False)
         self._screenshots.setText("保存画像 0")
+        self._transcription_status.setText("未実行")
+        self._transcribe.setEnabled(False)
         self.show_information("録音デバイスを準備しています。")
 
     def _on_session_started(self, path: str) -> None:
@@ -313,6 +344,7 @@ class MainWindow(QMainWindow):
             self.show_error(f"記録の保存中に問題が発生しました: {error_message} 保存先: {path}")
         else:
             self.show_information(f"記録を保存しました: {path}")
+        self._update_transcription_availability()
         self._close_if_requested()
 
     def _on_finalize_progress(self, percent: int, message: str) -> None:
@@ -350,6 +382,80 @@ class MainWindow(QMainWindow):
         self._finalize_progress.setValue(0)
         self._finalize_progress.setFormat("保存処理 %p%")
         self._session_error_message = None
+
+    def _toggle_transcription(self) -> None:
+        controller = self._transcription_controller
+        if controller is None:
+            self.show_error("文字起こし機能を初期化できませんでした。")
+            return
+        if controller.is_running:
+            self._transcribe.setEnabled(False)
+            self._transcription_status.setText("キャンセル中")
+            controller.cancel()
+            return
+        if self._session_path is None:
+            self.show_error("文字起こしする会議記録がありません。")
+            return
+        try:
+            controller.start(self._session_path)
+        except Exception as exc:
+            self.show_error(str(exc))
+
+    def _on_transcription_started(self, session_path: str) -> None:
+        if not self._is_current_session(session_path):
+            return
+        self._set_inputs_enabled(False)
+        self._start.setEnabled(False)
+        self._transcription_status.setText("実行中")
+        self._transcribe.setText("キャンセル")
+        self._transcribe.setEnabled(True)
+        self._transcription_progress.setValue(0)
+        self._transcription_progress.setVisible(True)
+        self.show_information(
+            "文字起こしモデルを準備しています。初回はモデルの取得に時間がかかります。"
+        )
+
+    def _on_transcription_progress(self, percent: int, message: str) -> None:
+        self._transcription_progress.setValue(percent)
+        self._transcription_progress.setFormat(f"文字起こし %p% - {message}")
+        self.show_information(message)
+
+    def _on_transcription_finished(self, session_path: str, output_path: str) -> None:
+        if not self._is_current_session(session_path):
+            return
+        self._finish_transcription_ui("完了")
+        self.show_information(f"文字起こしを保存しました: {output_path}")
+
+    def _on_transcription_failed(self, session_path: str, message: str) -> None:
+        if not self._is_current_session(session_path):
+            return
+        self._finish_transcription_ui("失敗")
+        self.show_error(message)
+
+    def _on_transcription_canceled(self, session_path: str) -> None:
+        if not self._is_current_session(session_path):
+            return
+        self._finish_transcription_ui("キャンセル")
+        self.show_information("文字起こしをキャンセルしました。")
+
+    def _finish_transcription_ui(self, status: str) -> None:
+        self._transcription_status.setText(status)
+        self._transcribe.setText("再実行")
+        self._transcribe.setEnabled(True)
+        self._transcription_progress.setVisible(False)
+        self._set_inputs_enabled(True)
+        self._start.setEnabled(True)
+
+    def _update_transcription_availability(self) -> None:
+        if self._transcription_controller is None or self._session_path is None:
+            self._transcribe.setEnabled(False)
+            return
+        manifest = self._session_path / "audio" / "manifest.json"
+        has_audio = any((self._session_path / "audio").glob("*.wav"))
+        self._transcribe.setEnabled(manifest.is_file() and has_audio)
+
+    def _is_current_session(self, value: str) -> bool:
+        return self._session_path is not None and Path(value) == self._session_path
 
     def _close_if_requested(self) -> None:
         if self._close_requested:
@@ -440,6 +546,8 @@ class MainWindow(QMainWindow):
         self._reselect.setEnabled(False)
         if self._controller.is_recording:
             self.show_information("Windowsの終了に備えて記録を保存しています。")
+        if self._transcription_controller is not None:
+            self._transcription_controller.cancel()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         if self._controller.is_recording:
@@ -466,4 +574,6 @@ class MainWindow(QMainWindow):
             self._controller.stop_session()
             event.ignore()
             return
+        if self._transcription_controller is not None:
+            self._transcription_controller.cancel()
         event.accept()

@@ -30,6 +30,10 @@ class PortableAppPaths:
         return self.app_root / "data"
 
     @property
+    def models_dir(self) -> Path:
+        return self.app_root / "models"
+
+    @property
     def meetings_dir(self) -> Path:
         return self.data_dir / "meetings"
 
@@ -48,7 +52,7 @@ class PortableAppPaths:
     def ensure_writable(self) -> None:
         probe: Path | None = None
         try:
-            for path in (self.data_dir, self.meetings_dir, self.logs_dir):
+            for path in (self.data_dir, self.meetings_dir, self.logs_dir, self.models_dir):
                 path.mkdir(parents=True, exist_ok=True)
             probe = self.data_dir / f".write-probe-{uuid4().hex}"
             with probe.open("xb") as stream:

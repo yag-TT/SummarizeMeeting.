@@ -2,14 +2,14 @@
 
 Teams、Google Meetなどのオンライン会議について、マイク音声、PC再生音声、選択したウィンドウの重要な画面変更をローカル保存し、会議終了後に議事録を生成するデスクトップアプリケーションです。
 
-現在はPhase 1「記録基盤」のPoC段階です。Windows 11でマイクとPC音声の別トラック録音、音量メーター、Windows Graphics Captureによる選択ウィンドウの画面変更保存、セッションJSON生成を試せます。文字起こし、話者分離、画面理解、議事録生成はまだ実装していません。
+現在はPhase 2「STT」のPoC段階です。Phase 1の記録機能に加え、録音終了後にfaster-whisperを別プロセスで実行し、マイクとPC音声の文字起こし、timestamp付きJSON、仮の`transcript.md`生成を試せます。話者分離、画面理解、議事録生成はまだ実装していません。
 
 ## 開発環境
 
 - Python 3.11
 - uv
 - Windows 11先行
-- Phase 1のUIは日本語のみ
+- UIは日本語のみ
 
 ```powershell
 uv sync
@@ -17,6 +17,8 @@ uv run summarize-meeting
 ```
 
 初回の依存取得後、アプリ画面で会議名、マイク、PC音声、取得画面を選択して「会議開始」を押します。PC音声は選択した出力デバイスから再生される全音声が対象です。
+
+録音終了後、画面下部の「文字起こし」から実行します。既定モデルは`large-v3-turbo`、言語は日本語です。初回実行時はモデルを`models/faster-whisper/`へ取得するため時間とインターネット接続が必要です。会議音声と文字起こし結果は外部サービスへ送信しません。
 
 記録データは次へ保存されます。
 
@@ -29,9 +31,21 @@ data/meetings/<session>/
 │  ├─ system.wav
 │  ├─ manifest.json
 │  └─ .work/
-└─ screenshots/
-   ├─ events.jsonl
-   └─ 000001.png ...
+├─ screenshots/
+│  ├─ events.jsonl
+│  └─ 000001.png ...
+├─ analysis/
+│  └─ transcription.json
+└─ output/
+   └─ transcript.md
+```
+
+文字起こしworkerだけを実行する場合:
+
+```powershell
+uv run python -m summarize_meeting.processing.transcription_worker `
+  --session "<data/meetings/セッション>" `
+  --models-dir "<アプリルート/models>"
 ```
 
 アプリ起動時に正常終了していないセッションを検出すると、復旧確認を表示します。復旧時は元の `.work` segmentを変更せず、`audio/microphone.recovered.wav` や `audio/system.recovered.wav` を新しく生成します。
@@ -75,3 +89,4 @@ uv run pytest -q tests/integration/test_wgc_backend.py
 
 - [引き継ぎ資料](../docs/CODEX_HANDOFF_MEETING_MINUTES_TOOL.md)
 - [Phase 1詳細設計](../docs/PHASE1_DETAILED_DESIGN.md)
+- [Phase 2詳細設計](../docs/PHASE2_DETAILED_DESIGN.md)
