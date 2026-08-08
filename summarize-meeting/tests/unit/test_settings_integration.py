@@ -25,6 +25,7 @@ class _UiController(QObject):
     session_started = Signal(str)
     session_start_failed = Signal(str, str)
     session_start_cancelled = Signal(str)
+    finalize_progress = Signal(int, str)
     session_finished = Signal(str)
     fatal_error = Signal(str)
 
@@ -92,6 +93,27 @@ def test_ui_disables_inputs_while_preparing_and_restores_them_after_cancel(
     assert window._start.isEnabled()  # noqa: SLF001
     assert not window._stop.isEnabled()  # noqa: SLF001
     assert "キャンセルしました" in window._message.text()  # noqa: SLF001
+    window.close()
+
+
+def test_ui_shows_finalize_progress_and_hides_it_after_completion(
+    qapp: QApplication,
+) -> None:
+    controller = _UiController(microphone_id=None, system_id=None)
+    window = MainWindow(controller)  # type: ignore[arg-type]
+
+    window._on_finalize_progress(42, "マイク: 音声ファイルを結合しています")  # noqa: SLF001
+
+    assert not window._finalize_progress.isHidden()  # noqa: SLF001
+    assert window._finalize_progress.value() == 42  # noqa: SLF001
+    assert "結合しています" in window._finalize_progress.format()  # noqa: SLF001
+    assert not window._title.isEnabled()  # noqa: SLF001
+    assert not window._start.isEnabled()  # noqa: SLF001
+
+    window._on_session_finished("C:/sessions/finished")  # noqa: SLF001
+
+    assert not window._finalize_progress.isVisible()  # noqa: SLF001
+    assert window._start.isEnabled()  # noqa: SLF001
     window.close()
 
 

@@ -17,6 +17,7 @@ from summarize_meeting.domain.session import ComponentStatus
 from summarize_meeting.infrastructure.audio_writer import (
     AudioGap,
     AudioTrackStats,
+    ProgressCallback,
     SegmentedWaveWriter,
 )
 
@@ -65,6 +66,7 @@ class AudioTrackRecorder:
         queue_put_timeout_seconds: float = 1.0,
         start_gate: threading.Event | None = None,
         exception_callback: ExceptionCallback | None = None,
+        finalize_progress_callback: ProgressCallback | None = None,
     ) -> None:
         self._backend = backend
         self._device = device
@@ -73,6 +75,7 @@ class AudioTrackRecorder:
         self._state_callback = state_callback
         self._meter_callback = meter_callback
         self._exception_callback = exception_callback
+        self._finalize_progress_callback = finalize_progress_callback
         self._sample_rate = sample_rate
         self._block_frames = block_frames
         self._origin_ns = origin_ns
@@ -153,14 +156,18 @@ class AudioTrackRecorder:
         if not self._failed.is_set():
             self._state_callback(ComponentStatus.STOPPING, None, None)
         self.request_stop()
+        self._report_finalize_progress("stopping_capture", 0, 1)
         if self._capture_thread is not None:
             self._capture_thread.join(timeout=timeout)
         if self._capture_thread is not None and self._capture_thread.is_alive():
             raise TimeoutError(f"{self._track_name} capture did not stop")
+        self._report_finalize_progress("stopping_capture", 1, 1)
+        self._report_finalize_progress("draining", 0, 1)
         if self._writer_thread is not None:
             self._writer_thread.join(timeout=timeout)
         if self._writer_thread is not None and self._writer_thread.is_alive():
             raise TimeoutError(f"{self._track_name} writer did not stop")
+        self._report_finalize_progress("draining", 1, 1)
         if self._writer_error is not None:
             raise self._writer_error
         if self._writer is None:
@@ -174,14 +181,13 @@ class AudioTrackRecorder:
         stream = None
         try:
             stream = self._open_with_fallback()
-            self._queue = queue.Queue(
-                maxsize=self._queue_capacity(stream.audio_format.sample_rate)
-            )
+            self._queue = queue.Queue(maxsize=self._queue_capacity(stream.audio_format.sample_rate))
             self._writer = self._writer_factory(
                 self._audio_dir,
                 self._track_name,
                 stream.audio_format,
             )
+            self._writer.set_progress_callback(self._finalize_progress_callback)
             self._writer_thread = threading.Thread(
                 target=self._writer_loop,
                 name=f"{self._track_name}-writer",
@@ -364,6 +370,17 @@ class AudioTrackRecorder:
             return
         with suppress(Exception):
             self._exception_callback(error_code, exception)
+
+    def _report_finalize_progress(
+        self,
+        phase: str,
+        completed: int,
+        total: int,
+    ) -> None:
+        if self._finalize_progress_callback is None:
+            return
+        with suppress(Exception):
+            self._finalize_progress_callback(phase, completed, total)
 
     def _enqueue_sentinel(self) -> None:
         while True:

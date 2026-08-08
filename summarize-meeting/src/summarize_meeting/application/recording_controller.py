@@ -47,6 +47,7 @@ class RecordingController(QObject):
     session_started = Signal(str)
     session_start_failed = Signal(str, str)
     session_start_cancelled = Signal(str)
+    finalize_progress = Signal(int, str)
     session_finished = Signal(str)
     fatal_error = Signal(str)
 
@@ -88,6 +89,9 @@ class RecordingController(QObject):
         self._audio_unavailable_notified = False
         self._screen_disabled_by_storage = False
         self._screenshot_count = 0
+        self._finalize_progress_percent = -1
+        self._finalize_progress_message = ""
+        self._finalize_track_ranges: dict[ComponentKind, tuple[int, int]] = {}
 
     @property
     def last_microphone_device_id(self) -> str | None:
@@ -167,9 +171,7 @@ class RecordingController(QObject):
             )
         except OSError as exc:
             session.ended_at = RecordingSession.now_iso()
-            session.duration_ms = (
-                time.perf_counter_ns() - self._origin_ns
-            ) // 1_000_000
+            session.duration_ms = (time.perf_counter_ns() - self._origin_ns) // 1_000_000
             session.status = SessionStatus.FAILED_TO_START
             session.add_warning(
                 "SESSION_LOG_OPEN_FAILED",
@@ -188,6 +190,9 @@ class RecordingController(QObject):
             self._screen_disabled_by_storage = False
             self._screenshot_count = 0
             self._startup_cancel = threading.Event()
+            self._finalize_progress_percent = -1
+            self._finalize_progress_message = ""
+            self._finalize_track_ranges = {}
 
         self._append_event("session_preparing")
         self._set_component(ComponentKind.SESSION_STORAGE, ComponentStatus.RUNNING)
@@ -253,8 +258,7 @@ class RecordingController(QObject):
             if not ready_audio:
                 audio_start_gate.set()
                 message = (
-                    "マイクとPC音声のどちらも開始できませんでした。"
-                    "デバイスを再選択してください。"
+                    "マイクとPC音声のどちらも開始できませんでした。デバイスを再選択してください。"
                 )
                 self._fail_session_start(
                     paths,
@@ -399,8 +403,9 @@ class RecordingController(QObject):
             meter_callback=lambda level: self.meter_changed.emit(kind.value, level),
             origin_ns=self._origin_ns,
             start_gate=start_gate,
-            exception_callback=lambda code, exc: self._log_audio_exception(
-                kind, code, exc
+            exception_callback=lambda code, exc: self._log_audio_exception(kind, code, exc),
+            finalize_progress_callback=lambda phase, completed, total: (
+                self._on_audio_finalize_progress(kind, phase, completed, total)
             ),
         )
 
@@ -425,12 +430,8 @@ class RecordingController(QObject):
 
     def _wait_for_audio_initialization(self) -> tuple[list[ComponentKind], bool]:
         deadline = time.monotonic() + self._audio_start_timeout_seconds
-        while not all(
-            recorder.startup_complete for recorder in self._audio_recorders.values()
-        ):
-            if self._startup_cancel.wait(
-                timeout=min(0.05, max(0.0, deadline - time.monotonic()))
-            ):
+        while not all(recorder.startup_complete for recorder in self._audio_recorders.values()):
+            if self._startup_cancel.wait(timeout=min(0.05, max(0.0, deadline - time.monotonic()))):
                 return [], True
             if time.monotonic() >= deadline:
                 break
@@ -616,6 +617,15 @@ class RecordingController(QObject):
                 return
             session.status = SessionStatus.STOPPING
             self._repository.save(paths, session)
+            audio_kinds = list(self._audio_recorders)
+            self._finalize_track_ranges = {
+                kind: (
+                    15 + (70 * index // max(1, len(audio_kinds))),
+                    15 + (70 * (index + 1) // max(1, len(audio_kinds))),
+                )
+                for index, kind in enumerate(audio_kinds)
+            }
+        self._emit_finalize_progress(0, "記録の停止を開始しています")
         self._append_event("session_stopping")
         self._storage_monitor.request_stop()
 
@@ -623,6 +633,7 @@ class RecordingController(QObject):
             recorder.request_stop()
         if self._screen_recorder is not None:
             self._screen_recorder.request_stop()
+        self._emit_finalize_progress(8, "画面取得を停止しています")
 
         stats: dict[str, AudioTrackStats] = {}
         failures: list[str] = []
@@ -637,12 +648,16 @@ class RecordingController(QObject):
                     component=ComponentKind.SCREEN.value,
                     error_code="FINALIZE_FAILED",
                 )
+        self._emit_finalize_progress(12, "画面取得を停止しました")
 
         with self._lock:
             session.status = SessionStatus.FINALIZING
             self._repository.save(paths, session)
+        self._emit_finalize_progress(15, "音声ファイルを確定しています")
 
         for kind, recorder in self._audio_recorders.items():
+            start, end = self._finalize_track_ranges[kind]
+            self._emit_finalize_progress(start, f"{self._audio_label(kind)}を停止しています")
             try:
                 result = recorder.finish()
                 if result is not None:
@@ -656,6 +671,9 @@ class RecordingController(QObject):
                     error_code="FINALIZE_FAILED",
                 )
                 self._set_component(kind, ComponentStatus.FAILED, "FINALIZE_FAILED", str(exc))
+            self._emit_finalize_progress(end, f"{self._audio_label(kind)}を確定しました")
+
+        self._emit_finalize_progress(85, "保存状態を確認しています")
 
         try:
             self._storage_monitor.finish()
@@ -667,6 +685,7 @@ class RecordingController(QObject):
                 component=ComponentKind.SESSION_STORAGE.value,
                 error_code="FINALIZE_FAILED",
             )
+        self._emit_finalize_progress(90, "音声情報を保存しています")
 
         with self._lock:
             storage_failed = (
@@ -681,6 +700,7 @@ class RecordingController(QObject):
             stats,
             monotonic_origin_ns=self._origin_ns,
         )
+        self._emit_finalize_progress(95, "セッション情報を保存しています")
         cleanup_warnings = [
             f"{track}: {track_stats.work_cleanup_error}"
             for track, track_stats in stats.items()
@@ -696,10 +716,9 @@ class RecordingController(QObject):
             for failure in failures:
                 session.add_warning("FINALIZE_FAILED", failure, session.duration_ms)
             for warning in cleanup_warnings:
-                session.add_warning(
-                    "AUDIO_WORK_CLEANUP_FAILED", warning, session.duration_ms
-                )
+                session.add_warning("AUDIO_WORK_CLEANUP_FAILED", warning, session.duration_ms)
             self._repository.save(paths, session)
+        self._emit_finalize_progress(99, "保存結果を確認しています")
         audio_summary = {
             track: {
                 "frames": track_stats.frames_written,
@@ -722,8 +741,60 @@ class RecordingController(QObject):
         )
         if failures:
             self.fatal_error.emit("一部の記録を正常に確定できませんでした: " + "; ".join(failures))
+        self._emit_finalize_progress(
+            100,
+            "エラーを含む記録を保存しました" if failures else "記録を保存しました",
+        )
         self._close_session_log()
         self.session_finished.emit(str(paths.root))
+
+    def _on_audio_finalize_progress(
+        self,
+        kind: ComponentKind,
+        phase: str,
+        completed: int,
+        total: int,
+    ) -> None:
+        progress_range = self._finalize_track_ranges.get(kind)
+        if progress_range is None:
+            return
+        start, end = progress_range
+        phase_ranges = {
+            "stopping_capture": (0.0, 0.1, "録音取得を停止しています"),
+            "draining": (0.1, 0.25, "書込み待ち音声を保存しています"),
+            "consolidating": (0.25, 0.7, "音声ファイルを結合しています"),
+            "validating": (0.7, 0.95, "音声ファイルを検証しています"),
+            "cleanup": (0.95, 1.0, "一時ファイルを整理しています"),
+        }
+        phase_range = phase_ranges.get(phase)
+        if phase_range is None:
+            return
+        phase_start, phase_end, message = phase_range
+        ratio = min(1.0, max(0.0, completed / max(1, total)))
+        local_ratio = phase_start + ((phase_end - phase_start) * ratio)
+        percent = start + round((end - start) * local_ratio)
+        self._emit_finalize_progress(
+            percent,
+            f"{self._audio_label(kind)}: {message}",
+        )
+
+    def _emit_finalize_progress(self, percent: int, message: str) -> None:
+        percent = min(100, max(0, percent))
+        with self._lock:
+            if percent < self._finalize_progress_percent:
+                return
+            if (
+                percent == self._finalize_progress_percent
+                and message == self._finalize_progress_message
+            ):
+                return
+            self._finalize_progress_percent = percent
+            self._finalize_progress_message = message
+        self.finalize_progress.emit(percent, message)
+
+    @staticmethod
+    def _audio_label(kind: ComponentKind) -> str:
+        return "マイク" if kind == ComponentKind.MICROPHONE else "PC音声"
 
     def _on_low_disk_space(self, capacity: StorageCapacity) -> None:
         with self._lock:

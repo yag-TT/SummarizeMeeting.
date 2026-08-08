@@ -39,6 +39,61 @@ def test_segmented_writer_consolidates_segments(tmp_path: Path) -> None:
         assert stream.getnframes() == 250
 
 
+def test_segmented_writer_reports_finalize_progress(tmp_path: Path) -> None:
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    progress: list[tuple[str, int, int]] = []
+    writer = SegmentedWaveWriter(
+        audio_dir,
+        "microphone",
+        AudioFormat(sample_rate=100, channels=1),
+        segment_seconds=1,
+    )
+    writer.set_progress_callback(
+        lambda phase, completed, total: progress.append((phase, completed, total))
+    )
+    writer.write(np.full((250, 1), 0.1, dtype=np.float32))
+
+    writer.close()
+
+    phases = [phase for phase, _, _ in progress]
+    assert phases[0] == "consolidating"
+    assert "validating" in phases
+    assert phases[-1] == "cleanup"
+    for phase in ("consolidating", "validating", "cleanup"):
+        phase_progress = [
+            (completed, total)
+            for current_phase, completed, total in progress
+            if current_phase == phase
+        ]
+        assert phase_progress[0][0] == 0
+        assert phase_progress[-1][0] == phase_progress[-1][1]
+        assert [completed for completed, _ in phase_progress] == sorted(
+            completed for completed, _ in phase_progress
+        )
+
+
+def test_finalize_progress_callback_failure_does_not_break_audio_save(
+    tmp_path: Path,
+) -> None:
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    writer = SegmentedWaveWriter(
+        audio_dir,
+        "microphone",
+        AudioFormat(sample_rate=100, channels=1),
+    )
+    writer.set_progress_callback(
+        lambda _phase, _completed, _total: (_ for _ in ()).throw(RuntimeError("UI"))
+    )
+    writer.write(np.full((20, 1), 0.1, dtype=np.float32))
+
+    stats = writer.close()
+
+    assert stats.validated
+    assert (audio_dir / "microphone.wav").is_file()
+
+
 def test_validate_wave_file_rejects_format_mismatch(tmp_path: Path) -> None:
     path = tmp_path / "wrong-format.wav"
     with wave.open(str(path), "wb") as stream:

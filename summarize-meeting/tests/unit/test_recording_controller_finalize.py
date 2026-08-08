@@ -112,7 +112,64 @@ def test_finalize_cleanup_failure_is_recorded_as_warning(tmp_path: Path) -> None
         if warning["code"] == "AUDIO_WORK_CLEANUP_FAILED"
     )
     assert "work directory is busy" in warning["message"]
-    manifest = json.loads(
-        (session_root / "audio" / "manifest.json").read_text(encoding="utf-8")
-    )
+    manifest = json.loads((session_root / "audio" / "manifest.json").read_text(encoding="utf-8"))
     assert not manifest["tracks"]["microphone"]["work_files_removed"]
+
+
+def test_finalize_progress_is_monotonic_and_completes(tmp_path: Path) -> None:
+    controller, _session_root = _prepare_controller(tmp_path)
+    controller._audio_recorders = {  # type: ignore[dict-item]  # noqa: SLF001
+        ComponentKind.MICROPHONE: _FakeAudioRecorder(result=None)
+    }
+    progress: list[tuple[int, str]] = []
+    controller.finalize_progress.connect(
+        lambda percent, message: progress.append((percent, message))
+    )
+
+    controller._stop_session_worker()  # noqa: SLF001
+
+    percents = [percent for percent, _ in progress]
+    assert percents == sorted(percents)
+    assert percents[0] == 0
+    assert percents[-1] == 100
+    assert any("音声" in message for _, message in progress)
+
+
+def test_audio_finalize_progress_maps_each_phase_without_regressing(
+    tmp_path: Path,
+) -> None:
+    controller, _session_root = _prepare_controller(tmp_path)
+    controller._finalize_track_ranges = {  # noqa: SLF001
+        ComponentKind.MICROPHONE: (15, 85)
+    }
+    progress: list[tuple[int, str]] = []
+    controller.finalize_progress.connect(
+        lambda percent, message: progress.append((percent, message))
+    )
+
+    for phase in (
+        "stopping_capture",
+        "draining",
+        "consolidating",
+        "validating",
+        "cleanup",
+    ):
+        controller._on_audio_finalize_progress(  # noqa: SLF001
+            ComponentKind.MICROPHONE,
+            phase,
+            0,
+            10,
+        )
+        controller._on_audio_finalize_progress(  # noqa: SLF001
+            ComponentKind.MICROPHONE,
+            phase,
+            10,
+            10,
+        )
+
+    percents = [percent for percent, _ in progress]
+    assert percents == sorted(percents)
+    assert percents[0] == 15
+    assert percents[-1] == 85
+    assert any("結合" in message for _, message in progress)
+    assert any("検証" in message for _, message in progress)

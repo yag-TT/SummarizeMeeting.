@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import wave
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -12,6 +13,8 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 from summarize_meeting.domain.capture import AudioFormat
+
+ProgressCallback = Callable[[str, int, int], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,7 +84,10 @@ def validate_wave_file(
     *,
     expected_format: AudioFormat,
     expected_frames: int,
+    progress_callback: ProgressCallback | None = None,
 ) -> WaveValidation:
+    progress_total = max(1, expected_frames)
+    _notify_progress(progress_callback, "validating", 0, progress_total)
     try:
         with wave.open(str(path), "rb") as stream:
             actual_format = AudioFormat(
@@ -90,9 +96,7 @@ def validate_wave_file(
                 sample_width_bytes=stream.getsampwidth(),
             )
             if stream.getcomptype() != "NONE":
-                raise WaveValidationError(
-                    f"Final WAV is not PCM: {path} ({stream.getcomptype()})"
-                )
+                raise WaveValidationError(f"Final WAV is not PCM: {path} ({stream.getcomptype()})")
             if actual_format != expected_format:
                 raise WaveValidationError(
                     "Final WAV format mismatch: "
@@ -109,10 +113,14 @@ def validate_wave_file(
             readable_frames = 0
             while content := stream.readframes(65_536):
                 if len(content) % block_align != 0:
-                    raise WaveValidationError(
-                        f"Final WAV contains an incomplete PCM frame: {path}"
-                    )
+                    raise WaveValidationError(f"Final WAV contains an incomplete PCM frame: {path}")
                 readable_frames += len(content) // block_align
+                _notify_progress(
+                    progress_callback,
+                    "validating",
+                    min(readable_frames, progress_total),
+                    progress_total,
+                )
             if readable_frames != expected_frames:
                 raise WaveValidationError(
                     "Final WAV readable frame count mismatch: "
@@ -122,6 +130,13 @@ def validate_wave_file(
         raise
     except (EOFError, OSError, wave.Error) as exc:
         raise WaveValidationError(f"Final WAV cannot be opened: {path}: {exc}") from exc
+
+    _notify_progress(
+        progress_callback,
+        "validating",
+        progress_total,
+        progress_total,
+    )
 
     return WaveValidation(
         sample_rate=actual_format.sample_rate,
@@ -158,10 +173,14 @@ class SegmentedWaveWriter:
         self._validated = False
         self._work_files_removed = False
         self._work_cleanup_error: str | None = None
+        self._progress_callback: ProgressCallback | None = None
 
     @property
     def audio_format(self) -> AudioFormat:
         return self._format
+
+    def set_progress_callback(self, callback: ProgressCallback | None) -> None:
+        self._progress_callback = callback
 
     def write(self, samples: ArrayLike) -> None:
         if self._closed:
@@ -202,14 +221,17 @@ class SegmentedWaveWriter:
             output,
             expected_format=self._format,
             expected_frames=self._frames_written,
+            progress_callback=self._progress_callback,
         )
         self._validated = True
         self._closed = True
+        self._report_progress("cleanup", 0, 1)
         try:
             self._remove_validated_work_files()
             self._work_files_removed = True
         except OSError as exc:
             self._work_cleanup_error = str(exc)
+        self._report_progress("cleanup", 1, 1)
         return self.stats()
 
     def abort(self) -> None:
@@ -264,6 +286,9 @@ class SegmentedWaveWriter:
     def _consolidate(self) -> None:
         output = self._audio_dir / f"{self._track_name}.wav"
         temporary = output.with_suffix(".wav.tmp")
+        total_frames = max(1, self._frames_written)
+        copied_frames = 0
+        self._report_progress("consolidating", 0, total_frames)
         with wave.open(str(temporary), "wb") as target:
             target.setnchannels(self._format.channels)
             target.setsampwidth(self._format.sample_width_bytes)
@@ -279,9 +304,20 @@ class SegmentedWaveWriter:
                         raise RuntimeError(f"Segment format mismatch: {path}")
                     while frames := source.readframes(65536):
                         target.writeframesraw(frames)
+                        block_align = self._format.channels * self._format.sample_width_bytes
+                        copied_frames += len(frames) // block_align
+                        self._report_progress(
+                            "consolidating",
+                            min(copied_frames, total_frames),
+                            total_frames,
+                        )
         with temporary.open("rb+") as stream:
             os.fsync(stream.fileno())
         os.replace(temporary, output)
+        self._report_progress("consolidating", total_frames, total_frames)
+
+    def _report_progress(self, phase: str, completed: int, total: int) -> None:
+        _notify_progress(self._progress_callback, phase, completed, total)
 
     def _remove_validated_work_files(self) -> None:
         shutil.rmtree(self._work_dir)
@@ -305,3 +341,15 @@ class SegmentedWaveWriter:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+
+
+def _notify_progress(
+    callback: ProgressCallback | None,
+    phase: str,
+    completed: int,
+    total: int,
+) -> None:
+    if callback is None:
+        return
+    with suppress(Exception):
+        callback(phase, completed, total)

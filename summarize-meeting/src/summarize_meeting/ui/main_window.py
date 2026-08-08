@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -79,6 +80,13 @@ class MainWindow(QMainWindow):
         self._message.setStyleSheet("padding: 8px; background: #f2f2f2;")
         root.addWidget(self._message)
 
+        self._finalize_progress = QProgressBar()
+        self._finalize_progress.setRange(0, 100)
+        self._finalize_progress.setValue(0)
+        self._finalize_progress.setFormat("保存処理 %p%")
+        self._finalize_progress.setVisible(False)
+        root.addWidget(self._finalize_progress)
+
         action = QHBoxLayout()
         self._start = QPushButton("会議開始")
         self._stop = QPushButton("会議終了")
@@ -105,6 +113,7 @@ class MainWindow(QMainWindow):
         controller.session_started.connect(self._on_session_started)
         controller.session_start_failed.connect(self._on_session_start_failed)
         controller.session_start_cancelled.connect(self._on_session_start_cancelled)
+        controller.finalize_progress.connect(self._on_finalize_progress)
         controller.session_finished.connect(self._on_session_finished)
         controller.fatal_error.connect(self.show_error)
         QTimer.singleShot(0, self.refresh_sources)
@@ -118,9 +127,7 @@ class MainWindow(QMainWindow):
                 self._controller.list_input_devices(),
                 "マイクなし",
                 preferred_id=(
-                    self._controller.last_microphone_device_id
-                    if not self._sources_loaded
-                    else None
+                    self._controller.last_microphone_device_id if not self._sources_loaded else None
                 ),
             )
             if not microphone_found:
@@ -130,9 +137,7 @@ class MainWindow(QMainWindow):
                 self._controller.list_loopback_devices(),
                 "PC音声なし",
                 preferred_id=(
-                    self._controller.last_system_device_id
-                    if not self._sources_loaded
-                    else None
+                    self._controller.last_system_device_id if not self._sources_loaded else None
                 ),
             )
             if not system_audio_found:
@@ -190,6 +195,10 @@ class MainWindow(QMainWindow):
         if self._started_at is None:
             self.show_information("録音の準備をキャンセルしています。")
         else:
+            self._set_inputs_enabled(False)
+            self._reselect.setEnabled(False)
+            self._finalize_progress.setValue(0)
+            self._finalize_progress.setVisible(True)
             self.show_information("記録を確定しています。しばらくお待ちください。")
         self._controller.stop_session()
 
@@ -229,6 +238,16 @@ class MainWindow(QMainWindow):
         self.show_information(f"記録を保存しました: {path}")
         self._close_if_requested()
 
+    def _on_finalize_progress(self, percent: int, message: str) -> None:
+        self._set_inputs_enabled(False)
+        self._start.setEnabled(False)
+        self._stop.setEnabled(False)
+        self._reselect.setEnabled(False)
+        self._finalize_progress.setValue(percent)
+        self._finalize_progress.setFormat(f"保存処理 %p% - {message}")
+        self._finalize_progress.setVisible(True)
+        self.show_information(message)
+
     def _on_session_start_failed(self, path: str, message: str) -> None:
         self._session_path = Path(path)
         self._reset_after_session()
@@ -248,6 +267,9 @@ class MainWindow(QMainWindow):
         self._start.setEnabled(True)
         self._stop.setEnabled(False)
         self._reselect.setEnabled(False)
+        self._finalize_progress.setVisible(False)
+        self._finalize_progress.setValue(0)
+        self._finalize_progress.setFormat("保存処理 %p%")
 
     def _close_if_requested(self) -> None:
         if self._close_requested:
