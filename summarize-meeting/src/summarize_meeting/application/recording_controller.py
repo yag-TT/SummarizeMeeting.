@@ -1,0 +1,324 @@
+from __future__ import annotations
+
+import json
+import os
+import threading
+import time
+from dataclasses import asdict
+from pathlib import Path
+
+from PySide6.QtCore import QObject, Signal
+
+from summarize_meeting.capture.audio.recorder import AudioTrackRecorder
+from summarize_meeting.capture.audio.soundcard_backend import SoundCardAudioBackend
+from summarize_meeting.capture.screen.recorder import ScreenRecorder
+from summarize_meeting.capture.screen.windows_mss import WindowsMssScreenBackend
+from summarize_meeting.domain.capture import AudioDevice, ScreenTarget
+from summarize_meeting.domain.session import (
+    ComponentKind,
+    ComponentStatus,
+    RecordingSession,
+    SessionStatus,
+)
+from summarize_meeting.infrastructure.audio_writer import AudioTrackStats
+from summarize_meeting.infrastructure.paths import PortableAppPaths
+from summarize_meeting.infrastructure.screenshot_store import ScreenshotStore
+from summarize_meeting.infrastructure.session_repository import (
+    FileSessionRepository,
+    SessionPaths,
+)
+
+
+class RecordingController(QObject):
+    component_changed = Signal(str, str, str)
+    meter_changed = Signal(str, float)
+    screenshot_count_changed = Signal(int)
+    session_started = Signal(str)
+    session_finished = Signal(str)
+    fatal_error = Signal(str)
+
+    def __init__(self, app_paths: PortableAppPaths) -> None:
+        super().__init__()
+        self._app_paths = app_paths
+        self._repository = FileSessionRepository(app_paths.meetings_dir)
+        self._audio_backend = SoundCardAudioBackend()
+        self._screen_backend = WindowsMssScreenBackend()
+        self._session: RecordingSession | None = None
+        self._session_paths: SessionPaths | None = None
+        self._origin_ns = 0
+        self._audio_recorders: dict[ComponentKind, AudioTrackRecorder] = {}
+        self._screen_recorder: ScreenRecorder | None = None
+        self._lock = threading.RLock()
+        self._stop_thread: threading.Thread | None = None
+
+    @property
+    def is_recording(self) -> bool:
+        with self._lock:
+            return self._session is not None and self._session.status in {
+                SessionStatus.PREPARING,
+                SessionStatus.RECORDING,
+                SessionStatus.STOPPING,
+                SessionStatus.FINALIZING,
+            }
+
+    def list_input_devices(self) -> list[AudioDevice]:
+        return list(self._audio_backend.list_input_devices())
+
+    def list_loopback_devices(self) -> list[AudioDevice]:
+        return list(self._audio_backend.list_loopback_devices())
+
+    def list_screen_targets(self) -> list[ScreenTarget]:
+        return list(self._screen_backend.list_targets())
+
+    def start_session(
+        self,
+        *,
+        title: str,
+        microphone: AudioDevice | None,
+        system_audio: AudioDevice | None,
+        screen_target: ScreenTarget | None,
+    ) -> Path:
+        if self.is_recording:
+            raise RuntimeError("既に録音中です")
+        if microphone is None and system_audio is None:
+            raise ValueError("マイクまたはPC音声を1つ以上選択してください")
+        title = title.strip()
+        if not title:
+            raise ValueError("会議名を入力してください")
+
+        session = RecordingSession(title=title, status=SessionStatus.PREPARING)
+        self._origin_ns = time.perf_counter_ns()
+        session.monotonic_origin_ns = self._origin_ns
+        session.started_at = RecordingSession.now_iso()
+        if microphone is not None:
+            session.audio[ComponentKind.MICROPHONE.value] = asdict(microphone)
+        if system_audio is not None:
+            session.audio[ComponentKind.SYSTEM_AUDIO.value] = asdict(system_audio)
+        if screen_target is not None:
+            session.screen = asdict(screen_target)
+
+        paths = self._repository.create(session)
+        with self._lock:
+            self._session = session
+            self._session_paths = paths
+
+        self._append_event("session_preparing")
+        self._audio_recorders = {}
+        if microphone is not None:
+            recorder = self._create_audio_recorder(
+                ComponentKind.MICROPHONE,
+                microphone,
+                "microphone",
+                paths,
+            )
+            self._audio_recorders[ComponentKind.MICROPHONE] = recorder
+            recorder.start()
+        else:
+            self._set_component(ComponentKind.MICROPHONE, ComponentStatus.NOT_CONFIGURED)
+
+        if system_audio is not None:
+            recorder = self._create_audio_recorder(
+                ComponentKind.SYSTEM_AUDIO,
+                system_audio,
+                "system",
+                paths,
+            )
+            self._audio_recorders[ComponentKind.SYSTEM_AUDIO] = recorder
+            recorder.start()
+        else:
+            self._set_component(ComponentKind.SYSTEM_AUDIO, ComponentStatus.NOT_CONFIGURED)
+
+        if screen_target is not None:
+            self._screen_recorder = ScreenRecorder(
+                backend=self._screen_backend,
+                target=screen_target,
+                store=ScreenshotStore(paths.screenshots),
+                origin_ns=self._origin_ns,
+                state_callback=lambda status, code, message: self._set_component(
+                    ComponentKind.SCREEN,
+                    status,
+                    code,
+                    message,
+                ),
+                count_callback=self.screenshot_count_changed.emit,
+            )
+            self._screen_recorder.start()
+        else:
+            self._screen_recorder = None
+            self._set_component(ComponentKind.SCREEN, ComponentStatus.NOT_CONFIGURED)
+
+        with self._lock:
+            session.status = SessionStatus.RECORDING
+            self._repository.save(paths, session)
+        self._append_event("session_started")
+        self.session_started.emit(str(paths.root))
+        return paths.root
+
+    def replace_screen_target(self, target: ScreenTarget) -> None:
+        if self._screen_recorder is None:
+            if self._session_paths is None:
+                return
+            self._screen_recorder = ScreenRecorder(
+                backend=self._screen_backend,
+                target=target,
+                store=ScreenshotStore(self._session_paths.screenshots),
+                origin_ns=self._origin_ns,
+                state_callback=lambda status, code, message: self._set_component(
+                    ComponentKind.SCREEN, status, code, message
+                ),
+                count_callback=self.screenshot_count_changed.emit,
+            )
+            self._screen_recorder.start()
+        else:
+            self._screen_recorder.replace_target(target)
+        with self._lock:
+            if self._session is not None and self._session_paths is not None:
+                self._session.screen = asdict(target)
+                self._repository.save(self._session_paths, self._session)
+        self._append_event("screen_target_replaced", target=target.title)
+
+    def stop_session(self) -> None:
+        if not self.is_recording:
+            return
+        if self._stop_thread is not None and self._stop_thread.is_alive():
+            return
+        self._stop_thread = threading.Thread(
+            target=self._stop_session_worker,
+            name="session-finalize",
+            daemon=True,
+        )
+        self._stop_thread.start()
+
+    def _create_audio_recorder(
+        self,
+        kind: ComponentKind,
+        device: AudioDevice,
+        track_name: str,
+        paths: SessionPaths,
+    ) -> AudioTrackRecorder:
+        return AudioTrackRecorder(
+            backend=self._audio_backend,
+            device=device,
+            track_name=track_name,
+            audio_dir=paths.audio,
+            state_callback=lambda status, code, message: self._set_component(
+                kind, status, code, message
+            ),
+            meter_callback=lambda level: self.meter_changed.emit(kind.value, level),
+        )
+
+    def _stop_session_worker(self) -> None:
+        with self._lock:
+            session = self._session
+            paths = self._session_paths
+            if session is None or paths is None:
+                return
+            session.status = SessionStatus.STOPPING
+            self._repository.save(paths, session)
+        self._append_event("session_stopping")
+
+        for recorder in self._audio_recorders.values():
+            recorder.request_stop()
+        if self._screen_recorder is not None:
+            self._screen_recorder.request_stop()
+
+        stats: dict[str, AudioTrackStats] = {}
+        failures: list[str] = []
+        if self._screen_recorder is not None:
+            try:
+                self._screen_recorder.finish()
+            except Exception as exc:
+                failures.append(f"screen: {exc}")
+
+        with self._lock:
+            session.status = SessionStatus.FINALIZING
+            self._repository.save(paths, session)
+
+        for kind, recorder in self._audio_recorders.items():
+            try:
+                result = recorder.finish()
+                if result is not None:
+                    stats[kind.value] = result
+            except Exception as exc:
+                failures.append(f"{kind.value}: {exc}")
+                self._set_component(kind, ComponentStatus.FAILED, "FINALIZE_FAILED", str(exc))
+
+        self._write_audio_manifest(paths.audio / "manifest.json", stats)
+        ended_ns = time.perf_counter_ns()
+        with self._lock:
+            session.ended_at = RecordingSession.now_iso()
+            session.duration_ms = (ended_ns - self._origin_ns) // 1_000_000
+            session.status = SessionStatus.INTERRUPTED if failures else SessionStatus.RECORDED
+            for failure in failures:
+                session.add_warning("FINALIZE_FAILED", failure, session.duration_ms)
+            self._repository.save(paths, session)
+        self._append_event("session_finished", failures=failures)
+        if failures:
+            self.fatal_error.emit("一部の記録を正常に確定できませんでした: " + "; ".join(failures))
+        self.session_finished.emit(str(paths.root))
+
+    def _set_component(
+        self,
+        kind: ComponentKind,
+        status: ComponentStatus,
+        error_code: str | None = None,
+        message: str | None = None,
+    ) -> None:
+        with self._lock:
+            if self._session is None or self._session_paths is None:
+                return
+            self._session.set_component(
+                kind,
+                status,
+                error_code=error_code,
+                message=message,
+            )
+            timestamp_ms = (time.perf_counter_ns() - self._origin_ns) // 1_000_000
+            if error_code:
+                self._session.add_warning(error_code, message or error_code, int(timestamp_ms))
+            self._repository.append_event(
+                self._session_paths,
+                {
+                    "schema_version": 1,
+                    "timestamp_ms": int(timestamp_ms),
+                    "type": "component_state_changed",
+                    "component": kind.value,
+                    "status": status.value,
+                    "error_code": error_code,
+                    "message": message,
+                },
+            )
+            self._repository.save(self._session_paths, self._session)
+        self.component_changed.emit(kind.value, status.value, message or "")
+
+    def _append_event(self, event_type: str, **extra: object) -> None:
+        with self._lock:
+            if self._session_paths is None:
+                return
+            timestamp_ms = (time.perf_counter_ns() - self._origin_ns) // 1_000_000
+            self._repository.append_event(
+                self._session_paths,
+                {
+                    "schema_version": 1,
+                    "timestamp_ms": int(timestamp_ms),
+                    "type": event_type,
+                    **extra,
+                },
+            )
+
+    @staticmethod
+    def _write_audio_manifest(
+        path: Path,
+        stats: dict[str, AudioTrackStats],
+    ) -> None:
+        value = {
+            "schema_version": 1,
+            "tracks": {name: asdict(track_stats) for name, track_stats in stats.items()},
+        }
+        temporary = path.with_suffix(".json.tmp")
+        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+            json.dump(value, stream, ensure_ascii=False, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)

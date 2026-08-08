@@ -1,2 +1,3 @@
-def main() -> None:
-    print("Hello from summarize-meeting!")
+from summarize_meeting.bootstrap import main
+
+__all__ = ["main"]
