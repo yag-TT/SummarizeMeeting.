@@ -4,16 +4,16 @@
 
 Phase 5では、Phase 2またはPhase 3の話者付き文字起こしとPhase 4の画面解析結果をセッション開始基準の時刻で統合し、再利用可能な`analysis/timeline.json`、検証済み構造データ`analysis/minutes.json`、Confluenceへ貼り付けやすい`output/minutes.md`を生成する。
 
-議事録生成にはPCへ導入済みのLM Studioモデルを使用する。アプリへllama.cppやLLMモデルを同梱・ダウンロードする処理はPhase 5正常系PoCの対象外とする。
+議事録生成にはLAN内のllama.cpp serverへ導入済みのモデルを使用する。アプリへllama.cppやLLMモデルを同梱・ダウンロードする処理はPhase 5正常系PoCの対象外とする。
 
 ## 2. 前提
 
 - 正式対象はWindows 11
 - `session.json`が`RECORDED`
 - `analysis/transcription.json`が`SUCCEEDED`
-- LM StudioのLocal Serverがlocalhostで起動している
-- LM StudioでLLMが1つロード済み、またはモデルIDを明示している
-- 会議データを外部ネットワークへ送信しない
+- `http://192.168.1.158:8081/v1`でllama.cppのOpenAI互換APIへ接続できる
+- llama.cppでLLMが1つロード済み、またはモデルIDを明示している
+- 会議データは指定したLAN内サーバー以外へ送信しない
 - 画面解析は任意。未実行でも音声だけから生成できる
 - AI JobはGUIプロセスと分離する
 
@@ -26,7 +26,7 @@ Phase 5では、Phase 2またはPhase 3の話者付き文字起こしとPhase 4�
 - 成功済み画面解析結果の任意統合
 - timestampによる安定sort
 - 長時間入力の分割生成と最終統合
-- LM Studio OpenAI互換APIのStructured Output
+- llama.cpp OpenAI互換APIのStructured Output
 - 根拠IDによる生成結果検証
 - 相対期限、担当者、画面由来決定事項の保守的な補正
 - Markdown議事録生成
@@ -36,7 +36,7 @@ Phase 5では、Phase 2またはPhase 3の話者付き文字起こしとPhase 4�
 ### 3.2 対象外
 
 - llama.cpp、Ollama、LLM重みのアプリ同梱
-- LM Studioの自動インストール
+- llama.cpp serverの自動インストール
 - 会議中のリアルタイム要約
 - クラウドLLMへのフォールバック
 - 議事録のGUI編集
@@ -48,8 +48,8 @@ Phase 5では、Phase 2またはPhase 3の話者付き文字起こしとPhase 4�
 
 | 項目 | 採用案 |
 |---|---|
-| LLM runtime | 既存LM Studio Local Server |
-| API | `http://127.0.0.1:1234/v1/chat/completions` |
+| LLM runtime | LAN内の既存llama.cpp server |
+| API | `http://192.168.1.158:8081/v1/chat/completions` |
 | 出力制約 | JSON Schema Structured Output |
 | HTTP client | Python標準`urllib` |
 | Job分離 | child Python process |
@@ -57,7 +57,7 @@ Phase 5では、Phase 2またはPhase 3の話者付き文字起こしとPhase 4�
 | 生成後検証 | evidence IDと決定的規則 |
 | 出力 | UTF-8 JSON / Markdown |
 
-接続先は`http`かつ`127.0.0.1`、`localhost`、`::1`だけを許可する。外部ホストを誤指定して会議内容を送信することを防ぐ。
+接続先には有効な`http`または`https` URLを許可する。既定のLAN内接続はHTTPのため、会議内容は暗号化されずに送信される。
 
 ## 5. 構成
 
@@ -68,13 +68,13 @@ GUI process
          -> child Python process
               -> MinutesService
                    -> timeline builder
-                   -> LMStudioMinutesBackend
+                   -> LlamaCppMinutesBackend
                    -> evidence validator
                    -> analysis/timeline.json
                    -> analysis/minutes.json
                    -> output/minutes.md
 
-LM Studio Local Server
+llama.cpp server
   -> already installed / already downloaded model
 ```
 
@@ -84,22 +84,21 @@ LM Studio Local Server
 
 既定値:
 
-- base URL: `http://127.0.0.1:1234/v1`
+- base URL: `http://192.168.1.158:8081/v1`
 - model: 自動選択
 
 自動選択では`GET /v1/models`に見えるモデルが1つの場合だけ採用する。複数ある場合は誤選択を避けて失敗し、次の環境変数で明示する。
 
 ```powershell
-$env:SUMMARIZE_MEETING_LMSTUDIO_URL = "http://127.0.0.1:1234/v1"
-$env:SUMMARIZE_MEETING_LLM_MODEL = "summarize-meeting"
+$env:SUMMARIZE_MEETING_LLM_URL = "http://192.168.1.158:8081/v1"
+$env:SUMMARIZE_MEETING_LLM_MODEL = "<model-id>"
 uv run summarize-meeting
 ```
 
-LM Studio側の例:
+llama.cpp server側の例:
 
 ```powershell
-lms server start --port 1234
-lms load <既存model-key> --identifier summarize-meeting --context-length 16384
+llama-server --host 0.0.0.0 --port 8081 --model <model.gguf> --ctx-size 16384
 ```
 
 ## 7. timeline入力選択
@@ -203,8 +202,8 @@ LLMのJSON Schema適合だけでは内容の正しさを保証できないため
   "status": "SUCCEEDED",
   "generation_id": "uuid",
   "completed_at": "2026-08-08T20:52:15.086+09:00",
-  "runtime": "LM Studio local API",
-  "model": "summarize-meeting",
+  "runtime": "llama.cpp OpenAI-compatible API",
+  "model": "Infatoshi_Qwen3.6-35B-A3B-GGUF_Qwen3.6-35B-A3B-Q5_K_M.gguf",
   "source": {
     "timeline": "analysis/timeline.json",
     "timeline_sha256": "...",
@@ -254,7 +253,7 @@ LLMのJSON Schema適合だけでは内容の正しさを保証できないため
 - LLM接続・生成失敗では既存`minutes.json`と`minutes.md`を変更しない
 - 成功時は各ファイルを`.tmp`、flush、`fsync`、`os.replace()`で確定する
 - 話者名変更後は議事録生成を再実行できる
-- LM Studio未起動時は起動案内を含むエラーを表示する
+- llama.cpp server未起動時は起動案内を含むエラーを表示する
 - 複数モデルが見えるのにモデル未指定なら誤選択せず失敗する
 
 ## 15. JobとGUI
@@ -271,7 +270,7 @@ GUIは文字起こし成功後に「議事録生成」を有効化する。実�
 - speech/screenのtimestamp統合
 - map-reduce
 - JSON Schema API要求
-- localhost以外の拒否
+- LAN内HTTP endpointの受理とHTTP(S)以外の拒否
 - 複数モデル自動選択拒否
 - 根拠なし項目の除外
 - OCRだけからの決定推測の除外
@@ -285,7 +284,7 @@ GUIは文字起こし成功後に「議事録生成」を有効化する。実�
 
 - 話者付き文字起こしと画面解析から`timeline.json`を生成できる
 - 画面解析がなくても音声だけで生成できる
-- 既存LM Studioモデルだけを使用し、データをlocalhost外へ送信しない
+- 既存llama.cppモデルだけを使用し、データを指定したLAN内サーバー以外へ送信しない
 - `minutes.json`と`minutes.md`を生成できる
 - TODOの担当不明・期限不明を明示できる
 - 根拠のない重要項目を保存前に除外できる
@@ -294,10 +293,9 @@ GUIは文字起こし成功後に「議事録生成」を有効化する。実�
 
 ## 18. 後続候補
 
-1. LM Studioモデル選択GUIと接続テスト
+1. llama.cppモデル選択GUIと接続テスト
 2. 設定ファイルへのモデルID保存
-3. llama.cpp直接実行backend
+3. llama.cpp serverの認証・TLS対応
 4. 長時間会議のtoken-aware chunking
 5. 生成項目ごとの根拠プレビュー・承認UI
 6. Confluence API投稿
-

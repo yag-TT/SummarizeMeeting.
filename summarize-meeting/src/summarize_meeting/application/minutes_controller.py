@@ -17,6 +17,7 @@ from summarize_meeting.application.worker_process import (
 from summarize_meeting.domain.analysis_job import AnalysisJobState, AnalysisJobStatus
 from summarize_meeting.infrastructure.analysis_job_repository import FileAnalysisJobRepository
 from summarize_meeting.infrastructure.paths import PortableAppPaths
+from summarize_meeting.processing.minutes import DEFAULT_LLM_BASE_URL
 
 
 class MinutesController(QObject):
@@ -37,8 +38,11 @@ class MinutesController(QObject):
         super().__init__()
         self._app_paths = app_paths
         self._job_repository = job_repository or FileAnalysisJobRepository()
-        self._base_url = base_url or os.environ.get(
-            "SUMMARIZE_MEETING_LMSTUDIO_URL", "http://127.0.0.1:1234/v1"
+        self._base_url = (
+            base_url
+            or os.environ.get("SUMMARIZE_MEETING_LLM_URL")
+            or os.environ.get("SUMMARIZE_MEETING_LMSTUDIO_URL")
+            or DEFAULT_LLM_BASE_URL
         )
         configured_model = model or os.environ.get("SUMMARIZE_MEETING_LLM_MODEL")
         self._model = configured_model.strip() if configured_model else None
@@ -62,7 +66,7 @@ class MinutesController(QObject):
             raise RuntimeError("文字起こし結果がありません")
         state = AnalysisJobState.start(
             job="minutes",
-            model=self._model or "LM Studio auto",
+            model=self._model or "llama.cpp auto",
             language="ja",
         )
         with self._lock:

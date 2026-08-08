@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from summarize_meeting.processing.minutes import (
-    LMStudioMinutesBackend,
+    LlamaCppMinutesBackend,
     MinutesError,
     MinutesService,
 )
@@ -215,7 +215,7 @@ def test_service_rejects_session_without_successful_transcript(tmp_path: Path) -
         MinutesService(FakeBackend([_generated()])).run(session)
 
 
-def test_lm_studio_backend_uses_local_structured_output(monkeypatch) -> None:
+def test_llama_cpp_backend_uses_configured_structured_output(monkeypatch) -> None:
     requests = []
 
     def request(request, **_kwargs):
@@ -225,18 +225,18 @@ def test_lm_studio_backend_uses_local_structured_output(monkeypatch) -> None:
         )
 
     monkeypatch.setattr("summarize_meeting.processing.minutes.urlopen", request)
-    backend = LMStudioMinutesBackend(model="existing-model")
+    backend = LlamaCppMinutesBackend(model="existing-model")
 
     result = backend.generate("会議資料", {"type": "object"})
 
     payload = json.loads(requests[0].data.decode("utf-8"))
-    assert requests[0].full_url == "http://127.0.0.1:1234/v1/chat/completions"
+    assert requests[0].full_url == "http://192.168.1.158:8081/v1/chat/completions"
     assert payload["model"] == "existing-model"
     assert payload["response_format"]["type"] == "json_schema"
     assert result["summary"] == "テスト結果の共有予定を確認した。"
 
 
-def test_lm_studio_backend_requires_model_selection_when_multiple_are_visible(
+def test_llama_cpp_backend_requires_model_selection_when_multiple_are_visible(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
@@ -247,12 +247,20 @@ def test_lm_studio_backend_requires_model_selection_when_multiple_are_visible(
     )
 
     with pytest.raises(MinutesError, match="SUMMARIZE_MEETING_LLM_MODEL"):
-        LMStudioMinutesBackend().generate("会議資料", {"type": "object"})
+        LlamaCppMinutesBackend().generate("会議資料", {"type": "object"})
 
 
-def test_lm_studio_backend_rejects_non_local_endpoint() -> None:
-    with pytest.raises(ValueError, match="ローカルHTTP"):
-        LMStudioMinutesBackend(base_url="https://example.com/v1", model="model")
+def test_llama_cpp_backend_accepts_lan_http_endpoint() -> None:
+    backend = LlamaCppMinutesBackend(
+        base_url="http://192.168.1.158:8081/v1", model="model"
+    )
+
+    assert backend.model_name == "model"
+
+
+def test_llama_cpp_backend_rejects_non_http_endpoint() -> None:
+    with pytest.raises(ValueError, match=r"HTTP\(S\)"):
+        LlamaCppMinutesBackend(base_url="file:///tmp/llm", model="model")
 
 
 def test_service_sanitizes_reasoning_tokens_and_hallucinated_deadline(tmp_path: Path) -> None:

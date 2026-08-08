@@ -5,16 +5,20 @@ import json
 import sys
 from pathlib import Path
 
-from summarize_meeting.processing.minutes import LMStudioMinutesBackend, MinutesService
+from summarize_meeting.processing.minutes import (
+    DEFAULT_LLM_BASE_URL,
+    LlamaCppMinutesBackend,
+    MinutesService,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Generate local meeting minutes")
+    parser = argparse.ArgumentParser(description="Generate meeting minutes with llama.cpp")
     parser.add_argument("--session", required=True, type=Path)
-    parser.add_argument("--base-url", default="http://127.0.0.1:1234/v1")
+    parser.add_argument("--base-url", default=DEFAULT_LLM_BASE_URL)
     parser.add_argument("--model")
     args = parser.parse_args(argv)
-    service = MinutesService(LMStudioMinutesBackend(base_url=args.base_url, model=args.model))
+    service = MinutesService(LlamaCppMinutesBackend(base_url=args.base_url, model=args.model))
 
     def progress(percent: int, message: str) -> None:
         print(

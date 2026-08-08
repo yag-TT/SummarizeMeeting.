@@ -17,6 +17,8 @@ from uuid import uuid4
 
 ProgressCallback = Callable[[int, str], None]
 
+DEFAULT_LLM_BASE_URL = "http://192.168.1.158:8081/v1"
+
 
 class MinutesError(RuntimeError):
     pass
@@ -32,18 +34,18 @@ class MinutesBackend(Protocol):
     def generate(self, prompt: str, schema: Mapping[str, object]) -> Mapping[str, object]: ...
 
 
-class LMStudioMinutesBackend:
+class LlamaCppMinutesBackend:
     def __init__(
         self,
         *,
-        base_url: str = "http://127.0.0.1:1234/v1",
+        base_url: str = DEFAULT_LLM_BASE_URL,
         model: str | None = None,
         max_output_tokens: int = 2_048,
         timeout_seconds: float = 600,
     ) -> None:
         parsed = urlparse(base_url)
-        if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
-            raise ValueError("LM Studio APIはローカルHTTPアドレスだけを指定できます")
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("llama.cpp APIには有効なHTTP(S)アドレスを指定してください")
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
         self._base_url = base_url.rstrip("/")
@@ -53,7 +55,7 @@ class LMStudioMinutesBackend:
 
     @property
     def runtime_name(self) -> str:
-        return "LM Studio local API"
+        return "llama.cpp OpenAI-compatible API"
 
     @property
     def model_name(self) -> str:
@@ -87,11 +89,11 @@ class LMStudioMinutesBackend:
         response = self._request_json("POST", "/chat/completions", payload)
         choices = response.get("choices")
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-            raise MinutesError("LM Studio APIの応答にchoicesがありません")
+            raise MinutesError("llama.cpp APIの応答にchoicesがありません")
         message = choices[0].get("message")
         content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(content, str):
-            raise MinutesError("LM Studio APIの応答に議事録JSONがありません")
+            raise MinutesError("llama.cpp APIの応答に議事録JSONがありません")
         return _extract_json_object(content)
 
     def _resolve_model(self) -> str:
@@ -105,11 +107,11 @@ class LMStudioMinutesBackend:
         model_ids = list(dict.fromkeys(model_ids))
         if not model_ids:
             raise MinutesError(
-                "LM Studioに利用可能なモデルがありません。モデルをロードしてください"
+                "llama.cppに利用可能なモデルがありません。モデルをロードしてください"
             )
         if len(model_ids) > 1:
             raise MinutesError(
-                "LM Studioに複数モデルがあります。"
+                "llama.cppに複数モデルがあります。"
                 "SUMMARIZE_MEETING_LLM_MODELで使用モデルを指定してください"
             )
         return model_ids[0]
@@ -131,19 +133,23 @@ class LMStudioMinutesBackend:
                 raw = response.read()
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:1000]
-            raise MinutesError(f"LM Studio APIエラー ({exc.code}): {detail}") from exc
+            raise MinutesError(f"llama.cpp APIエラー ({exc.code}): {detail}") from exc
         except (URLError, TimeoutError, OSError) as exc:
             raise MinutesError(
-                "LM Studio APIへ接続できません。LM StudioのLocal Serverを起動してください: "
+                "llama.cpp APIへ接続できません。llama.cpp serverを起動してください: "
                 f"{exc}"
             ) from exc
         try:
             value = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise MinutesError("LM Studio APIのJSON応答を解析できません") from exc
+            raise MinutesError("llama.cpp APIのJSON応答を解析できません") from exc
         if not isinstance(value, dict):
-            raise MinutesError("LM Studio APIの応答形式が不正です")
+            raise MinutesError("llama.cpp APIの応答形式が不正です")
         return value
+
+
+# Phase 5で公開した名前との互換性を維持する。
+LMStudioMinutesBackend = LlamaCppMinutesBackend
 
 
 class MinutesService:
