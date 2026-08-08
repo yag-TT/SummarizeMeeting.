@@ -9,6 +9,7 @@ from PySide6.QtCore import QLockFile, QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from summarize_meeting.application.diarization_controller import DiarizationController
+from summarize_meeting.application.minutes_controller import MinutesController
 from summarize_meeting.application.recording_controller import RecordingController
 from summarize_meeting.application.recovery_service import (
     RecoveryController,
@@ -79,11 +80,13 @@ def main() -> int:
     transcription_controller = TranscriptionController(paths)
     diarization_controller = DiarizationController(paths)
     screen_analysis_controller = ScreenAnalysisController(paths)
+    minutes_controller = MinutesController(paths)
     window = MainWindow(
         controller,
         transcription_controller,
         diarization_controller=diarization_controller,
         screen_analysis_controller=screen_analysis_controller,
+        minutes_controller=minutes_controller,
     )
     recovery_controller = RecoveryController(SessionRecoveryService(paths.meetings_dir))
     recovery_controller.progress.connect(window.show_information)

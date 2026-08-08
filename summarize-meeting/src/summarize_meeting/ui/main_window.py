@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from summarize_meeting.application.diarization_controller import DiarizationController
+from summarize_meeting.application.minutes_controller import MinutesController
 from summarize_meeting.application.recording_controller import (
     CaptureSourcesSnapshot,
     RecordingController,
@@ -49,12 +50,14 @@ class MainWindow(QMainWindow):
         session_catalog: FileSessionCatalog | None = None,
         diarization_controller: DiarizationController | None = None,
         screen_analysis_controller: ScreenAnalysisController | None = None,
+        minutes_controller: MinutesController | None = None,
     ) -> None:
         super().__init__()
         self._controller = controller
         self._transcription_controller = transcription_controller
         self._diarization_controller = diarization_controller
         self._screen_analysis_controller = screen_analysis_controller
+        self._minutes_controller = minutes_controller
         self._session_catalog = session_catalog or FileSessionCatalog(controller.meetings_directory)
         self._started_at: datetime | None = None
         self._session_path: Path | None = None
@@ -64,8 +67,8 @@ class MainWindow(QMainWindow):
         self._close_requested = False
         self._os_shutdown_requested = False
         self._session_error_message: str | None = None
-        self.setWindowTitle("Summarize Meeting - Phase 4 PoC")
-        self.resize(880, 830)
+        self.setWindowTitle("Summarize Meeting - Phase 5 PoC")
+        self.resize(880, 900)
 
         central = QWidget()
         root = QVBoxLayout(central)
@@ -204,6 +207,22 @@ class MainWindow(QMainWindow):
         self._screen_analysis_progress.setVisible(False)
         root.addWidget(self._screen_analysis_progress)
 
+        minutes = QHBoxLayout()
+        minutes.addWidget(QLabel("議事録生成"))
+        self._minutes_status = QLabel("未実行")
+        minutes.addWidget(self._minutes_status)
+        minutes.addStretch(1)
+        self._generate_minutes = QPushButton("実行")
+        self._generate_minutes.setEnabled(False)
+        minutes.addWidget(self._generate_minutes)
+        root.addLayout(minutes)
+        self._minutes_progress = QProgressBar()
+        self._minutes_progress.setRange(0, 100)
+        self._minutes_progress.setValue(0)
+        self._minutes_progress.setFormat("議事録生成 %p%")
+        self._minutes_progress.setVisible(False)
+        root.addWidget(self._minutes_progress)
+
         action = QHBoxLayout()
         self._start = QPushButton("会議開始")
         self._stop = QPushButton("会議終了")
@@ -228,6 +247,7 @@ class MainWindow(QMainWindow):
         self._diarize.clicked.connect(self._toggle_diarization)
         self._save_speaker_names.clicked.connect(self._update_speaker_names)
         self._analyze_screens.clicked.connect(self._toggle_screen_analysis)
+        self._generate_minutes.clicked.connect(self._toggle_minutes)
         self._refresh_sessions.clicked.connect(lambda: self.refresh_analysis_sessions())
         self._analysis_session.currentIndexChanged.connect(self._on_analysis_session_changed)
         self._auto_transcribe.toggled.connect(self._on_auto_transcription_toggled)
@@ -265,6 +285,12 @@ class MainWindow(QMainWindow):
             screen_analysis_controller.job_finished.connect(self._on_screen_analysis_finished)
             screen_analysis_controller.job_failed.connect(self._on_screen_analysis_failed)
             screen_analysis_controller.job_canceled.connect(self._on_screen_analysis_canceled)
+        if minutes_controller is not None:
+            minutes_controller.job_started.connect(self._on_minutes_started)
+            minutes_controller.job_progress.connect(self._on_minutes_progress)
+            minutes_controller.job_finished.connect(self._on_minutes_finished)
+            minutes_controller.job_failed.connect(self._on_minutes_failed)
+            minutes_controller.job_canceled.connect(self._on_minutes_canceled)
         QTimer.singleShot(0, self.refresh_sources)
         QTimer.singleShot(0, self.refresh_analysis_sessions)
 
@@ -423,6 +449,8 @@ class MainWindow(QMainWindow):
         self._diarize.setEnabled(False)
         self._screen_analysis_status.setText("未実行")
         self._analyze_screens.setEnabled(False)
+        self._minutes_status.setText("未実行")
+        self._generate_minutes.setEnabled(False)
         self._clear_speaker_names()
         self.show_information("録音デバイスを準備しています。")
 
@@ -547,6 +575,25 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.show_error(str(exc))
 
+    def _toggle_minutes(self) -> None:
+        controller = self._minutes_controller
+        if controller is None:
+            self.show_error("議事録生成機能を初期化できませんでした。")
+            return
+        if controller.is_running:
+            self._generate_minutes.setEnabled(False)
+            self._minutes_status.setText("キャンセル中")
+            controller.cancel()
+            return
+        summary = self._selected_analysis_session()
+        if summary is None:
+            self.show_error("議事録を生成する会議記録がありません。")
+            return
+        try:
+            controller.start(summary.path)
+        except Exception as exc:
+            self.show_error(str(exc))
+
     def _update_speaker_names(self) -> None:
         controller = self._diarization_controller
         summary = self._selected_analysis_session()
@@ -613,6 +660,7 @@ class MainWindow(QMainWindow):
         self._transcribe.setEnabled(True)
         self._diarize.setEnabled(False)
         self._analyze_screens.setEnabled(False)
+        self._generate_minutes.setEnabled(False)
         self._transcription_progress.setValue(0)
         self._transcription_progress.setVisible(True)
         self.show_information(
@@ -650,6 +698,7 @@ class MainWindow(QMainWindow):
         self._start.setEnabled(False)
         self._transcribe.setEnabled(False)
         self._analyze_screens.setEnabled(False)
+        self._generate_minutes.setEnabled(False)
         self._diarization_status.setText("実行中")
         self._diarize.setText("キャンセル")
         self._diarize.setEnabled(True)
@@ -690,6 +739,7 @@ class MainWindow(QMainWindow):
         self._start.setEnabled(False)
         self._transcribe.setEnabled(False)
         self._diarize.setEnabled(False)
+        self._generate_minutes.setEnabled(False)
         self._screen_analysis_status.setText("実行中")
         self._analyze_screens.setText("キャンセル")
         self._analyze_screens.setEnabled(True)
@@ -721,6 +771,53 @@ class MainWindow(QMainWindow):
         self._finish_screen_analysis_ui("キャンセル")
         self.show_information("画面解析をキャンセルしました。")
 
+    def _on_minutes_started(self, session_path: str) -> None:
+        if not self._is_current_session(session_path):
+            return
+        self._set_inputs_enabled(False)
+        self._start.setEnabled(False)
+        self._transcribe.setEnabled(False)
+        self._diarize.setEnabled(False)
+        self._analyze_screens.setEnabled(False)
+        self._minutes_status.setText("実行中")
+        self._generate_minutes.setText("キャンセル")
+        self._generate_minutes.setEnabled(True)
+        self._minutes_progress.setValue(0)
+        self._minutes_progress.setVisible(True)
+        self.show_information("ローカルLLMで議事録を生成しています。")
+
+    def _on_minutes_progress(self, percent: int, message: str) -> None:
+        self._minutes_progress.setValue(percent)
+        self._minutes_progress.setFormat(f"議事録生成 %p% - {message}")
+        self.show_information(message)
+
+    def _on_minutes_finished(self, session_path: str, output_path: str) -> None:
+        if not self._is_current_session(session_path):
+            return
+        self._finish_minutes_ui("完了")
+        self.refresh_analysis_sessions(Path(session_path))
+        self.show_information(f"議事録を保存しました: {output_path}")
+
+    def _on_minutes_failed(self, session_path: str, message: str) -> None:
+        if not self._is_current_session(session_path):
+            return
+        self._finish_minutes_ui("失敗")
+        self.show_error(message)
+
+    def _on_minutes_canceled(self, session_path: str) -> None:
+        if not self._is_current_session(session_path):
+            return
+        self._finish_minutes_ui("キャンセル")
+        self.show_information("議事録生成をキャンセルしました。")
+
+    def _finish_minutes_ui(self, status: str) -> None:
+        self._minutes_status.setText(status)
+        self._generate_minutes.setText("再実行")
+        self._minutes_progress.setVisible(False)
+        self._set_inputs_enabled(True)
+        self._start.setEnabled(True)
+        self._update_analysis_availability()
+
     def _finish_screen_analysis_ui(self, status: str) -> None:
         self._screen_analysis_status.setText(status)
         self._analyze_screens.setText("再実行")
@@ -749,48 +846,49 @@ class MainWindow(QMainWindow):
 
     def _update_analysis_availability(self) -> None:
         summary = self._selected_analysis_session()
-        if self._transcription_controller is None or summary is None:
-            self._transcribe.setEnabled(False)
-        else:
-            self._transcribe.setEnabled(
-                summary.can_transcribe
-                and not (
-                    self._diarization_controller is not None
-                    and self._diarization_controller.is_running
-                )
-                and not (
-                    self._screen_analysis_controller is not None
-                    and self._screen_analysis_controller.is_running
-                )
+        controllers = (
+            self._transcription_controller,
+            self._diarization_controller,
+            self._screen_analysis_controller,
+            self._minutes_controller,
+        )
+
+        def other_running(current: object | None) -> bool:
+            return any(
+                controller is not None
+                and controller is not current
+                and controller.is_running
+                for controller in controllers
             )
-        if self._diarization_controller is None or summary is None:
-            self._diarize.setEnabled(False)
-        else:
-            self._diarize.setEnabled(
-                summary.can_diarize
-                and not (
-                    self._transcription_controller is not None
-                    and self._transcription_controller.is_running
-                )
-                and not (
-                    self._screen_analysis_controller is not None
-                    and self._screen_analysis_controller.is_running
-                )
-            )
-        if self._screen_analysis_controller is None or summary is None:
-            self._analyze_screens.setEnabled(False)
-        else:
-            self._analyze_screens.setEnabled(
-                summary.can_analyze_screens
-                and not (
-                    self._transcription_controller is not None
-                    and self._transcription_controller.is_running
-                )
-                and not (
-                    self._diarization_controller is not None
-                    and self._diarization_controller.is_running
-                )
-            )
+
+        transcription = self._transcription_controller
+        self._transcribe.setEnabled(
+            transcription is not None
+            and summary is not None
+            and (transcription.is_running or summary.can_transcribe)
+            and not other_running(transcription)
+        )
+        diarization = self._diarization_controller
+        self._diarize.setEnabled(
+            diarization is not None
+            and summary is not None
+            and (diarization.is_running or summary.can_diarize)
+            and not other_running(diarization)
+        )
+        screen_analysis = self._screen_analysis_controller
+        self._analyze_screens.setEnabled(
+            screen_analysis is not None
+            and summary is not None
+            and (screen_analysis.is_running or summary.can_analyze_screens)
+            and not other_running(screen_analysis)
+        )
+        minutes = self._minutes_controller
+        self._generate_minutes.setEnabled(
+            minutes is not None
+            and summary is not None
+            and (minutes.is_running or summary.can_generate_minutes)
+            and not other_running(minutes)
+        )
 
     def _is_current_session(self, value: str) -> bool:
         summary = self._selected_analysis_session()
@@ -830,6 +928,9 @@ class MainWindow(QMainWindow):
             self._screen_analysis_status.setText("対象なし")
             self._analyze_screens.setText("実行")
             self._analyze_screens.setEnabled(False)
+            self._minutes_status.setText("対象なし")
+            self._generate_minutes.setText("実行")
+            self._generate_minutes.setEnabled(False)
             self._clear_speaker_names()
             return
         status = {
@@ -866,6 +967,18 @@ class MainWindow(QMainWindow):
         self._screen_analysis_status.setText(screen_analysis_status)
         self._analyze_screens.setText(
             "再実行" if summary.screen_analysis_status != "NOT_STARTED" else "実行"
+        )
+        minutes_status = {
+            "SUCCEEDED": "完了",
+            "NOT_STARTED": "未実行",
+            "UNKNOWN": "状態不明",
+            "FAILED": "失敗",
+            "CANCELED": "キャンセル",
+            "RUNNING": "前回中断",
+        }.get(summary.minutes_status, summary.minutes_status)
+        self._minutes_status.setText(minutes_status)
+        self._generate_minutes.setText(
+            "再実行" if summary.minutes_status != "NOT_STARTED" else "実行"
         )
         self._load_speaker_names(summary.path)
         self._update_analysis_availability()
@@ -999,6 +1112,8 @@ class MainWindow(QMainWindow):
             self._diarization_controller.cancel()
         if self._screen_analysis_controller is not None:
             self._screen_analysis_controller.cancel()
+        if self._minutes_controller is not None:
+            self._minutes_controller.cancel()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         if self._controller.is_recording:
@@ -1031,4 +1146,6 @@ class MainWindow(QMainWindow):
             self._diarization_controller.cancel()
         if self._screen_analysis_controller is not None:
             self._screen_analysis_controller.cancel()
+        if self._minutes_controller is not None:
+            self._minutes_controller.cancel()
         event.accept()

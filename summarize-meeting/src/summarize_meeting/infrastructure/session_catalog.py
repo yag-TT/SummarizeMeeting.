@@ -18,6 +18,8 @@ class SessionSummary:
     can_diarize: bool
     screen_analysis_status: str
     can_analyze_screens: bool
+    minutes_status: str
+    can_generate_minutes: bool
 
     @property
     def display_label(self) -> str:
@@ -64,6 +66,11 @@ class FileSessionCatalog:
                 job="screen_analysis",
                 result_name="screens.json",
             )
+            minutes_status = _analysis_status(
+                directory,
+                job="minutes",
+                result_name="minutes.json",
+            )
             audio_directory = directory / "audio"
             can_transcribe = (audio_directory / "manifest.json").is_file() and any(
                 audio_directory.glob("*.wav")
@@ -74,6 +81,9 @@ class FileSessionCatalog:
                 and _has_system_audio(directory)
             )
             can_analyze_screens = recording_status == "RECORDED" and _has_screenshots(directory)
+            can_generate_minutes = (
+                recording_status == "RECORDED" and transcription_status == "SUCCEEDED"
+            )
             summary = SessionSummary(
                 path=directory.resolve(),
                 title=title,
@@ -85,6 +95,8 @@ class FileSessionCatalog:
                 can_diarize=can_diarize,
                 screen_analysis_status=screen_analysis_status,
                 can_analyze_screens=can_analyze_screens,
+                minutes_status=minutes_status,
+                can_generate_minutes=can_generate_minutes,
             )
             summaries.append((_sort_timestamp(directory, started_at), summary))
         summaries.sort(key=lambda value: (value[0], value[1].path.name), reverse=True)

@@ -2,7 +2,7 @@
 
 Teams、Google Meetなどのオンライン会議について、マイク音声、PC再生音声、選択したウィンドウの重要な画面変更をローカル保存し、会議終了後に議事録を生成するデスクトップアプリケーションです。
 
-Phase 4「画面解析」の正常系PoCまで実装しています。Phase 1の記録、Phase 2のfaster-whisper文字起こし、Phase 3の話者分離に加え、保存済みスクリーンショットをWindows 11内蔵OCRで解析し、timestamp付き画面情報を生成できます。統合議事録の要約はまだ実装していません。
+Phase 5「統合議事録」の正常系PoCまで実装しています。Phase 1の記録、Phase 2のfaster-whisper文字起こし、Phase 3の話者分離、Phase 4のWindows 11内蔵OCR画面解析をtimestampで統合し、既存LM Studioモデルを使って根拠付き議事録を生成できます。
 
 ## 開発環境
 
@@ -29,6 +29,19 @@ uv run summarize-meeting
 文字起こし完了後は「話者分離」から話者数を`自動`または`1人`〜`10人`で選び、PC音声の話者を分離できます。マイク発話は`自分`、PC音声は`Speaker 1`などで表示されます。完了後に話者名を編集して保存すると、話者付きJSONと`transcript.md`を推論なしで再生成します。
 
 録音済みセッションにスクリーンショットがある場合は「画面解析」を実行できます。Windows 11の日本語OCR言語パックを使用し、画像、OCR結果、画面種別、タイトル候補、重要行を外部サービスへ送信せず`analysis/screens.json`へ保存します。
+
+文字起こし完了後は「議事録生成」を実行できます。話者付き文字起こしを優先し、画面解析結果を任意で統合して`analysis/timeline.json`、`analysis/minutes.json`、`output/minutes.md`を生成します。LM StudioのLocal ServerとPCへ導入済みのモデルを使用し、アプリからLLMをダウンロードしません。
+
+LM Studio側でLocal Serverを起動し、モデルを1つロードします。複数モデルをロードする場合はモデルIDを環境変数で指定します。
+
+```powershell
+lms server start --port 1234
+lms load <既存model-key> --identifier summarize-meeting --context-length 16384
+$env:SUMMARIZE_MEETING_LLM_MODEL = "summarize-meeting"
+uv run summarize-meeting
+```
+
+接続先の既定値は`http://127.0.0.1:1234/v1`です。変更する場合もlocalhostだけを許可します。
 
 初回は固定URLとSHA-256検証付きスクリプトで、CPU話者分離モデルを`models/sherpa-onnx/diarization/`へ配置します。
 
@@ -62,9 +75,12 @@ data/meetings/<session>/
 │  ├─ diarization.json
 │  ├─ diarized_transcription.json
 │  ├─ speaker_names.json
-│  └─ screens.json
+│  ├─ screens.json
+│  ├─ timeline.json
+│  └─ minutes.json
 └─ output/
-   └─ transcript.md
+   ├─ transcript.md
+   └─ minutes.md
 ```
 
 文字起こしworkerだけを実行する場合:
@@ -96,6 +112,15 @@ uv run python -m summarize_meeting.processing.screen_analysis_worker `
 ```
 
 日本語OCR言語パックがWindowsにない場合は、Windowsの言語設定から追加して再実行します。
+
+議事録生成workerだけを実行する場合:
+
+```powershell
+uv run python -m summarize_meeting.processing.minutes_worker `
+  --session "<data/meetings/セッション>" `
+  --base-url http://127.0.0.1:1234/v1 `
+  --model summarize-meeting
+```
 
 アプリ起動時に正常終了していないセッションを検出すると、復旧確認を表示します。復旧時は元の `.work` segmentを変更せず、`audio/microphone.recovered.wav` や `audio/system.recovered.wav` を新しく生成します。
 
@@ -182,3 +207,5 @@ uv run python -m summarize_meeting.devtools.validate_phase2_session `
 - [Phase 3話者分離スモーク試験](../docs/PHASE3_DIARIZATION_SMOKE_TEST.md)
 - [Phase 4詳細設計](../docs/PHASE4_DETAILED_DESIGN.md)
 - [Phase 4 Windows画面解析スモーク試験](../docs/PHASE4_SCREEN_ANALYSIS_SMOKE_TEST.md)
+- [Phase 5詳細設計](../docs/PHASE5_DETAILED_DESIGN.md)
+- [Phase 5統合議事録スモーク試験](../docs/PHASE5_MINUTES_SMOKE_TEST.md)

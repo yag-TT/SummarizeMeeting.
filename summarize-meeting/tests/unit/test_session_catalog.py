@@ -169,3 +169,22 @@ def test_catalog_enables_screen_analysis_for_recorded_images(tmp_path: Path) -> 
 
     assert value.can_analyze_screens
     assert value.screen_analysis_status == "FAILED"
+
+
+def test_catalog_enables_minutes_after_transcription_and_reads_status(tmp_path: Path) -> None:
+    session = _session(
+        tmp_path,
+        "minutes",
+        title="議事録会議",
+        started_at="2026-08-08T10:00:00+09:00",
+        transcript=True,
+        transcription_json=True,
+    )
+    (session / "analysis" / "minutes.json").write_text(
+        '{"status":"SUCCEEDED"}', encoding="utf-8"
+    )
+
+    value = FileSessionCatalog(tmp_path).scan()[0]
+
+    assert value.can_generate_minutes
+    assert value.minutes_status == "SUCCEEDED"
