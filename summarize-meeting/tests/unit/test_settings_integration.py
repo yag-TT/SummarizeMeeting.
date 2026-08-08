@@ -45,6 +45,7 @@ class _UiController(QObject):
         self.auto_transcribe_after_recording = False
         self.is_recording = False
         self.stop_count = 0
+        self.started_sessions: list[dict[str, object]] = []
         self.replaced_screen_targets: list[ScreenTarget] = []
         self.auto_transcription_updates: list[bool] = []
 
@@ -75,6 +76,23 @@ class _UiController(QObject):
 
     def stop_session(self) -> None:
         self.stop_count += 1
+
+    def start_session(
+        self,
+        *,
+        title: str,
+        microphone: AudioDevice | None,
+        system_audio: AudioDevice | None,
+        screen_target: ScreenTarget | None,
+    ) -> None:
+        self.started_sessions.append(
+            {
+                "title": title,
+                "microphone": microphone,
+                "system_audio": system_audio,
+                "screen_target": screen_target,
+            }
+        )
 
     def replace_screen_target(self, target: ScreenTarget) -> None:
         self.replaced_screen_targets.append(target)
@@ -227,7 +245,8 @@ def test_ui_selects_past_session_and_starts_transcription(
     assert window._analysis_session.count() == 2  # noqa: SLF001
     assert window._analysis_session.currentData().path == newer.resolve()  # noqa: SLF001
     assert window._transcription_status.text() == "完了"  # noqa: SLF001
-    assert window._transcribe.text() == "再実行"  # noqa: SLF001
+    assert window._transcribe.text() == "文字起こしを再実行"  # noqa: SLF001
+    assert window._open_transcript.isEnabled()  # noqa: SLF001
     window._analysis_session.setCurrentIndex(1)  # noqa: SLF001
     assert window._analysis_session.currentData().path == older.resolve()  # noqa: SLF001
     assert window._transcription_status.text() == "未実行"  # noqa: SLF001
@@ -471,6 +490,7 @@ def test_ui_keeps_partial_sources_and_recovers_controls_after_refresh_error(
 ) -> None:
     controller = _UiController(microphone_id=None, system_id=None)
     window = MainWindow(controller)  # type: ignore[arg-type]
+    window._title.setText("障害対応会議")  # noqa: SLF001
     window._source_refresh_request_id = 5  # noqa: SLF001
     snapshot = CaptureSourcesSnapshot(
         microphones=(),
@@ -480,6 +500,7 @@ def test_ui_keeps_partial_sources_and_recovers_controls_after_refresh_error(
     )
 
     window._on_sources_refreshed(5, snapshot)  # noqa: SLF001
+    window._system_audio.setCurrentIndex(1)  # noqa: SLF001
 
     assert window._microphone.count() == 1  # noqa: SLF001
     assert window._system_audio.count() == 2  # noqa: SLF001
@@ -494,6 +515,9 @@ def test_ui_recovers_controls_and_invalidates_result_after_source_refresh_timeou
 ) -> None:
     controller = _UiController(microphone_id=None, system_id=None)
     window = MainWindow(controller)  # type: ignore[arg-type]
+    window.refresh_sources()
+    window._title.setText("タイムアウト確認")  # noqa: SLF001
+    window._microphone.setCurrentIndex(1)  # noqa: SLF001
     window._source_refresh_request_id = 9  # noqa: SLF001
     window._source_refresh_pending = True  # noqa: SLF001
     window._refresh.setEnabled(False)  # noqa: SLF001
@@ -514,6 +538,9 @@ def test_ui_disables_inputs_while_preparing_and_restores_them_after_cancel(
 ) -> None:
     controller = _UiController(microphone_id=None, system_id=None)
     window = MainWindow(controller)  # type: ignore[arg-type]
+    window.refresh_sources()
+    window._title.setText("キャンセル確認")  # noqa: SLF001
+    window._microphone.setCurrentIndex(1)  # noqa: SLF001
 
     window._on_session_preparing("C:/sessions/preparing")  # noqa: SLF001
 
@@ -540,6 +567,9 @@ def test_ui_shows_finalize_progress_and_hides_it_after_completion(
 ) -> None:
     controller = _UiController(microphone_id=None, system_id=None)
     window = MainWindow(controller)  # type: ignore[arg-type]
+    window.refresh_sources()
+    window._title.setText("保存確認")  # noqa: SLF001
+    window._microphone.setCurrentIndex(1)  # noqa: SLF001
 
     window._on_finalize_progress(42, "マイク: 音声ファイルを結合しています")  # noqa: SLF001
 
@@ -568,7 +598,44 @@ def test_ui_keeps_session_error_visible_after_session_finishes(
 
     assert "最終WAVを確定できませんでした" in window._message.text()  # noqa: SLF001
     assert "C:/sessions/interrupted" in window._message.text()  # noqa: SLF001
-    assert "#ffd9d9" in window._message.styleSheet()  # noqa: SLF001
+    assert "#4a2024" in window._message.styleSheet()  # noqa: SLF001
+    window.close()
+
+
+def test_ui_requires_title_and_audio_before_start(qapp: QApplication) -> None:
+    controller = _UiController(microphone_id=None, system_id=None)
+    window = MainWindow(controller)  # type: ignore[arg-type]
+    window.refresh_sources()
+
+    assert not window._start.isEnabled()  # noqa: SLF001
+    assert "会議名" in window._action_hint.text()  # noqa: SLF001
+
+    window._title.setText("デザインレビュー")  # noqa: SLF001
+    assert not window._start.isEnabled()  # noqa: SLF001
+    assert "音声" in window._action_hint.text()  # noqa: SLF001
+
+    window._microphone.setCurrentIndex(1)  # noqa: SLF001
+    assert window._start.isEnabled()  # noqa: SLF001
+
+    window._title.clear()  # noqa: SLF001
+    window._start_recording()  # noqa: SLF001
+    assert not window._title_error.isHidden()  # noqa: SLF001
+    assert not controller.started_sessions
+
+    window._title.setText("デザインレビュー")  # noqa: SLF001
+    assert window._title_error.isHidden()  # noqa: SLF001
+    window._start_recording()  # noqa: SLF001
+    assert controller.started_sessions[0]["title"] == "デザインレビュー"
+    window.close()
+
+
+def test_ui_uses_scrollable_content_with_persistent_action_bar(qapp: QApplication) -> None:
+    controller = _UiController(microphone_id=None, system_id=None)
+    window = MainWindow(controller)  # type: ignore[arg-type]
+
+    assert window._scroll.widgetResizable()  # noqa: SLF001
+    assert window._start.parentWidget() is not window._scroll.widget()  # noqa: SLF001
+    assert window.minimumHeight() <= 560
     window.close()
 
 

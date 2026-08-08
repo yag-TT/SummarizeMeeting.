@@ -5,12 +5,13 @@ from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtGui import QCloseEvent, QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFormLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -67,26 +69,59 @@ class MainWindow(QMainWindow):
         self._close_requested = False
         self._os_shutdown_requested = False
         self._session_error_message: str | None = None
-        self.setWindowTitle("Summarize Meeting - Phase 5 PoC")
-        self.resize(880, 900)
+        self.setWindowTitle("Summarize Meeting")
+        self.resize(960, 820)
+        self.setMinimumSize(720, 560)
 
         central = QWidget()
-        root = QVBoxLayout(central)
+        shell = QVBoxLayout(central)
+        shell.setContentsMargins(12, 12, 12, 12)
+        shell.setSpacing(10)
+
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        content = QWidget()
+        root = QVBoxLayout(content)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(10)
+
+        recording_group = QGroupBox("録音設定")
+        recording_layout = QVBoxLayout(recording_group)
         form = QFormLayout()
         self._title = QLineEdit()
         self._title.setPlaceholderText("例: 開発チーム定例")
+        self._title.setAccessibleName("会議名")
+        self._title_error = QLabel("")
+        self._title_error.setStyleSheet("color: #ffb4ab; padding-top: 2px;")
+        self._title_error.setVisible(False)
+        self._title_error.setAccessibleName("会議名の入力エラー")
+        title_field = QWidget()
+        title_layout = QVBoxLayout(title_field)
+        title_layout.setContentsMargins(0, 0, 0, 0)
+        title_layout.setSpacing(2)
+        title_layout.addWidget(self._title)
+        title_layout.addWidget(self._title_error)
         self._microphone = QComboBox()
         self._system_audio = QComboBox()
         self._screen_target = QComboBox()
         self._save_path = QLineEdit(str(controller.meetings_directory))
         self._save_path.setReadOnly(True)
         self._save_path.setToolTip(str(controller.meetings_directory))
-        form.addRow("会議名", self._title)
+        self._open_recordings = QPushButton("フォルダを開く")
+        self._open_recordings.setToolTip("録音データの保存先を開きます")
+        save_path_row = QWidget()
+        save_path_layout = QHBoxLayout(save_path_row)
+        save_path_layout.setContentsMargins(0, 0, 0, 0)
+        save_path_layout.setSpacing(6)
+        save_path_layout.addWidget(self._save_path, 1)
+        save_path_layout.addWidget(self._open_recordings)
+        form.addRow("会議名", title_field)
         form.addRow("マイク", self._microphone)
         form.addRow("PC音声", self._system_audio)
         form.addRow("取得画面", self._screen_target)
-        form.addRow("保存先", self._save_path)
-        root.addLayout(form)
+        form.addRow("保存先", save_path_row)
+        recording_layout.addLayout(form)
 
         selector_buttons = QHBoxLayout()
         self._refresh = QPushButton("デバイス・ウィンドウを更新")
@@ -95,15 +130,17 @@ class MainWindow(QMainWindow):
         selector_buttons.addWidget(self._refresh)
         selector_buttons.addWidget(self._reselect)
         selector_buttons.addStretch(1)
-        root.addLayout(selector_buttons)
+        recording_layout.addLayout(selector_buttons)
+        root.addWidget(recording_group)
 
-        root.addSpacing(12)
+        status_group = QGroupBox("録音状態")
+        status_layout = QVBoxLayout(status_group)
         self._mic_status = CaptureStatusRow("マイク")
         self._system_status = CaptureStatusRow("PC音声")
         self._screen_status = CaptureStatusRow("画面", show_meter=False)
-        root.addWidget(self._mic_status)
-        root.addWidget(self._system_status)
-        root.addWidget(self._screen_status)
+        status_layout.addWidget(self._mic_status)
+        status_layout.addWidget(self._system_status)
+        status_layout.addWidget(self._screen_status)
 
         summary = QHBoxLayout()
         self._elapsed = QLabel("経過時間 00:00:00")
@@ -112,11 +149,16 @@ class MainWindow(QMainWindow):
         summary.addSpacing(30)
         summary.addWidget(self._screenshots)
         summary.addStretch(1)
-        root.addLayout(summary)
+        status_layout.addLayout(summary)
+        root.addWidget(status_group)
 
         self._message = QLabel("")
         self._message.setWordWrap(True)
-        self._message.setStyleSheet("padding: 8px; background: #f2f2f2;")
+        self._message.setAccessibleName("アプリからのお知らせ")
+        self._message.setStyleSheet(
+            "padding: 10px; background: #243447; color: #e6f2ff; "
+            "border: 1px solid #3f5871; border-radius: 4px;"
+        )
         root.addWidget(self._message)
 
         self._finalize_progress = QProgressBar()
@@ -126,6 +168,8 @@ class MainWindow(QMainWindow):
         self._finalize_progress.setVisible(False)
         root.addWidget(self._finalize_progress)
 
+        analysis_group = QGroupBox("録音後の解析")
+        analysis_layout = QVBoxLayout(analysis_group)
         analysis_selector = QHBoxLayout()
         analysis_selector.addWidget(QLabel("解析対象"))
         self._analysis_session = QComboBox()
@@ -134,29 +178,36 @@ class MainWindow(QMainWindow):
         )
         self._analysis_session.setMinimumContentsLength(50)
         analysis_selector.addWidget(self._analysis_session, 1)
+        self._open_session = QPushButton("フォルダを開く")
+        self._open_session.setEnabled(False)
+        self._open_session.setToolTip("選択中の会議データを開きます")
+        analysis_selector.addWidget(self._open_session)
         self._refresh_sessions = QPushButton("会議一覧を更新")
         analysis_selector.addWidget(self._refresh_sessions)
-        root.addLayout(analysis_selector)
+        analysis_layout.addLayout(analysis_selector)
 
         self._auto_transcribe = QCheckBox("録音終了後に自動で文字起こし")
         self._auto_transcribe.setChecked(controller.auto_transcribe_after_recording)
-        root.addWidget(self._auto_transcribe)
+        analysis_layout.addWidget(self._auto_transcribe)
 
         analysis = QHBoxLayout()
         analysis.addWidget(QLabel("文字起こし"))
         self._transcription_status = QLabel("未実行")
         analysis.addWidget(self._transcription_status)
         analysis.addStretch(1)
-        self._transcribe = QPushButton("実行")
+        self._open_transcript = QPushButton("文字起こしを開く")
+        self._open_transcript.setEnabled(False)
+        analysis.addWidget(self._open_transcript)
+        self._transcribe = QPushButton("文字起こしを実行")
         self._transcribe.setEnabled(False)
         analysis.addWidget(self._transcribe)
-        root.addLayout(analysis)
+        analysis_layout.addLayout(analysis)
         self._transcription_progress = QProgressBar()
         self._transcription_progress.setRange(0, 100)
         self._transcription_progress.setValue(0)
         self._transcription_progress.setFormat("文字起こし %p%")
         self._transcription_progress.setVisible(False)
-        root.addWidget(self._transcription_progress)
+        analysis_layout.addWidget(self._transcription_progress)
 
         diarization = QHBoxLayout()
         diarization.addWidget(QLabel("話者分離"))
@@ -169,68 +220,91 @@ class MainWindow(QMainWindow):
         for count in range(1, 11):
             self._speaker_count.addItem(f"{count}人", count)
         diarization.addWidget(self._speaker_count)
-        self._diarize = QPushButton("実行")
+        self._diarize = QPushButton("話者分離を実行")
         self._diarize.setEnabled(False)
         diarization.addWidget(self._diarize)
-        root.addLayout(diarization)
+        analysis_layout.addLayout(diarization)
         self._diarization_progress = QProgressBar()
         self._diarization_progress.setRange(0, 100)
         self._diarization_progress.setValue(0)
         self._diarization_progress.setFormat("話者分離 %p%")
         self._diarization_progress.setVisible(False)
-        root.addWidget(self._diarization_progress)
+        analysis_layout.addWidget(self._diarization_progress)
         reset_note = QLabel("再実行すると保存済みの話者名は既定名へ戻ります。")
-        reset_note.setStyleSheet("color: #666666;")
-        root.addWidget(reset_note)
+        reset_note.setStyleSheet("color: #aeb4bd;")
+        analysis_layout.addWidget(reset_note)
 
         self._speaker_names_widget = QWidget()
         self._speaker_names_layout = QFormLayout(self._speaker_names_widget)
         self._speaker_name_inputs: dict[str, QLineEdit] = {}
-        root.addWidget(self._speaker_names_widget)
+        analysis_layout.addWidget(self._speaker_names_widget)
         self._save_speaker_names = QPushButton("話者名を保存")
         self._save_speaker_names.setVisible(False)
-        root.addWidget(self._save_speaker_names)
+        analysis_layout.addWidget(self._save_speaker_names)
 
         screen_analysis = QHBoxLayout()
         screen_analysis.addWidget(QLabel("画面解析"))
         self._screen_analysis_status = QLabel("未実行")
         screen_analysis.addWidget(self._screen_analysis_status)
         screen_analysis.addStretch(1)
-        self._analyze_screens = QPushButton("実行")
+        self._open_screen_analysis = QPushButton("解析結果を開く")
+        self._open_screen_analysis.setEnabled(False)
+        screen_analysis.addWidget(self._open_screen_analysis)
+        self._analyze_screens = QPushButton("画面解析を実行")
         self._analyze_screens.setEnabled(False)
         screen_analysis.addWidget(self._analyze_screens)
-        root.addLayout(screen_analysis)
+        analysis_layout.addLayout(screen_analysis)
         self._screen_analysis_progress = QProgressBar()
         self._screen_analysis_progress.setRange(0, 100)
         self._screen_analysis_progress.setValue(0)
         self._screen_analysis_progress.setFormat("画面解析 %p%")
         self._screen_analysis_progress.setVisible(False)
-        root.addWidget(self._screen_analysis_progress)
+        analysis_layout.addWidget(self._screen_analysis_progress)
 
         minutes = QHBoxLayout()
         minutes.addWidget(QLabel("議事録生成"))
         self._minutes_status = QLabel("未実行")
         minutes.addWidget(self._minutes_status)
         minutes.addStretch(1)
-        self._generate_minutes = QPushButton("実行")
+        self._open_minutes = QPushButton("議事録を開く")
+        self._open_minutes.setEnabled(False)
+        minutes.addWidget(self._open_minutes)
+        self._generate_minutes = QPushButton("議事録を生成")
         self._generate_minutes.setEnabled(False)
         minutes.addWidget(self._generate_minutes)
-        root.addLayout(minutes)
+        analysis_layout.addLayout(minutes)
         self._minutes_progress = QProgressBar()
         self._minutes_progress.setRange(0, 100)
         self._minutes_progress.setValue(0)
         self._minutes_progress.setFormat("議事録生成 %p%")
         self._minutes_progress.setVisible(False)
-        root.addWidget(self._minutes_progress)
+        analysis_layout.addWidget(self._minutes_progress)
+        root.addWidget(analysis_group)
+        root.addStretch(1)
 
+        self._scroll.setWidget(content)
+        shell.addWidget(self._scroll, 1)
+
+        action_bar = QWidget()
         action = QHBoxLayout()
+        action.setContentsMargins(0, 0, 0, 0)
+        self._action_hint = QLabel("会議名と音声を選択すると録音を開始できます。")
+        self._action_hint.setStyleSheet("color: #aeb4bd;")
+        action.addWidget(self._action_hint)
         self._start = QPushButton("会議開始")
+        self._start.setMinimumWidth(120)
+        self._start.setMinimumHeight(34)
+        self._start.setDefault(True)
+        self._start.setEnabled(False)
         self._stop = QPushButton("会議終了")
+        self._stop.setMinimumWidth(120)
+        self._stop.setMinimumHeight(34)
         self._stop.setEnabled(False)
         action.addStretch(1)
         action.addWidget(self._start)
         action.addWidget(self._stop)
-        root.addLayout(action)
+        action_bar.setLayout(action)
+        shell.addWidget(action_bar)
         self.setCentralWidget(central)
 
         self._timer = QTimer(self)
@@ -248,9 +322,15 @@ class MainWindow(QMainWindow):
         self._save_speaker_names.clicked.connect(self._update_speaker_names)
         self._analyze_screens.clicked.connect(self._toggle_screen_analysis)
         self._generate_minutes.clicked.connect(self._toggle_minutes)
+        self._open_recordings.clicked.connect(self._open_recordings_directory)
+        self._open_session.clicked.connect(self._open_selected_session)
+        self._open_transcript.clicked.connect(self._open_selected_transcript)
+        self._open_screen_analysis.clicked.connect(self._open_selected_screen_analysis)
+        self._open_minutes.clicked.connect(self._open_selected_minutes)
         self._refresh_sessions.clicked.connect(lambda: self.refresh_analysis_sessions())
         self._analysis_session.currentIndexChanged.connect(self._on_analysis_session_changed)
         self._auto_transcribe.toggled.connect(self._on_auto_transcription_toggled)
+        self._title.textChanged.connect(self._on_title_changed)
         self._microphone.currentIndexChanged.connect(self._update_idle_source_names)
         self._system_audio.currentIndexChanged.connect(self._update_idle_source_names)
         self._screen_target.currentIndexChanged.connect(self._update_idle_source_names)
@@ -294,6 +374,90 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self.refresh_sources)
         QTimer.singleShot(0, self.refresh_analysis_sessions)
 
+    def _on_title_changed(self, _text: str) -> None:
+        if self._title.text().strip():
+            self._title_error.clear()
+            self._title_error.setVisible(False)
+        self._update_start_enabled()
+
+    def _show_title_error(self, message: str) -> None:
+        self._title_error.setText(message)
+        self._title_error.setVisible(True)
+        self._title.setFocus()
+
+    def _any_analysis_running(self) -> bool:
+        return any(
+            controller is not None and controller.is_running
+            for controller in (
+                self._transcription_controller,
+                self._diarization_controller,
+                self._screen_analysis_controller,
+                self._minutes_controller,
+            )
+        )
+
+    def _update_start_enabled(self) -> None:
+        has_title = bool(self._title.text().strip())
+        has_audio = isinstance(self._microphone.currentData(), AudioDevice) or isinstance(
+            self._system_audio.currentData(), AudioDevice
+        )
+        idle = (
+            not self._controller.is_recording
+            and not self._source_refresh_pending
+            and not self._any_analysis_running()
+            and self._title.isEnabled()
+        )
+        self._start.setEnabled(idle and has_title and has_audio)
+        if self._controller.is_recording:
+            self._action_hint.setText("録音中です。終了後に新しい会議を開始できます。")
+        elif self._source_refresh_pending:
+            self._action_hint.setText("録音デバイスを確認しています。")
+        elif self._any_analysis_running():
+            self._action_hint.setText("解析処理の完了後に録音を開始できます。")
+        elif not has_title:
+            self._action_hint.setText("会議名を入力してください。")
+        elif not has_audio:
+            self._action_hint.setText("マイクまたはPC音声を選択してください。")
+        else:
+            self._action_hint.setText("録音を開始できます。")
+
+    def _open_recordings_directory(self) -> None:
+        self._open_local_path(self._controller.meetings_directory, "録音保存先が見つかりません。")
+
+    def _open_selected_session(self) -> None:
+        summary = self._selected_analysis_session()
+        if summary is None:
+            self.show_error("開く会議記録を選択してください。")
+            return
+        self._open_local_path(summary.path, "会議記録のフォルダが見つかりません。")
+
+    def _open_selected_transcript(self) -> None:
+        self._open_selected_output(
+            Path("output/transcript.md"), "文字起こしファイルが見つかりません。"
+        )
+
+    def _open_selected_screen_analysis(self) -> None:
+        self._open_selected_output(
+            Path("analysis/screens.json"), "画面解析結果が見つかりません。"
+        )
+
+    def _open_selected_minutes(self) -> None:
+        self._open_selected_output(Path("output/minutes.md"), "議事録ファイルが見つかりません。")
+
+    def _open_selected_output(self, relative_path: Path, missing_message: str) -> None:
+        summary = self._selected_analysis_session()
+        if summary is None:
+            self.show_error("開く会議記録を選択してください。")
+            return
+        self._open_local_path(summary.path / relative_path, missing_message)
+
+    def _open_local_path(self, path: Path, missing_message: str) -> None:
+        if not path.exists():
+            self.show_error(missing_message)
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve()))):
+            self.show_error(f"開けませんでした: {path}")
+
     def refresh_sources(self) -> None:
         self._source_refresh_request_id += 1
         request_id = self._source_refresh_request_id
@@ -309,8 +473,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self._source_refresh_pending = False
             self._refresh.setEnabled(True)
-            if not self._controller.is_recording:
-                self._start.setEnabled(True)
+            self._update_start_enabled()
             self.show_error(f"デバイス一覧の更新を開始できません: {exc}")
 
     def _on_sources_refreshed(self, request_id: int, value: object) -> None:
@@ -368,7 +531,7 @@ class MainWindow(QMainWindow):
         actively_recording = self._started_at is not None and self._stop.isEnabled()
         self._refresh.setEnabled(can_edit or actively_recording)
         if can_edit:
-            self._start.setEnabled(True)
+            self._update_start_enabled()
 
     def _on_source_refresh_timeout(self, request_id: int | None = None) -> None:
         request_id = self._source_refresh_request_id if request_id is None else request_id
@@ -401,9 +564,21 @@ class MainWindow(QMainWindow):
         return selected_found
 
     def _start_recording(self) -> None:
+        title = self._title.text().strip()
+        if not title:
+            self._show_title_error("会議名を入力してください。")
+            self._update_start_enabled()
+            return
+        if not (
+            isinstance(self._microphone.currentData(), AudioDevice)
+            or isinstance(self._system_audio.currentData(), AudioDevice)
+        ):
+            self.show_error("マイクまたはPC音声を選択してください。")
+            self._update_start_enabled()
+            return
         try:
             self._controller.start_session(
-                title=self._title.text(),
+                title=title,
                 microphone=self._microphone.currentData(),
                 system_audio=self._system_audio.currentData(),
                 screen_target=self._screen_target.currentData(),
@@ -452,6 +627,7 @@ class MainWindow(QMainWindow):
         self._minutes_status.setText("未実行")
         self._generate_minutes.setEnabled(False)
         self._clear_speaker_names()
+        self._action_hint.setText("録音デバイスを準備しています。")
         self.show_information("録音デバイスを準備しています。")
 
     def _on_session_started(self, path: str) -> None:
@@ -466,6 +642,7 @@ class MainWindow(QMainWindow):
         self._screen_target.setEnabled(True)
         self._reselect.setEnabled(True)
         self._screenshots.setText("保存画像 0")
+        self._action_hint.setText("録音中です。終了後に新しい会議を開始できます。")
         self.show_information(f"記録中: {path}")
 
     def _on_session_finished(self, path: str) -> None:
@@ -509,7 +686,7 @@ class MainWindow(QMainWindow):
         self._timer.stop()
         self._started_at = None
         self._set_inputs_enabled(True)
-        self._start.setEnabled(True)
+        self._update_start_enabled()
         self._stop.setEnabled(False)
         self._reselect.setEnabled(False)
         self._finalize_progress.setVisible(False)
@@ -656,7 +833,7 @@ class MainWindow(QMainWindow):
         self._set_inputs_enabled(False)
         self._start.setEnabled(False)
         self._transcription_status.setText("実行中")
-        self._transcribe.setText("キャンセル")
+        self._transcribe.setText("文字起こしをキャンセル")
         self._transcribe.setEnabled(True)
         self._diarize.setEnabled(False)
         self._analyze_screens.setEnabled(False)
@@ -700,7 +877,7 @@ class MainWindow(QMainWindow):
         self._analyze_screens.setEnabled(False)
         self._generate_minutes.setEnabled(False)
         self._diarization_status.setText("実行中")
-        self._diarize.setText("キャンセル")
+        self._diarize.setText("話者分離をキャンセル")
         self._diarize.setEnabled(True)
         self._diarization_progress.setValue(0)
         self._diarization_progress.setVisible(True)
@@ -741,7 +918,7 @@ class MainWindow(QMainWindow):
         self._diarize.setEnabled(False)
         self._generate_minutes.setEnabled(False)
         self._screen_analysis_status.setText("実行中")
-        self._analyze_screens.setText("キャンセル")
+        self._analyze_screens.setText("画面解析をキャンセル")
         self._analyze_screens.setEnabled(True)
         self._screen_analysis_progress.setValue(0)
         self._screen_analysis_progress.setVisible(True)
@@ -780,7 +957,7 @@ class MainWindow(QMainWindow):
         self._diarize.setEnabled(False)
         self._analyze_screens.setEnabled(False)
         self._minutes_status.setText("実行中")
-        self._generate_minutes.setText("キャンセル")
+        self._generate_minutes.setText("議事録生成をキャンセル")
         self._generate_minutes.setEnabled(True)
         self._minutes_progress.setValue(0)
         self._minutes_progress.setVisible(True)
@@ -812,37 +989,37 @@ class MainWindow(QMainWindow):
 
     def _finish_minutes_ui(self, status: str) -> None:
         self._minutes_status.setText(status)
-        self._generate_minutes.setText("再実行")
+        self._generate_minutes.setText("議事録を再生成")
         self._minutes_progress.setVisible(False)
         self._set_inputs_enabled(True)
-        self._start.setEnabled(True)
         self._update_analysis_availability()
+        self._update_start_enabled()
 
     def _finish_screen_analysis_ui(self, status: str) -> None:
         self._screen_analysis_status.setText(status)
-        self._analyze_screens.setText("再実行")
+        self._analyze_screens.setText("画面解析を再実行")
         self._screen_analysis_progress.setVisible(False)
         self._set_inputs_enabled(True)
-        self._start.setEnabled(True)
         self._update_analysis_availability()
+        self._update_start_enabled()
 
     def _finish_diarization_ui(self, status: str) -> None:
         self._diarization_status.setText(status)
-        self._diarize.setText("再実行")
+        self._diarize.setText("話者分離を再実行")
         self._diarization_progress.setVisible(False)
         self._speaker_names_widget.setEnabled(True)
         self._set_inputs_enabled(True)
-        self._start.setEnabled(True)
         self._update_analysis_availability()
+        self._update_start_enabled()
 
     def _finish_transcription_ui(self, status: str) -> None:
         self._transcription_status.setText(status)
-        self._transcribe.setText("再実行")
+        self._transcribe.setText("文字起こしを再実行")
         self._transcribe.setEnabled(True)
         self._transcription_progress.setVisible(False)
         self._set_inputs_enabled(True)
-        self._start.setEnabled(True)
         self._update_analysis_availability()
+        self._update_start_enabled()
 
     def _update_analysis_availability(self) -> None:
         summary = self._selected_analysis_session()
@@ -889,6 +1066,16 @@ class MainWindow(QMainWindow):
             and (minutes.is_running or summary.can_generate_minutes)
             and not other_running(minutes)
         )
+        self._open_session.setEnabled(summary is not None and summary.path.exists())
+        self._open_transcript.setEnabled(
+            summary is not None and (summary.path / "output" / "transcript.md").is_file()
+        )
+        self._open_screen_analysis.setEnabled(
+            summary is not None and (summary.path / "analysis" / "screens.json").is_file()
+        )
+        self._open_minutes.setEnabled(
+            summary is not None and (summary.path / "output" / "minutes.md").is_file()
+        )
 
     def _is_current_session(self, value: str) -> bool:
         summary = self._selected_analysis_session()
@@ -920,17 +1107,21 @@ class MainWindow(QMainWindow):
         summary = self._selected_analysis_session()
         if summary is None:
             self._transcription_status.setText("対象なし")
-            self._transcribe.setText("実行")
+            self._transcribe.setText("文字起こしを実行")
             self._transcribe.setEnabled(False)
             self._diarization_status.setText("対象なし")
-            self._diarize.setText("実行")
+            self._diarize.setText("話者分離を実行")
             self._diarize.setEnabled(False)
             self._screen_analysis_status.setText("対象なし")
-            self._analyze_screens.setText("実行")
+            self._analyze_screens.setText("画面解析を実行")
             self._analyze_screens.setEnabled(False)
             self._minutes_status.setText("対象なし")
-            self._generate_minutes.setText("実行")
+            self._generate_minutes.setText("議事録を生成")
             self._generate_minutes.setEnabled(False)
+            self._open_session.setEnabled(False)
+            self._open_transcript.setEnabled(False)
+            self._open_screen_analysis.setEnabled(False)
+            self._open_minutes.setEnabled(False)
             self._clear_speaker_names()
             return
         status = {
@@ -944,7 +1135,9 @@ class MainWindow(QMainWindow):
         }.get(summary.transcription_status, summary.transcription_status)
         self._transcription_status.setText(status)
         self._transcribe.setText(
-            "再実行" if summary.transcription_status != "NOT_STARTED" else "実行"
+            "文字起こしを再実行"
+            if summary.transcription_status != "NOT_STARTED"
+            else "文字起こしを実行"
         )
         diarization_status = {
             "SUCCEEDED": "完了",
@@ -955,7 +1148,11 @@ class MainWindow(QMainWindow):
             "RUNNING": "前回中断",
         }.get(summary.diarization_status, summary.diarization_status)
         self._diarization_status.setText(diarization_status)
-        self._diarize.setText("再実行" if summary.diarization_status != "NOT_STARTED" else "実行")
+        self._diarize.setText(
+            "話者分離を再実行"
+            if summary.diarization_status != "NOT_STARTED"
+            else "話者分離を実行"
+        )
         screen_analysis_status = {
             "SUCCEEDED": "完了",
             "NOT_STARTED": "未実行",
@@ -966,7 +1163,9 @@ class MainWindow(QMainWindow):
         }.get(summary.screen_analysis_status, summary.screen_analysis_status)
         self._screen_analysis_status.setText(screen_analysis_status)
         self._analyze_screens.setText(
-            "再実行" if summary.screen_analysis_status != "NOT_STARTED" else "実行"
+            "画面解析を再実行"
+            if summary.screen_analysis_status != "NOT_STARTED"
+            else "画面解析を実行"
         )
         minutes_status = {
             "SUCCEEDED": "完了",
@@ -978,7 +1177,9 @@ class MainWindow(QMainWindow):
         }.get(summary.minutes_status, summary.minutes_status)
         self._minutes_status.setText(minutes_status)
         self._generate_minutes.setText(
-            "再実行" if summary.minutes_status != "NOT_STARTED" else "実行"
+            "議事録を再生成"
+            if summary.minutes_status != "NOT_STARTED"
+            else "議事録を生成"
         )
         self._load_speaker_names(summary.path)
         self._update_analysis_availability()
@@ -999,12 +1200,18 @@ class MainWindow(QMainWindow):
         names = value.get("names") if isinstance(value, dict) else None
         if not isinstance(names, dict):
             return
-        for speaker_id, name in names.items():
-            if not isinstance(speaker_id, str) or not isinstance(name, str):
-                continue
+        valid_names = [
+            (speaker_id, name)
+            for speaker_id, name in names.items()
+            if isinstance(speaker_id, str) and isinstance(name, str)
+        ]
+        for index, (speaker_id, name) in enumerate(valid_names, start=1):
             editor = QLineEdit(name)
+            editor.setAccessibleName(f"話者 {index} の名前")
             self._speaker_name_inputs[speaker_id] = editor
-            self._speaker_names_layout.addRow(speaker_id, editor)
+            label = QLabel(f"話者 {index}")
+            label.setToolTip(f"内部ID: {speaker_id}")
+            self._speaker_names_layout.addRow(label, editor)
         self._save_speaker_names.setVisible(bool(self._speaker_name_inputs))
 
     def _selected_analysis_session(self) -> SessionSummary | None:
@@ -1055,15 +1262,24 @@ class MainWindow(QMainWindow):
 
     def show_information(self, message: str) -> None:
         self._message.setText(message)
-        self._message.setStyleSheet("padding: 8px; background: #f2f2f2; color: #202020;")
+        self._message.setStyleSheet(
+            "padding: 10px; background: #243447; color: #e6f2ff; "
+            "border: 1px solid #3f5871; border-radius: 4px;"
+        )
 
     def show_error(self, message: str) -> None:
         self._message.setText(message)
-        self._message.setStyleSheet("padding: 8px; background: #ffd9d9; color: #8a1f1f;")
+        self._message.setStyleSheet(
+            "padding: 10px; background: #4a2024; color: #ffdad6; "
+            "border: 1px solid #8c3d45; border-radius: 4px;"
+        )
 
     def show_warning(self, message: str) -> None:
         self._message.setText(message)
-        self._message.setStyleSheet("padding: 8px; background: #fff2cc; color: #6b4f00;")
+        self._message.setStyleSheet(
+            "padding: 10px; background: #463b18; color: #ffe082; "
+            "border: 1px solid #806d2c; border-radius: 4px;"
+        )
 
     def _on_fatal_error(self, message: str) -> None:
         if self._controller.is_recording or self._started_at is not None:
@@ -1087,6 +1303,7 @@ class MainWindow(QMainWindow):
         if self._controller.is_recording:
             return
         self._show_active_source_names()
+        self._update_start_enabled()
 
     def _show_active_source_names(self) -> None:
         microphone = self._microphone.currentData()
