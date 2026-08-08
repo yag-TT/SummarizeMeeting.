@@ -34,6 +34,8 @@ data/meetings/<session>/
    └─ 000001.png ...
 ```
 
+アプリ起動時に正常終了していないセッションを検出すると、復旧確認を表示します。復旧時は元の `.work` segmentを変更せず、`audio/microphone.recovered.wav` や `audio/system.recovered.wav` を新しく生成します。
+
 ## 開発時の検証
 
 ```powershell
@@ -52,7 +54,6 @@ uv run pytest -q
 - 画面取得は最終候補のWindows Graphics Captureではなく、選択ウィンドウの表示矩形をMSSで取得する暫定Adapterです。
 - 対象ウィンドウが他のウィンドウに隠れると、隠した側の内容が画像へ入る場合があります。
 - 音声デバイス切断時の同一デバイス再接続は未実装です。
-- `.work` のWAV segmentから次回起動時に自動復旧する画面は未実装です。
 - Windowsスリープ／休止状態をまたぐ録音は対象外です。
 
 ## ドキュメント

@@ -101,7 +101,7 @@ class MainWindow(QMainWindow):
         )
         controller.session_started.connect(self._on_session_started)
         controller.session_finished.connect(self._on_session_finished)
-        controller.fatal_error.connect(self._show_error)
+        controller.fatal_error.connect(self.show_error)
         QTimer.singleShot(0, self.refresh_sources)
 
     def refresh_sources(self) -> None:
@@ -124,9 +124,9 @@ class MainWindow(QMainWindow):
                 self._screen_target.addItem(target.title, target)
                 if target.id == selected_screen_id:
                     self._screen_target.setCurrentIndex(self._screen_target.count() - 1)
-            self._message.setText("PC音声は選択した出力デバイスから再生される全音声を記録します。")
+            self.show_information("PC音声は選択した出力デバイスから再生される全音声を記録します。")
         except Exception as exc:
-            self._show_error(f"デバイス一覧を取得できません: {exc}")
+            self.show_error(f"デバイス一覧を取得できません: {exc}")
         finally:
             self._refresh.setEnabled(True)
 
@@ -153,17 +153,17 @@ class MainWindow(QMainWindow):
                 screen_target=self._screen_target.currentData(),
             )
         except Exception as exc:
-            self._show_error(str(exc))
+            self.show_error(str(exc))
 
     def _stop_recording(self) -> None:
         self._stop.setEnabled(False)
-        self._message.setText("記録を確定しています。しばらくお待ちください。")
+        self.show_information("記録を確定しています。しばらくお待ちください。")
         self._controller.stop_session()
 
     def _replace_screen(self) -> None:
         target = self._screen_target.currentData()
         if target is None:
-            self._show_error("再選択するウィンドウを選んでください")
+            self.show_error("再選択するウィンドウを選んでください")
             return
         self._controller.replace_screen_target(target)
 
@@ -176,7 +176,7 @@ class MainWindow(QMainWindow):
         self._stop.setEnabled(True)
         self._reselect.setEnabled(True)
         self._screenshots.setText("保存画像 0")
-        self._message.setText(f"記録中: {path}")
+        self.show_information(f"記録中: {path}")
 
     def _on_session_finished(self, path: str) -> None:
         self._timer.stop()
@@ -185,7 +185,7 @@ class MainWindow(QMainWindow):
         self._start.setEnabled(True)
         self._stop.setEnabled(False)
         self._reselect.setEnabled(False)
-        self._message.setText(f"記録を保存しました: {path}")
+        self.show_information(f"記録を保存しました: {path}")
 
     def _on_component_changed(self, component: str, state: str, detail: str) -> None:
         rows = {
@@ -218,7 +218,11 @@ class MainWindow(QMainWindow):
         self._refresh.setEnabled(True)
         self._screen_target.setEnabled(True)
 
-    def _show_error(self, message: str) -> None:
+    def show_information(self, message: str) -> None:
+        self._message.setText(message)
+        self._message.setStyleSheet("padding: 8px; background: #f2f2f2; color: #202020;")
+
+    def show_error(self, message: str) -> None:
         self._message.setText(message)
         self._message.setStyleSheet("padding: 8px; background: #ffd9d9; color: #8a1f1f;")
 
