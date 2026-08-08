@@ -30,6 +30,7 @@ from summarize_meeting.domain.session import (
 from summarize_meeting.infrastructure.audio_writer import AudioTrackStats
 from summarize_meeting.infrastructure.paths import PortableAppPaths
 from summarize_meeting.infrastructure.screenshot_store import ScreenshotStore
+from summarize_meeting.infrastructure.session_log import SessionLogWriter
 from summarize_meeting.infrastructure.session_repository import (
     FileSessionRepository,
     SessionPaths,
@@ -73,6 +74,7 @@ class RecordingController(QObject):
         self._audio_start_timeout_seconds = audio_start_timeout_seconds
         self._session: RecordingSession | None = None
         self._session_paths: SessionPaths | None = None
+        self._session_log: SessionLogWriter | None = None
         self._origin_ns = 0
         self._audio_recorders: dict[ComponentKind, AudioTrackRecorder] = {}
         self._screen_recorder: ScreenRecorder | None = None
@@ -80,6 +82,7 @@ class RecordingController(QObject):
         self._stop_thread: threading.Thread | None = None
         self._audio_unavailable_notified = False
         self._screen_disabled_by_storage = False
+        self._screenshot_count = 0
 
     @property
     def last_microphone_device_id(self) -> str | None:
@@ -138,11 +141,43 @@ class RecordingController(QObject):
             session.screen = asdict(screen_target)
 
         paths = self._repository.create(session)
+        try:
+            session_log = SessionLogWriter(
+                paths.session_log,
+                session_id=session.id,
+                sensitive_values=(
+                    title,
+                    paths.root,
+                    self._app_paths.app_root,
+                    microphone.id if microphone is not None else None,
+                    microphone.name if microphone is not None else None,
+                    system_audio.id if system_audio is not None else None,
+                    system_audio.name if system_audio is not None else None,
+                    screen_target.id if screen_target is not None else None,
+                    screen_target.title if screen_target is not None else None,
+                ),
+                minimum_level=self._settings.log_level,
+            )
+        except OSError as exc:
+            session.ended_at = RecordingSession.now_iso()
+            session.duration_ms = (
+                time.perf_counter_ns() - self._origin_ns
+            ) // 1_000_000
+            session.status = SessionStatus.FAILED_TO_START
+            session.add_warning(
+                "SESSION_LOG_OPEN_FAILED",
+                "セッションログを作成できませんでした",
+                int(session.duration_ms),
+            )
+            self._repository.save(paths, session)
+            raise RuntimeError("セッションログを作成できないため録音を開始できません") from exc
         with self._lock:
             self._session = session
             self._session_paths = paths
+            self._session_log = session_log
             self._audio_unavailable_notified = False
             self._screen_disabled_by_storage = False
+            self._screenshot_count = 0
 
         self._append_event("session_preparing")
         self._set_component(ComponentKind.SESSION_STORAGE, ComponentStatus.RUNNING)
@@ -193,7 +228,11 @@ class RecordingController(QObject):
         with self._lock:
             session.status = SessionStatus.RECORDING
             self._repository.save(paths, session)
-        self._append_event("session_started")
+        self._append_event(
+            "session_started",
+            audio_components=[kind.value for kind in ready_audio],
+            screen_configured=screen_target is not None,
+        )
         self._storage_monitor.start(
             low_capacity_callback=self._on_low_disk_space,
             check_failed_callback=self._on_storage_check_failed,
@@ -205,6 +244,8 @@ class RecordingController(QObject):
 
     def replace_screen_target(self, target: ScreenTarget) -> None:
         with self._lock:
+            if self._session_log is not None:
+                self._session_log.add_sensitive_values(target.id, target.title)
             if self._screen_disabled_by_storage:
                 raise RuntimeError(
                     "空き容量不足のため画面保存は停止しています。会議終了後に空き容量を確保してください。"
@@ -264,6 +305,28 @@ class RecordingController(QObject):
             meter_callback=lambda level: self.meter_changed.emit(kind.value, level),
             origin_ns=self._origin_ns,
             start_gate=start_gate,
+            exception_callback=lambda code, exc: self._log_audio_exception(
+                kind, code, exc
+            ),
+        )
+
+    def _log_audio_exception(
+        self,
+        kind: ComponentKind,
+        error_code: str,
+        exception: Exception,
+    ) -> None:
+        if error_code == "AUDIO_OPEN_FAILED":
+            error_code = (
+                "MIC_OPEN_FAILED"
+                if kind == ComponentKind.MICROPHONE
+                else "SYSTEM_AUDIO_OPEN_FAILED"
+            )
+        self._log_session_exception(
+            "worker_exception",
+            exception,
+            component=kind.value,
+            error_code=error_code,
         )
 
     def _wait_for_audio_initialization(self) -> list[ComponentKind]:
@@ -301,6 +364,12 @@ class RecordingController(QObject):
                     stats[kind.value] = result
             except Exception as exc:
                 failures.append(f"{kind.value}: {exc}")
+                self._log_session_exception(
+                    "session_start_cleanup_failed",
+                    exc,
+                    component=kind.value,
+                    error_code="START_CLEANUP_FAILED",
+                )
 
         self._set_component(ComponentKind.SESSION_STORAGE, ComponentStatus.STOPPED)
         self._write_audio_manifest(
@@ -324,7 +393,12 @@ class RecordingController(QObject):
                     "START_CLEANUP_FAILED", failure, int(self._session.duration_ms)
                 )
             self._repository.save(paths, self._session)
-        self._append_event("session_start_failed", failures=failures)
+        self._append_event(
+            "session_start_failed",
+            failure_count=len(failures),
+            failures=failures,
+        )
+        self._close_session_log()
 
     def _create_screen_recorder(
         self,
@@ -351,9 +425,15 @@ class RecordingController(QObject):
                 code,
                 message,
             ),
-            count_callback=self.screenshot_count_changed.emit,
+            count_callback=self._on_screenshot_count,
             evaluation_fps=self._settings.screen_evaluation_fps,
             detector=detector,
+            exception_callback=lambda code, exc: self._log_session_exception(
+                "worker_exception",
+                exc,
+                component=ComponentKind.SCREEN.value,
+                error_code=code,
+            ),
         )
 
     def _remember_devices(
@@ -396,6 +476,12 @@ class RecordingController(QObject):
                 self._screen_recorder.finish()
             except Exception as exc:
                 failures.append(f"screen: {exc}")
+                self._log_session_exception(
+                    "finalize_failed",
+                    exc,
+                    component=ComponentKind.SCREEN.value,
+                    error_code="FINALIZE_FAILED",
+                )
 
         with self._lock:
             session.status = SessionStatus.FINALIZING
@@ -408,12 +494,24 @@ class RecordingController(QObject):
                     stats[kind.value] = result
             except Exception as exc:
                 failures.append(f"{kind.value}: {exc}")
+                self._log_session_exception(
+                    "finalize_failed",
+                    exc,
+                    component=kind.value,
+                    error_code="FINALIZE_FAILED",
+                )
                 self._set_component(kind, ComponentStatus.FAILED, "FINALIZE_FAILED", str(exc))
 
         try:
             self._storage_monitor.finish()
         except Exception as exc:
             failures.append(f"storage monitor: {exc}")
+            self._log_session_exception(
+                "finalize_failed",
+                exc,
+                component=ComponentKind.SESSION_STORAGE.value,
+                error_code="FINALIZE_FAILED",
+            )
 
         with self._lock:
             storage_failed = (
@@ -447,9 +545,29 @@ class RecordingController(QObject):
                     "AUDIO_WORK_CLEANUP_FAILED", warning, session.duration_ms
                 )
             self._repository.save(paths, session)
-        self._append_event("session_finished", failures=failures)
+        audio_summary = {
+            track: {
+                "frames": track_stats.frames_written,
+                "segments": track_stats.segments,
+                "duration_ms": track_stats.audio_duration_ms,
+                "validated": track_stats.validated,
+                "overflow_count": track_stats.overflow_count,
+                "queue_pressure_count": track_stats.queue_pressure_count,
+            }
+            for track, track_stats in stats.items()
+        }
+        self._append_event(
+            "session_finished",
+            status=session.status.value,
+            duration_ms=session.duration_ms,
+            screenshot_count=self._screenshot_count,
+            audio_summary=audio_summary,
+            failure_count=len(failures),
+            failures=failures,
+        )
         if failures:
             self.fatal_error.emit("一部の記録を正常に確定できませんでした: " + "; ".join(failures))
+        self._close_session_log()
         self.session_finished.emit(str(paths.root))
 
     def _on_low_disk_space(self, capacity: StorageCapacity) -> None:
@@ -478,6 +596,12 @@ class RecordingController(QObject):
             message,
         )
         self.fatal_error.emit(message)
+
+    def _on_screenshot_count(self, count: int) -> None:
+        with self._lock:
+            self._screenshot_count = max(0, int(count))
+            current_count = self._screenshot_count
+        self.screenshot_count_changed.emit(current_count)
 
     def _on_storage_check_failed(self, error: StorageCapacityCheckError) -> None:
         with self._lock:
@@ -525,6 +649,25 @@ class RecordingController(QObject):
                 },
             )
             self._repository.save(self._session_paths, self._session)
+            session_log = self._session_log
+        if session_log is not None:
+            level = (
+                "ERROR"
+                if status == ComponentStatus.FAILED
+                else "WARNING"
+                if error_code is not None
+                or status in {ComponentStatus.RECONNECTING, ComponentStatus.PAUSED}
+                else "INFO"
+            )
+            session_log.write(
+                "component_state_changed",
+                level=level,
+                timestamp_ms=int(timestamp_ms),
+                component=kind.value,
+                status=status.value,
+                error_code=error_code,
+                message=message,
+            )
         self.component_changed.emit(kind.value, status.value, message or "")
         self._notify_if_all_audio_failed()
 
@@ -565,6 +708,49 @@ class RecordingController(QObject):
                     **extra,
                 },
             )
+            session_log = self._session_log
+        if session_log is not None:
+            session_log.write(
+                event_type,
+                level=self._session_event_level(event_type),
+                timestamp_ms=int(timestamp_ms),
+                **extra,
+            )
+
+    def _log_session_exception(
+        self,
+        event_type: str,
+        exception: BaseException,
+        *,
+        component: str,
+        error_code: str,
+    ) -> None:
+        with self._lock:
+            session_log = self._session_log
+            timestamp_ms = (time.perf_counter_ns() - self._origin_ns) // 1_000_000
+        if session_log is not None:
+            session_log.write_exception(
+                event_type,
+                exception,
+                component=component,
+                error_code=error_code,
+                timestamp_ms=int(timestamp_ms),
+            )
+
+    def _close_session_log(self) -> None:
+        with self._lock:
+            session_log = self._session_log
+            self._session_log = None
+        if session_log is not None:
+            session_log.close()
+
+    @staticmethod
+    def _session_event_level(event_type: str) -> str:
+        if event_type in {"low_disk_space", "session_start_failed"}:
+            return "ERROR"
+        if "failed" in event_type:
+            return "WARNING"
+        return "INFO"
 
     @staticmethod
     def _write_audio_manifest(

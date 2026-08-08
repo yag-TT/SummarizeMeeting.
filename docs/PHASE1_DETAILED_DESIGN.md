@@ -1075,9 +1075,18 @@ Phase 1では会議予定時間入力を必須にしないため、最低空き�
 
 - 日次またはサイズによるrotation
 - 既定INFO
-- デバイス名、状態、件数、時間、エラーを記録
+- 状態、件数、時間、エラーを記録
 - PCM値、発言内容、画像内容を記録しない
 - ファイルパスに会議名が含まれるため、ログexport時に注意を表示する余地を残す
+
+セッションログ:
+
+- `<session>/logs/session.log` へ1行1JSONのUTF-8テキストで保存する。
+- Component状態遷移、開始・停止・finalize、Audioのframe数・segment数・duration・queue診断、画像件数を記録する。
+- Worker境界の例外は、error code、例外型、message、stack trace、Component、monotonic経過時間を記録する。
+- 会議名、デバイスID・名称、画面タイトル、アプリroot、セッションrootは全フィールドとstack traceで `[REDACTED]` に置換する。
+- session logを開始時に作成できなければ `FAILED_TO_START / SESSION_LOG_OPEN_FAILED` とする。録音中の追記失敗はcaptureを停止させない。
+- session logの最低レベルには `settings.json` の `log_level` を適用する。
 
 ネットワーク:
 

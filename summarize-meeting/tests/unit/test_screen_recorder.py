@@ -81,6 +81,7 @@ class _RecoveringStore:
 
 def test_screen_recorder_closes_backend_after_target_closes() -> None:
     backend = _ClosedBackend()
+    exceptions = []
     recorder = ScreenRecorder(
         backend=backend,
         target=ScreenTarget(id="1", title="closed"),
@@ -89,6 +90,7 @@ def test_screen_recorder_closes_backend_after_target_closes() -> None:
         state_callback=lambda *args: None,
         count_callback=lambda count: None,
         evaluation_fps=100.0,
+        exception_callback=lambda code, exc: exceptions.append((code, exc)),
     )
 
     recorder.start()
@@ -98,6 +100,8 @@ def test_screen_recorder_closes_backend_after_target_closes() -> None:
     recorder.finish()
 
     assert backend.closed
+    assert exceptions[0][0] == "SCREEN_TARGET_CLOSED"
+    assert isinstance(exceptions[0][1], ScreenTargetClosedError)
 
 
 def test_screen_recorder_failure_stops_before_saving_new_frame() -> None:
@@ -154,6 +158,7 @@ def test_screen_recorder_continues_after_repeated_save_failure() -> None:
     backend = _FrameBackend()
     store = _RecoveringStore(failures=100)
     states = []
+    exceptions = []
     recorder = ScreenRecorder(
         backend=backend,
         target=ScreenTarget(id="1", title="screen"),
@@ -162,6 +167,7 @@ def test_screen_recorder_continues_after_repeated_save_failure() -> None:
         state_callback=lambda status, code, message: states.append((status, code, message)),
         count_callback=lambda count: None,
         evaluation_fps=100.0,
+        exception_callback=lambda code, exc: exceptions.append((code, exc)),
     )
 
     recorder.start()
@@ -173,4 +179,5 @@ def test_screen_recorder_continues_after_repeated_save_failure() -> None:
     assert store.attempts >= 3
     assert backend.closed
     assert sum(code == "SCREEN_SAVE_FAILED" for _status, code, _message in states) == 1
+    assert [code for code, _exc in exceptions] == ["SCREEN_SAVE_FAILED"]
     assert all(status != ComponentStatus.FAILED for status, _code, _message in states)

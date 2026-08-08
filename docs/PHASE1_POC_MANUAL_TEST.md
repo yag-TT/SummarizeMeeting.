@@ -58,6 +58,7 @@ uv run summarize-meeting
 ```text
 session.json
 events.jsonl
+logs/session.log
 audio/microphone.wav
 audio/system.wav
 audio/manifest.json
@@ -77,6 +78,8 @@ screenshots/*.png
 - `max_queue_usage_ratio` が0.0から1.0の範囲である
 - `session.json` のstatusが `RECORDED` である
 - `duration_ms` が実際の録音時間と大きく違わない
+- `logs/session.log` が1行1JSONで読み取れ、最後の `session_finished` にAudio診断と画像件数がある
+- `logs/session.log` に入力した会議名、選択デバイスID・名称、画面タイトル、PCM値、発言内容、画像内容が含まれない
 - 画面切替後のPNGが存在する
 - マウス移動だけのPNGが大量に存在しない
 

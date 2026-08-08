@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Callable
+from contextlib import suppress
 
 from summarize_meeting.capture.screen.base import (
     ScreenCaptureBackend,
@@ -19,6 +20,7 @@ from summarize_meeting.infrastructure.screenshot_store import (
 
 StateCallback = Callable[[ComponentStatus, str | None, str | None], None]
 CountCallback = Callable[[int], None]
+ExceptionCallback = Callable[[str, Exception], None]
 
 
 class ScreenRecorder:
@@ -33,6 +35,7 @@ class ScreenRecorder:
         count_callback: CountCallback,
         evaluation_fps: float = 2.0,
         detector: ScreenChangeDetector | None = None,
+        exception_callback: ExceptionCallback | None = None,
     ) -> None:
         self._backend = backend
         self._target = target
@@ -40,6 +43,7 @@ class ScreenRecorder:
         self._origin_ns = origin_ns
         self._state_callback = state_callback
         self._count_callback = count_callback
+        self._exception_callback = exception_callback
         self._interval = 1.0 / evaluation_fps
         self._detector = detector or ScreenChangeDetector()
         self._stop = threading.Event()
@@ -117,6 +121,7 @@ class ScreenRecorder:
                     except ScreenshotSaveError as exc:
                         if not save_failed:
                             save_failed = True
+                            self._notify_exception("SCREEN_SAVE_FAILED", exc)
                             self._state_callback(
                                 ComponentStatus.RUNNING,
                                 "SCREEN_SAVE_FAILED",
@@ -135,12 +140,14 @@ class ScreenRecorder:
                 except ScreenTargetPausedError as exc:
                     if not paused:
                         paused = True
+                        self._notify_exception("SCREEN_TARGET_PAUSED", exc)
                         self._state_callback(
                             ComponentStatus.PAUSED,
                             "SCREEN_TARGET_PAUSED",
                             str(exc),
                         )
                 except ScreenTargetClosedError as exc:
+                    self._notify_exception("SCREEN_TARGET_CLOSED", exc)
                     self._failed.set()
                     self._state_callback(
                         ComponentStatus.FAILED,
@@ -149,6 +156,7 @@ class ScreenRecorder:
                     )
                     return
                 except Exception as exc:
+                    self._notify_exception("SCREEN_CAPTURE_FAILED", exc)
                     self._failed.set()
                     self._state_callback(
                         ComponentStatus.FAILED,
@@ -157,4 +165,20 @@ class ScreenRecorder:
                     )
                     return
         finally:
-            self._backend.close()
+            try:
+                self._backend.close()
+            except Exception as exc:
+                self._notify_exception("SCREEN_CLOSE_FAILED", exc)
+                if not self._failed.is_set():
+                    self._failed.set()
+                    self._state_callback(
+                        ComponentStatus.FAILED,
+                        "SCREEN_CLOSE_FAILED",
+                        str(exc),
+                    )
+
+    def _notify_exception(self, error_code: str, exception: Exception) -> None:
+        if self._exception_callback is None:
+            return
+        with suppress(Exception):
+            self._exception_callback(error_code, exception)

@@ -20,6 +20,8 @@ def test_repository_creates_expected_structure(tmp_path: Path) -> None:
     paths = repository.create(session)
 
     assert paths.audio.is_dir()
+    assert paths.logs.is_dir()
+    assert paths.session_log == paths.logs / "session.log"
     assert paths.screenshots.is_dir()
     assert paths.analysis.is_dir()
     assert paths.output.is_dir()

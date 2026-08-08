@@ -22,6 +22,7 @@ from summarize_meeting.infrastructure.audio_writer import (
 
 StateCallback = Callable[[ComponentStatus, str | None, str | None], None]
 MeterCallback = Callable[[float], None]
+ExceptionCallback = Callable[[str, Exception], None]
 WriterFactory = Callable[[Path, str, AudioFormat], SegmentedWaveWriter]
 
 
@@ -63,6 +64,7 @@ class AudioTrackRecorder:
         queue_recovery_ratio: float = 0.5,
         queue_put_timeout_seconds: float = 1.0,
         start_gate: threading.Event | None = None,
+        exception_callback: ExceptionCallback | None = None,
     ) -> None:
         self._backend = backend
         self._device = device
@@ -70,6 +72,7 @@ class AudioTrackRecorder:
         self._audio_dir = audio_dir
         self._state_callback = state_callback
         self._meter_callback = meter_callback
+        self._exception_callback = exception_callback
         self._sample_rate = sample_rate
         self._block_frames = block_frames
         self._origin_ns = origin_ns
@@ -143,7 +146,8 @@ class AudioTrackRecorder:
         self._startup_cancelled.set()
         self._stop.set()
         error = TimeoutError(message)
-        self._complete_startup_failure(error_code, message, error)
+        if self._complete_startup_failure(error_code, message, error):
+            self._notify_exception(error_code, error)
 
     def finish(self, timeout: float = 15.0) -> AudioTrackStats | None:
         if not self._failed.is_set():
@@ -218,13 +222,17 @@ class AudioTrackRecorder:
             self._capture_error = exc
             self._failed.set()
             self._state_callback(ComponentStatus.FAILED, "AUDIO_QUEUE_PRESSURE", str(exc))
+            self._notify_exception("AUDIO_QUEUE_PRESSURE", exc)
         except Exception as exc:
             if self._startup_cancelled.is_set():
                 pass
-            elif not self._complete_startup_failure("AUDIO_OPEN_FAILED", str(exc), exc):
+            elif self._complete_startup_failure("AUDIO_OPEN_FAILED", str(exc), exc):
+                self._notify_exception("AUDIO_OPEN_FAILED", exc)
+            else:
                 self._capture_error = exc
                 self._failed.set()
                 self._state_callback(ComponentStatus.FAILED, "AUDIO_CAPTURE_FAILED", str(exc))
+                self._notify_exception("AUDIO_CAPTURE_FAILED", exc)
         finally:
             self._startup_complete.set()
             self._capture_ended_offset_ms = self._timestamp_ms()
@@ -259,6 +267,7 @@ class AudioTrackRecorder:
     def _reconnect(self, cause: Exception):
         assert self._writer is not None
         gap_start_ms = self._timestamp_ms()
+        self._notify_exception("AUDIO_DEVICE_DISCONNECTED", cause)
         self._state_callback(
             ComponentStatus.RECONNECTING,
             "AUDIO_DEVICE_DISCONNECTED",
@@ -296,6 +305,7 @@ class AudioTrackRecorder:
         self._capture_error = last_error
         self._failed.set()
         self._state_callback(ComponentStatus.FAILED, "AUDIO_RECONNECT_FAILED", str(last_error))
+        self._notify_exception("AUDIO_RECONNECT_FAILED", last_error)
         return None
 
     def _append_gap(self, start_ms: int, attempts: int, outcome: str) -> None:
@@ -347,6 +357,13 @@ class AudioTrackRecorder:
             self._failed.set()
             self._stop.set()
             self._state_callback(ComponentStatus.FAILED, "AUDIO_WRITE_FAILED", str(exc))
+            self._notify_exception("AUDIO_WRITE_FAILED", exc)
+
+    def _notify_exception(self, error_code: str, exception: Exception) -> None:
+        if self._exception_callback is None:
+            return
+        with suppress(Exception):
+            self._exception_callback(error_code, exception)
 
     def _enqueue_sentinel(self) -> None:
         while True:

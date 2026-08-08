@@ -112,11 +112,35 @@ def test_session_starts_when_one_of_two_audio_sources_is_ready(tmp_path: Path) -
     assert session.components[ComponentKind.MICROPHONE.value].error_code == "MIC_OPEN_FAILED"
 
     controller.stop_session()
-    _wait_for(lambda: not controller.is_recording)
+    _wait_for(
+        lambda: not controller.is_recording
+        and controller._session_log is None  # noqa: SLF001
+    )
 
     metadata = json.loads((session_path / "session.json").read_text(encoding="utf-8"))
     assert metadata["status"] == SessionStatus.RECORDED
     assert (session_path / "audio" / "system.wav").is_file()
+    session_log = (session_path / "logs" / "session.log").read_text(encoding="utf-8")
+    assert "partial audio" not in session_log
+    assert "Broken mic" not in session_log
+    assert "Working output" not in session_log
+    log_entries = [json.loads(line) for line in session_log.splitlines()]
+    assert log_entries[0]["event"] == "session_preparing"
+    assert any(entry["event"] == "component_state_changed" for entry in log_entries)
+    worker_error = next(
+        entry
+        for entry in log_entries
+        if entry["event"] == "worker_exception"
+        and entry["details"]["component"] == ComponentKind.MICROPHONE.value
+    )
+    assert worker_error["details"]["error_code"] == "MIC_OPEN_FAILED"
+    assert worker_error["details"]["exception_type"] == "RuntimeError"
+    assert "[REDACTED]" in worker_error["details"]["stack_trace"]
+    assert log_entries[-1]["event"] == "session_finished"
+    assert log_entries[-1]["details"]["screenshot_count"] == 0
+    system_summary = log_entries[-1]["details"]["audio_summary"]["system_audio"]
+    assert system_summary["frames"] > 0
+    assert system_summary["validated"]
 
 
 def test_session_is_failed_to_start_when_all_audio_sources_fail(
@@ -148,4 +172,46 @@ def test_session_is_failed_to_start_when_all_audio_sources_fail(
         for line in (meeting_dirs[0] / "events.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     assert events[-1]["type"] == "session_start_failed"
+    session_log = (meeting_dirs[0] / "logs" / "session.log").read_text(
+        encoding="utf-8"
+    )
+    assert "no audio" not in session_log
+    assert "Broken mic" not in session_log
+    assert "Broken output" not in session_log
+    log_entries = [json.loads(line) for line in session_log.splitlines()]
+    assert log_entries[-1]["event"] == "session_start_failed"
+    assert not controller.is_recording
+
+
+def test_session_log_open_failure_prevents_recording_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller = _make_controller(tmp_path, failing_device_ids=set())
+
+    def fail_to_open_log(*_args, **_kwargs):
+        raise OSError("log directory is unavailable")
+
+    monkeypatch.setattr(
+        "summarize_meeting.application.recording_controller.SessionLogWriter",
+        fail_to_open_log,
+    )
+
+    with pytest.raises(RuntimeError, match="セッションログを作成できない"):
+        controller.start_session(
+            title="private meeting",
+            microphone=AudioDevice("private-mic", "Private microphone", 1),
+            system_audio=None,
+            screen_target=None,
+        )
+
+    meeting_dirs = list((tmp_path / "data" / "meetings").iterdir())
+    metadata = json.loads(
+        (meeting_dirs[0] / "session.json").read_text(encoding="utf-8")
+    )
+    assert metadata["status"] == SessionStatus.FAILED_TO_START
+    assert any(
+        warning["code"] == "SESSION_LOG_OPEN_FAILED"
+        for warning in metadata["warnings"]
+    )
     assert not controller.is_recording

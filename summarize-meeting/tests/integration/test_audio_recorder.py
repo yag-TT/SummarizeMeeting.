@@ -235,6 +235,7 @@ def test_audio_recorder_reconnects_only_the_same_device(tmp_path: Path) -> None:
 
 def test_audio_recorder_marks_failed_reconnect_in_gap(tmp_path: Path) -> None:
     states: list[ComponentStatus] = []
+    exceptions: list[tuple[str, Exception]] = []
     backend = ReconnectingAudioBackend(reconnect_succeeds=False)
     audio_dir = tmp_path / "audio"
     audio_dir.mkdir()
@@ -248,6 +249,7 @@ def test_audio_recorder_marks_failed_reconnect_in_gap(tmp_path: Path) -> None:
         block_frames=800,
         reconnect_attempts=2,
         reconnect_interval_seconds=0.01,
+        exception_callback=lambda code, exc: exceptions.append((code, exc)),
     )
 
     recorder.start()
@@ -258,6 +260,11 @@ def test_audio_recorder_marks_failed_reconnect_in_gap(tmp_path: Path) -> None:
     assert states[-1] == ComponentStatus.FAILED
     assert stats.gaps[0].outcome == "failed"
     assert stats.gaps[0].reconnect_attempts == 2
+    assert [code for code, _exc in exceptions] == [
+        "AUDIO_DEVICE_DISCONNECTED",
+        "AUDIO_RECONNECT_FAILED",
+    ]
+    assert all(isinstance(exc, RuntimeError) for _code, exc in exceptions)
 
 
 def test_stop_interrupts_reconnect_wait(tmp_path: Path) -> None:

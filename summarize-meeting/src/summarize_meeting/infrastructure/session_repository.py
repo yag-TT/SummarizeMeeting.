@@ -34,6 +34,8 @@ def sanitize_title(value: str) -> str:
 @dataclass(frozen=True, slots=True)
 class SessionPaths:
     root: Path
+    logs: Path
+    session_log: Path
     audio: Path
     screenshots: Path
     analysis: Path
@@ -53,6 +55,8 @@ class FileSessionRepository:
         root = self._meetings_root / dirname
         paths = SessionPaths(
             root=root,
+            logs=root / "logs",
+            session_log=root / "logs" / "session.log",
             audio=root / "audio",
             screenshots=root / "screenshots",
             analysis=root / "analysis",
@@ -62,6 +66,7 @@ class FileSessionRepository:
         )
         for directory in (
             paths.audio,
+            paths.logs,
             paths.screenshots,
             paths.analysis,
             paths.output,
