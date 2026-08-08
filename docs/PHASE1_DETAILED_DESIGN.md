@@ -2,9 +2,9 @@
 
 更新日: 2026-08-08
 
-状態: Draft（ユーザー確認事項と実機PoC項目を含む）
+状態: Draft（製品判断の回答反映済み、実機PoC項目を含む）
 
-対象: Phase 1「記録基盤」のWindows先行実装
+対象: Phase 1「記録基盤」のWindows 11先行実装
 
 ## 1. 文書の位置付け
 
@@ -48,7 +48,7 @@
 
 ### 3.1 対象
 
-- Windows向けPySide6デスクトップUI
+- Windows 11向けPySide6デスクトップUI
 - マイク入力デバイスの列挙と録音
 - PC出力デバイスの列挙とWASAPI Loopback録音
 - マイクとPC音声の別トラック保存
@@ -120,6 +120,33 @@ SoundCardはWindows/WASAPIとLoopbackを提供するが、公式READMEにはWind
 | ログ | UTF-8テキスト | ローカル調査用 |
 
 WebPへの切替は1時間試験で、PNGとの容量、保存CPU時間、読込互換性を比較した後に決める。
+
+### 4.3 配置・実行方式
+
+- アプリはインストーラーで導入せず、配布フォルダを任意の書込み可能な場所へコピーして使用する。
+- 管理者権限、Windows Registry、`Program Files`、Windowsサービスへの登録を前提にしない。
+- アプリ本体、設定、ログ、会議データを1つのポータブルフォルダ内で完結させる。
+- 会議データや設定を `%LOCALAPPDATA%`、Documentsなどへ暗黙に保存しない。
+- 配置先が書込み不可の場合は起動時preflightで明示し、別の場所へコピーするよう案内する。ユーザーが認識しない別パスへのfallbackは行わない。
+- Phase 6では、PyInstaller / Nuitkaの比較に加え、展開済みフォルダをZIP等で配布し、解凍またはコピーだけで起動できることを受入条件にする。
+
+配布フォルダの完成イメージ:
+
+```text
+SummarizeMeeting/
+├─ SummarizeMeeting.exe
+├─ runtime/                 # Python・DLL・アプリ依存物（方式はPhase 6で決定）
+├─ models/                  # Phase 2以降のローカルモデル
+├─ licenses/
+└─ data/
+   ├─ settings.json
+   ├─ logs/
+   │  └─ application.log
+   └─ meetings/
+      └─ <session>/
+```
+
+アプリ更新時は `data/` を保持したまま本体を置き換えられる構造にする。配布物には空の `data/` だけを含め、会議データを含めない。
 
 ## 5. 論理アーキテクチャ
 
@@ -282,6 +309,7 @@ PREPARING
 ```
 
 - 一部Componentが失敗しても、1つ以上の音声トラックが記録中ならセッション全体は `RECORDING` を維持し、warningを付ける。
+- マイクまたはPC音声の片方が開始できない場合、警告確認ダイアログを表示せず、取得可能なトラックで録音を開始する。欠けているComponentは状態ランプとテキストで常時明示する。
 - 全音声Componentが停止した場合は重大警告を表示する。画面Captureだけが失敗しても音声は継続する。
 - 次回起動時に未完了セッションを検出した場合は `INTERRUPTED` とし、復旧処理を実行可能にする。
 
@@ -386,7 +414,7 @@ User                   UI            Controller       Workers/Storage
 
 開始処理の順序:
 
-1. 会議名、保存先、選択デバイス、画面対象を検証する。
+1. 会議名、固定保存先、選択デバイス、画面対象を検証する。
 2. 空き容量を検査する。
 3. セッションディレクトリと初期 `session.json` を作る。
 4. 各Capture streamを開き、最初のread直前まで準備する。
@@ -395,6 +423,8 @@ User                   UI            Controller       Workers/Storage
 7. `monotonic_origin_ns` と `started_at` を確定する。
 8. セッションを `RECORDING` に遷移させる。
 9. UIタイマーを開始する。
+
+マイクまたはPC音声の片方だけがreadyになった場合は、確認ダイアログを挟まずにstart gateを解放する。両方ともreadyにならない場合は音声会議記録として開始できないため `FAILED_TO_START` とする。Screenだけがreadyにならない場合は、画面状態をFAILEDとして音声録音を開始する。
 
 start gateは完全なサンプル同期を保証しない。各Audio Workerは最初のread完了時刻とchunk長から、そのトラックの推定開始offsetを計算し、manifestへ保存する。
 
@@ -708,7 +738,7 @@ SupervisorはWorker内部のCapture APIを直接操作せず、start/stop契約�
 ## 14. セッション保存構造
 
 ```text
-meetings/
+<app-root>/data/meetings/
 └─ 2026-08-08_100000_開発定例_<short-id>/
    ├─ session.json
    ├─ events.jsonl
@@ -800,12 +830,21 @@ Phase 1スキーマ例:
 
 ## 15. 設定
 
-設定はOSのユーザー別Application Data配下へ保存し、リポジトリやセッションフォルダへ保存しない。
+設定はポータブルなアプリルートの `data/settings.json` に保存し、個別セッションフォルダには保存しない。
+
+会議データのPhase 1既定保存先は、ユーザーへの初回選択を行わず、次に固定する。
+
+```text
+<app-root>\data\meetings
+```
+
+`<app-root>` はコピーされたアプリフォルダを指す。Application層は具体的なパスを直接組み立てず `PortableAppPathProvider` から取得する。開発実行時は `summarize-meeting/` を `<app-root>` とみなし、`summarize-meeting/data/` を使用する。テストでは一時ディレクトリを注入する。
+
+起動時に `data/`、`data/logs/`、`data/meetings/` の作成と書込みprobeを行う。書込みできない場合は録音画面へ進まず、「アプリフォルダを書込み可能な場所へコピーしてください」と表示する。
 
 Phase 1設定:
 
 ```text
-meetings_root
 last_microphone_device_id
 last_system_device_id
 screen_evaluation_fps
@@ -833,11 +872,28 @@ log_level
 ### 16.2 録音中表示
 
 - 経過時間
-- マイク名、状態、レベルメーター
-- PC音声名、状態、レベルメーター
-- 画面対象名、状態、保存枚数
+- マイク名、状態ランプ、状態テキスト、レベルメーター
+- PC音声名、状態ランプ、状態テキスト、レベルメーター
+- 画面対象名、状態ランプ、状態テキスト、保存枚数
 - warning/error banner
 - 会議終了ボタン
+
+状態ランプは色だけに依存せず、アイコンと状態テキストを併記する。
+
+| Component状態 | ランプ | 表示テキスト例 |
+|---|---|---|
+| `STARTING` | 黄・点滅 | 接続中 |
+| `RUNNING` | 緑・点灯 | 取得中 |
+| `STOPPING` | 黄・点灯 | 停止処理中 |
+| `STOPPED` | 灰・消灯 | 停止 |
+| `FAILED` | 赤・点灯 | 取得失敗 / 取得停止 |
+| `NOT_CONFIGURED` | 灰・消灯 | 未選択 |
+
+- ランプはマイク、PC音声、画面の3つを常時同じ位置に表示する。
+- Component障害時は状態ランプを直ちに赤へ変更し、他Componentは緑のまま維持する。
+- 対象ウィンドウが終了した場合は画面ランプだけを赤へ変更し、全画面Captureへfallbackせず、音声録音を継続する。
+- マイクまたはPC音声の片方が開始できなくても確認ダイアログを表示しない。
+- 全音声Componentが停止した場合は状態ランプに加え、録音できていないことを見落とさないよう画面内bannerを表示する。
 
 ### 16.3 状態別操作
 
@@ -860,8 +916,8 @@ log_level
 
 | コード例 | 重大度 | 動作 |
 |---|---|---|
-| `MIC_OPEN_FAILED` | ERROR | system録音が可能なら確認後に継続可能 |
-| `SYSTEM_AUDIO_OPEN_FAILED` | ERROR | mic録音が可能なら確認後に継続可能 |
+| `MIC_OPEN_FAILED` | ERROR | system録音が可能なら確認なしで継続し、マイクランプを赤にする |
+| `SYSTEM_AUDIO_OPEN_FAILED` | ERROR | mic録音が可能なら確認なしで継続し、PC音声ランプを赤にする |
 | `AUDIO_QUEUE_PRESSURE` | WARNING | 継続、使用率と回数を記録 |
 | `AUDIO_WRITE_FAILED` | CRITICAL | 対象track停止、他Component継続 |
 | `SCREEN_OPEN_FAILED` | WARNING | 音声継続、再選択を案内 |
@@ -939,6 +995,8 @@ Phase 1では会議予定時間入力を必須にしないため、最低空き�
 - screenshot連番とmetadata整合性
 - monotonic timestamp変換
 - 設定破損時のfallback
+- PortableAppPathProviderの開発・配布・テスト時のroot解決
+- アプリルートが書込み不可の場合のpreflight失敗
 
 ### 21.2 Integration Test（Fake backend）
 
@@ -978,6 +1036,7 @@ Phase 1では会議予定時間入力を必須にしないため、最低空き�
 障害:
 
 - 保存先アクセス拒否
+- 読取り専用フォルダへアプリ一式をコピーした場合の起動エラー
 - 空き容量警告
 - screenshot保存失敗
 - アプリ強制終了後の復旧
@@ -1029,51 +1088,57 @@ Phase 1では会議予定時間入力を必須にしないため、最低空き�
 16. 1時間試験
 17. PoC結果に基づくADR更新
 
-## 24. ユーザー確認事項
+## 24. 確定した製品判断
 
-以下は技術PoCでは決められず、製品動作に影響するため確認が必要である。本書では暫定案も示す。
+2026-08-08のユーザー回答により、以下を確定する。
 
-### Q1. Windowsの最低対応バージョン
+### D1. Windows対応範囲
 
-- 不明点: 「Windows」の具体的な最低バージョンが未定義。
-- 影響: Windows.Graphics.Capture、配布、DPI/HDR、テスト範囲。
-- 暫定案: Phase 1はWindows 11を正式対象とし、Windows 10は後から要否を判断する。
+- Phase 1の正式対象はWindows 11とする。
+- Windows 10対応は初期スコープ外とする。
 
-### Q2. PC再生音声の範囲
+### D2. PC再生音声の範囲
 
-- 不明点: 選択スピーカーの全音声でよいか、Teams / Chromeだけに限定する必要があるか。
-- 影響: 標準WASAPI Loopbackは選択エンドポイント全体を記録する。
-- 暫定案: 全音声を記録し、UIに明記する。特定アプリ限定は初期スコープ外。
+- 選択した出力デバイスから再生される全音声を録音する。
+- Teams / Chromeなど特定アプリだけには限定しない。
+- UIに録音範囲を明記する。
 
-### Q3. 一部Captureが開始できない場合
+### D3. 一部Audio Capture失敗時
 
-- 不明点: マイクまたはPC音声の片方が開始できない状態で会議開始を許可するか。
-- 影響: データ完全性と、緊急時に残る側だけでも記録する利便性のtrade-off。
-- 暫定案: 警告dialogで欠けるtrackを明示し、ユーザーが確認した場合だけdegraded recordingを許可する。画面だけの失敗では音声開始を阻止しない。
+- マイクまたはPC音声の片方が失敗しても、取得可能な片方で録音を継続する。
+- 警告確認ダイアログは表示しない。
+- マイクとPC音声に個別の状態ランプと状態テキストを表示する。
+- 両Audio Captureが失敗した場合は録音開始失敗または録音不能bannerを表示する。
 
-### Q4. 対象ウィンドウが最小化・終了された場合
+### D4. 対象ウィンドウ終了時
 
-- 不明点: 自動で画面全体へfallbackするか、画面Captureを停止するか。
-- 影響: 意図しない画面や機密情報の保存リスク。
-- 暫定案: 自動画面全体fallbackは禁止。画面Captureだけを停止して警告し、音声を継続する。再選択機能はPoC後に追加判断する。
+- 全画面Captureへ自動fallbackしない。
+- 画面Captureだけを停止し、音声録音は継続する。
+- 画面取得の状態ランプと状態テキストを表示する。
 
-### Q5. 生データ保持の既定値
+### D5. 生データ保持
 
-- 不明点: 音声・画像を既定で保持するか、議事録生成後に削除するか。
-- 影響: プライバシー、障害復旧、再解析。
-- 暫定案: Phase 1では両方保持し、自動削除を実装しない。
+- Phase 1では音声とスクリーンショットを既定で保持する。
+- 自動削除を実装しない。
 
-### Q6. 本番の既定保存先
+### D6. 保存先
 
-- 不明点: Documents配下、会社指定フォルダ、ユーザー選択のどれを既定にするか。
-- 影響: 容量、OneDrive同期、会社の情報管理規則。
-- 暫定案: 初回起動時にユーザーへ保存先選択を求め、その後は記憶する。開発時はリポジトリ外のユーザー指定一時フォルダを使う。
+- 初回起動時に保存先を質問しない。
+- コピー配置したアプリフォルダの `<app-root>\data\meetings` を固定保存先とする。
+- 設定は `<app-root>\data\settings.json`、アプリログは `<app-root>\data\logs` に保存する。
+- `%LOCALAPPDATA%` やDocumentsへ暗黙にfallbackしない。
+- 将来の会社指定パス対応とテストに備え、パス取得は `PortableAppPathProvider` として抽象化する。
 
-### Q7. 録音同意UI
+### D8. アプリ配置方式
 
-- 不明点: 会議参加者の同意確認や社内規程に合わせた確認checkboxが必要か。
-- 影響: 製品UIと運用手順。法務判断は本ツールの技術設計だけでは決められない。
-- 暫定案: 録音中であることを常時明示し、開始時確認文を設定可能にする余地を残す。
+- インストールを前提にせず、フォルダをコピーして配置するポータブルアプリとする。
+- Registry登録、管理者権限、Windowsサービス登録を要求しない。
+- 書込み可能な配置先を前提とし、書込み不可なら起動時に明示的なエラーを表示する。
+
+### D7. 録音同意UI
+
+- 社内規程向けの録音同意確認画面やcheckboxは実装しない。
+- 録音状態そのものは通常の録音画面とComponent状態ランプで明示する。
 
 ## 25. PoCで決定する事項
 
