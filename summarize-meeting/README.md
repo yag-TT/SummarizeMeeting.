@@ -12,7 +12,7 @@ Phase 5「統合議事録」の正常系PoCまで実装しています。Phase 1
 - UIは日本語のみ
 
 ```console
-uv sync
+uv sync --frozen
 uv run summarize-meeting
 ```
 
@@ -23,7 +23,7 @@ UbuntuではPython 3.11を`uv`に管理させることができます。Wayland�
 ```bash
 sudo apt update
 sudo apt install pipewire xdg-desktop-portal xdg-desktop-portal-gnome ffmpeg \
-  libportaudio2 libpulse0 libxcb-cursor0
+  libportaudio2 libpulse0 libasound2 libegl1 libgl1 libxcb-cursor0 libglib2.0-bin
 uv python install 3.11
 uv sync --frozen
 uv run summarize-meeting
@@ -196,6 +196,7 @@ uv run python -m summarize_meeting.devtools.validate_phase2_session --session "d
 
 ## ドキュメント
 
+- [依存ライブラリ・外部ツール一覧](../docs/DEPENDENCIES_AND_TOOLS.md)
 - [引き継ぎ資料](../docs/CODEX_HANDOFF_MEETING_MINUTES_TOOL.md)
 - [Phase 1詳細設計](../docs/PHASE1_DETAILED_DESIGN.md)
 - [Phase 2詳細設計](../docs/PHASE2_DETAILED_DESIGN.md)
