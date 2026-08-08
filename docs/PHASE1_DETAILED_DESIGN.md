@@ -492,6 +492,10 @@ Queue方針:
 - 書込み不能が継続した場合はそのComponentを `FAILED` とし、UIへ重大警告を通知する。
 - 音声データを守るため、スクリーンショット保存より音声Writerを優先する。
 
+実装ではenqueue直後の `qsize / maxsize` を計測し、80%へ到達したepisodeごとに `AUDIO_QUEUE_PRESSURE` warningを1回記録する。50%以下へ戻るまでは同じwarningを繰り返さない。最大使用率とepisode数を最終manifestへ保存する。
+
+queue満杯時は1秒まで空きを待つ。空かなければ `overflow_count` を増やし、chunkを捨てて継続せず、そのAudio Componentを `FAILED / AUDIO_QUEUE_PRESSURE` にする。Writerは既にqueueへ入ったchunkをdrainしてWAVを確定する。
+
 ### 10.4 レベルメーター
 
 各chunkから以下を計算する。
@@ -550,18 +554,34 @@ audio/
       "channels": 2,
       "sample_width_bytes": 2,
       "estimated_start_offset_ms": 18,
+      "capture_ended_offset_ms": 3600021,
       "frames_written": 172800000,
+      "audio_duration_ms": 3600000.0,
+      "active_capture_duration_ms": 3600003.0,
+      "duration_drift_ms": -3.0,
       "overflow_count": 0,
-      "segments": []
+      "queue_pressure_count": 0,
+      "max_queue_usage_ratio": 0.12,
+      "queue_capacity_chunks": 300,
+      "segments": 60,
+      "gaps": []
     },
     "system": {
       "sample_rate": 48000,
       "channels": 2,
       "sample_width_bytes": 2,
       "estimated_start_offset_ms": 34,
+      "capture_ended_offset_ms": 3600037,
       "frames_written": 172800000,
+      "audio_duration_ms": 3600000.0,
+      "active_capture_duration_ms": 3600003.0,
+      "duration_drift_ms": -3.0,
       "overflow_count": 0,
-      "segments": []
+      "queue_pressure_count": 1,
+      "max_queue_usage_ratio": 0.83,
+      "queue_capacity_chunks": 300,
+      "segments": 60,
+      "gaps": []
     }
   }
 }
@@ -573,7 +593,19 @@ audio/
 timestamp_sec = estimated_start_offset_sec + frame_index / sample_rate
 ```
 
-終了時に `frames_written / sample_rate` とmonotonic経過時間の差を記録し、デバイスクロックdriftの診断に使用する。Phase 1では無断でstretchやsilence挿入を行わない。
+最初の非空chunkについて、`read完了時刻 - chunk duration - monotonic origin` を `estimated_start_offset_ms` とする。スケジューリング誤差などで負になる推定値は0へclampする。
+
+終了時は次を記録する。
+
+```text
+audio_duration_ms = frames_written * 1000 / sample_rate
+active_capture_duration_ms = capture_ended_offset_ms
+                           - estimated_start_offset_ms
+                           - sum(reconnect_gap_duration_ms)
+duration_drift_ms = audio_duration_ms - active_capture_duration_ms
+```
+
+`duration_drift_ms` はデバイスクロック、backend buffering、queue待ちを診断する値であり、Phase 1ではこの値を使ったstretchやsilence挿入を行わない。
 
 ### 10.7 音声デバイス切断と再接続
 

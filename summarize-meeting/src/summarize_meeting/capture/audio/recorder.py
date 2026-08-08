@@ -5,14 +5,14 @@ import threading
 import time
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
 
 from summarize_meeting.capture.audio.base import AudioBackend, FloatAudio
 from summarize_meeting.capture.audio.meter import normalized_rms
-from summarize_meeting.domain.capture import AudioDevice
+from summarize_meeting.domain.capture import AudioDevice, AudioFormat
 from summarize_meeting.domain.session import ComponentStatus
 from summarize_meeting.infrastructure.audio_writer import (
     AudioGap,
@@ -22,6 +22,13 @@ from summarize_meeting.infrastructure.audio_writer import (
 
 StateCallback = Callable[[ComponentStatus, str | None, str | None], None]
 MeterCallback = Callable[[float], None]
+WriterFactory = Callable[[Path, str, AudioFormat], SegmentedWaveWriter]
+
+
+@dataclass(frozen=True, slots=True)
+class _AudioChunk:
+    samples: FloatAudio
+    captured_at_ns: int
 
 
 class _RotateSegment:
@@ -29,6 +36,10 @@ class _RotateSegment:
 
 
 _ROTATE_SEGMENT = _RotateSegment()
+
+
+class AudioQueueFullError(RuntimeError):
+    pass
 
 
 class AudioTrackRecorder:
@@ -47,6 +58,10 @@ class AudioTrackRecorder:
         origin_ns: int | None = None,
         reconnect_attempts: int = 5,
         reconnect_interval_seconds: float = 2.0,
+        writer_factory: WriterFactory = SegmentedWaveWriter,
+        queue_pressure_ratio: float = 0.8,
+        queue_recovery_ratio: float = 0.5,
+        queue_put_timeout_seconds: float = 1.0,
     ) -> None:
         self._backend = backend
         self._device = device
@@ -59,8 +74,21 @@ class AudioTrackRecorder:
         self._origin_ns = origin_ns
         self._reconnect_attempts = reconnect_attempts
         self._reconnect_interval_seconds = reconnect_interval_seconds
-        capacity = max(2, queue_seconds * sample_rate // block_frames)
-        self._queue: queue.Queue[FloatAudio | _RotateSegment | None] = queue.Queue(maxsize=capacity)
+        self._writer_factory = writer_factory
+        if not 0.0 < queue_recovery_ratio < queue_pressure_ratio <= 1.0:
+            raise ValueError("queue ratios must satisfy 0 < recovery < pressure <= 1")
+        self._queue_pressure_ratio = queue_pressure_ratio
+        self._queue_recovery_ratio = queue_recovery_ratio
+        if queue_put_timeout_seconds <= 0:
+            raise ValueError("queue_put_timeout_seconds must be positive")
+        self._queue_put_timeout_seconds = queue_put_timeout_seconds
+        if queue_seconds < 0:
+            raise ValueError("queue_seconds must not be negative")
+        self._queue_seconds = queue_seconds
+        capacity = self._queue_capacity(sample_rate)
+        self._queue: queue.Queue[_AudioChunk | _RotateSegment | None] = queue.Queue(
+            maxsize=capacity
+        )
         self._stop = threading.Event()
         self._capture_thread: threading.Thread | None = None
         self._writer_thread: threading.Thread | None = None
@@ -70,6 +98,12 @@ class AudioTrackRecorder:
         self._failed = threading.Event()
         self._last_meter_time = 0.0
         self._gaps: list[AudioGap] = []
+        self._estimated_start_offset_ms: int | None = None
+        self._capture_ended_offset_ms: int | None = None
+        self._overflow_count = 0
+        self._queue_pressure_count = 0
+        self._max_queue_usage_ratio = 0.0
+        self._queue_pressure_active = False
 
     def start(self) -> None:
         if self._origin_ns is None:
@@ -101,7 +135,7 @@ class AudioTrackRecorder:
             raise self._writer_error
         if self._writer is None:
             return None
-        stats = replace(self._writer.close(), gaps=tuple(self._gaps))
+        stats = self._with_capture_diagnostics(self._writer.close())
         if self._capture_error is None:
             self._state_callback(ComponentStatus.STOPPED, None, None)
         return stats
@@ -110,7 +144,10 @@ class AudioTrackRecorder:
         stream = None
         try:
             stream = self._open_with_fallback()
-            self._writer = SegmentedWaveWriter(
+            self._queue = queue.Queue(
+                maxsize=self._queue_capacity(stream.audio_format.sample_rate)
+            )
+            self._writer = self._writer_factory(
                 self._audio_dir,
                 self._track_name,
                 stream.audio_format,
@@ -130,24 +167,30 @@ class AudioTrackRecorder:
                     stream = self._reconnect(exc)
                     if stream is None:
                         break
-                    self._queue.put(_ROTATE_SEGMENT, timeout=1.0)
+                    self._enqueue(_ROTATE_SEGMENT)
                     self._state_callback(ComponentStatus.RUNNING, None, "再接続しました")
                     continue
                 if samples.size == 0:
                     continue
+                if self._writer_error is not None:
+                    break
+                captured_at_ns = time.perf_counter_ns()
+                self._record_first_chunk(samples, captured_at_ns)
                 now = time.monotonic()
                 if now - self._last_meter_time >= 0.1:
                     self._last_meter_time = now
                     self._meter_callback(normalized_rms(samples))
-                try:
-                    self._queue.put(samples.copy(), timeout=1.0)
-                except queue.Full as exc:
-                    raise RuntimeError("AUDIO_QUEUE_PRESSURE") from exc
+                self._enqueue(_AudioChunk(samples.copy(), captured_at_ns))
+        except AudioQueueFullError as exc:
+            self._capture_error = exc
+            self._failed.set()
+            self._state_callback(ComponentStatus.FAILED, "AUDIO_QUEUE_PRESSURE", str(exc))
         except Exception as exc:
             self._capture_error = exc
             self._failed.set()
             self._state_callback(ComponentStatus.FAILED, "AUDIO_CAPTURE_FAILED", str(exc))
         finally:
+            self._capture_ended_offset_ms = self._timestamp_ms()
             if stream is not None:
                 self._close_stream(stream)
             self._enqueue_sentinel()
@@ -237,7 +280,7 @@ class AudioTrackRecorder:
                 if item is _ROTATE_SEGMENT:
                     self._writer.rotate_segment()
                     continue
-                self._writer.write(np.asarray(item, dtype=np.float32))
+                self._writer.write(np.asarray(item.samples, dtype=np.float32))
         except Exception as exc:
             self._writer_error = exc
             self._failed.set()
@@ -252,3 +295,70 @@ class AudioTrackRecorder:
             except queue.Full:
                 if self._writer_thread is None or not self._writer_thread.is_alive():
                     return
+
+    def _enqueue(self, item: _AudioChunk | _RotateSegment) -> None:
+        try:
+            self._queue.put(item, timeout=self._queue_put_timeout_seconds)
+        except queue.Full as exc:
+            self._overflow_count += 1
+            raise AudioQueueFullError("音声書込みqueueが満杯になりました") from exc
+        usage_ratio = self._queue.qsize() / self._queue.maxsize
+        self._max_queue_usage_ratio = max(self._max_queue_usage_ratio, usage_ratio)
+        if (
+            usage_ratio >= self._queue_pressure_ratio
+            and not self._queue_pressure_active
+            and not self._stop.is_set()
+        ):
+            self._queue_pressure_active = True
+            self._queue_pressure_count += 1
+            self._state_callback(
+                ComponentStatus.RUNNING,
+                "AUDIO_QUEUE_PRESSURE",
+                f"音声書込みqueue使用率が {usage_ratio:.0%} です",
+            )
+        elif usage_ratio <= self._queue_recovery_ratio:
+            self._queue_pressure_active = False
+
+    def _queue_capacity(self, sample_rate: int) -> int:
+        return max(2, int(self._queue_seconds * sample_rate // self._block_frames))
+
+    def _record_first_chunk(self, samples: FloatAudio, captured_at_ns: int) -> None:
+        if self._estimated_start_offset_ms is not None:
+            return
+        assert self._origin_ns is not None
+        assert self._writer is not None
+        chunk_duration_ns = round(
+            samples.shape[0] * 1_000_000_000 / self._writer.audio_format.sample_rate
+        )
+        estimated_ns = captured_at_ns - self._origin_ns - chunk_duration_ns
+        self._estimated_start_offset_ms = max(0, round(estimated_ns / 1_000_000))
+
+    def _with_capture_diagnostics(self, stats: AudioTrackStats) -> AudioTrackStats:
+        active_duration_ms: float | None = None
+        drift_ms: float | None = None
+        if (
+            self._estimated_start_offset_ms is not None
+            and self._capture_ended_offset_ms is not None
+        ):
+            gap_duration_ms = sum(max(0, gap.end_ms - gap.start_ms) for gap in self._gaps)
+            active_duration_ms = max(
+                0.0,
+                float(
+                    self._capture_ended_offset_ms
+                    - self._estimated_start_offset_ms
+                    - gap_duration_ms
+                ),
+            )
+            drift_ms = round(stats.audio_duration_ms - active_duration_ms, 3)
+        return replace(
+            stats,
+            estimated_start_offset_ms=self._estimated_start_offset_ms,
+            capture_ended_offset_ms=self._capture_ended_offset_ms,
+            active_capture_duration_ms=active_duration_ms,
+            duration_drift_ms=drift_ms,
+            overflow_count=self._overflow_count,
+            queue_pressure_count=self._queue_pressure_count,
+            max_queue_usage_ratio=round(self._max_queue_usage_ratio, 6),
+            queue_capacity_chunks=self._queue.maxsize,
+            gaps=tuple(self._gaps),
+        )

@@ -23,6 +23,7 @@ def test_segmented_writer_consolidates_segments(tmp_path: Path) -> None:
 
     assert stats.frames_written == 250
     assert stats.segments == 3
+    assert stats.audio_duration_ms == 2_500.0
     with wave.open(str(audio_dir / "microphone.wav"), "rb") as stream:
         assert stream.getframerate() == 100
         assert stream.getnchannels() == 2

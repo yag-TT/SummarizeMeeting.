@@ -71,6 +71,10 @@ screenshots/*.png
 - マイクの発話は主に `microphone.wav` に入っている
 - PCテスト音声は `system.wav` に入っている
 - WAVの長さが約2分である
+- `audio/manifest.json` に `monotonic_origin_ns` と各trackの `estimated_start_offset_ms` がある
+- 各trackの `audio_duration_ms`、`active_capture_duration_ms`、`duration_drift_ms` が数値である
+- 通常録音では `overflow_count` が0である
+- `max_queue_usage_ratio` が0.0から1.0の範囲である
 - `session.json` のstatusが `RECORDED` である
 - `duration_ms` が実際の録音時間と大きく違わない
 - 画面切替後のPNGが存在する
@@ -188,6 +192,8 @@ uv run pytest -q tests/integration/test_wgc_backend.py
 - 会議終了後に2つのWAVを開ける
 - WAV時間と `duration_ms` の差を記録する
 - `audio/.work/` のsegment数と最終WAVのframe数を記録する
+- 2trackの `estimated_start_offset_ms` 差と `duration_drift_ms` を記録する
+- `queue_pressure_count`、`max_queue_usage_ratio`、`overflow_count` を記録する
 - PNG枚数と合計容量を記録する
 
 ## 6. 1時間テスト

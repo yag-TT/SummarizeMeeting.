@@ -334,7 +334,11 @@ class RecordingController(QObject):
         if not storage_failed:
             self._set_component(ComponentKind.SESSION_STORAGE, ComponentStatus.STOPPED)
 
-        self._write_audio_manifest(paths.audio / "manifest.json", stats)
+        self._write_audio_manifest(
+            paths.audio / "manifest.json",
+            stats,
+            monotonic_origin_ns=self._origin_ns,
+        )
         ended_ns = time.perf_counter_ns()
         with self._lock:
             session.ended_at = RecordingSession.now_iso()
@@ -466,9 +470,12 @@ class RecordingController(QObject):
     def _write_audio_manifest(
         path: Path,
         stats: dict[str, AudioTrackStats],
+        *,
+        monotonic_origin_ns: int,
     ) -> None:
         value = {
             "schema_version": 1,
+            "monotonic_origin_ns": monotonic_origin_ns,
             "tracks": {name: asdict(track_stats) for name, track_stats in stats.items()},
         }
         temporary = path.with_suffix(".json.tmp")

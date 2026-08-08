@@ -9,6 +9,7 @@ import numpy as np
 from summarize_meeting.capture.audio.recorder import AudioTrackRecorder
 from summarize_meeting.domain.capture import AudioDevice, AudioFormat
 from summarize_meeting.domain.session import ComponentStatus
+from summarize_meeting.infrastructure.audio_writer import SegmentedWaveWriter
 
 
 class FakeAudioStream:
@@ -70,6 +71,61 @@ class ReconnectingAudioBackend(FakeAudioBackend):
         return FakeAudioStream()
 
 
+class OffsetAudioStream:
+    audio_format = AudioFormat(sample_rate=1_000, channels=1)
+
+    def __init__(self, initial_delay_seconds: float) -> None:
+        self._initial_delay_seconds = initial_delay_seconds
+        self._first_read = True
+
+    def read(self, frames: int) -> np.ndarray:
+        delay = frames / self.audio_format.sample_rate
+        if self._first_read:
+            delay += self._initial_delay_seconds
+            self._first_read = False
+        time.sleep(delay)
+        return np.full((frames, 1), 0.1, dtype=np.float32)
+
+    def close(self) -> None:
+        pass
+
+
+class OffsetAudioBackend(FakeAudioBackend):
+    def __init__(self, initial_delay_seconds: float) -> None:
+        self._initial_delay_seconds = initial_delay_seconds
+
+    def open_stream(
+        self,
+        device_id: str,
+        *,
+        sample_rate: int,
+        block_frames: int,
+    ) -> OffsetAudioStream:
+        return OffsetAudioStream(self._initial_delay_seconds)
+
+
+class BurstAudioStream(FakeAudioStream):
+    def read(self, frames: int) -> np.ndarray:
+        return np.full((frames, 2), 0.1, dtype=np.float32)
+
+
+class BurstAudioBackend(FakeAudioBackend):
+    def open_stream(
+        self,
+        device_id: str,
+        *,
+        sample_rate: int,
+        block_frames: int,
+    ) -> BurstAudioStream:
+        return BurstAudioStream()
+
+
+class SlowWaveWriter(SegmentedWaveWriter):
+    def write(self, samples) -> None:
+        time.sleep(0.02)
+        super().write(samples)
+
+
 def _wait_for(predicate, timeout: float = 2.0) -> None:
     deadline = time.monotonic() + timeout
     while not predicate() and time.monotonic() < deadline:
@@ -101,6 +157,12 @@ def test_audio_recorder_writes_fake_capture(tmp_path: Path) -> None:
     assert ComponentStatus.RUNNING in states
     assert states[-1] == ComponentStatus.STOPPED
     assert meters
+    assert stats.estimated_start_offset_ms is not None
+    assert stats.capture_ended_offset_ms is not None
+    assert stats.active_capture_duration_ms is not None
+    assert stats.duration_drift_ms is not None
+    assert stats.overflow_count == 0
+    assert stats.queue_capacity_chunks == 300
     with wave.open(str(audio_dir / "microphone.wav"), "rb") as stream:
         assert stream.getnframes() > 0
 
@@ -186,3 +248,98 @@ def test_stop_interrupts_reconnect_wait(tmp_path: Path) -> None:
     assert stats is not None
     assert stats.gaps[0].outcome == "stopped"
     assert states[-1] == ComponentStatus.STOPPED
+
+
+def test_two_tracks_record_estimated_start_offset_from_common_origin(tmp_path: Path) -> None:
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    origin_ns = time.perf_counter_ns()
+    microphone = AudioTrackRecorder(
+        backend=OffsetAudioBackend(0.0),
+        device=AudioDevice("mic", "Mic", 1),
+        track_name="microphone",
+        audio_dir=audio_dir,
+        state_callback=lambda _state, _code, _message: None,
+        meter_callback=lambda _level: None,
+        block_frames=20,
+        origin_ns=origin_ns,
+    )
+    system = AudioTrackRecorder(
+        backend=OffsetAudioBackend(0.08),
+        device=AudioDevice("system", "System", 1),
+        track_name="system",
+        audio_dir=audio_dir,
+        state_callback=lambda _state, _code, _message: None,
+        meter_callback=lambda _level: None,
+        block_frames=20,
+        origin_ns=origin_ns,
+    )
+
+    microphone.start()
+    system.start()
+    time.sleep(0.16)
+    microphone_stats = microphone.finish()
+    system_stats = system.finish()
+
+    assert microphone_stats is not None
+    assert system_stats is not None
+    assert microphone_stats.estimated_start_offset_ms is not None
+    assert system_stats.estimated_start_offset_ms is not None
+    assert (
+        system_stats.estimated_start_offset_ms
+        - microphone_stats.estimated_start_offset_ms
+        >= 50
+    )
+
+
+def test_queue_pressure_is_reported_without_dropping_chunks(tmp_path: Path) -> None:
+    states: list[tuple[ComponentStatus, str | None]] = []
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    recorder = AudioTrackRecorder(
+        backend=BurstAudioBackend(),
+        device=AudioDevice("fast", "Fast", 2),
+        track_name="microphone",
+        audio_dir=audio_dir,
+        state_callback=lambda state, code, _message: states.append((state, code)),
+        meter_callback=lambda _level: None,
+        block_frames=800,
+        queue_seconds=0,
+        writer_factory=SlowWaveWriter,
+    )
+
+    recorder.start()
+    _wait_for(lambda: any(code == "AUDIO_QUEUE_PRESSURE" for _state, code in states))
+    stats = recorder.finish()
+
+    assert stats is not None
+    assert stats.queue_capacity_chunks == 2
+    assert stats.queue_pressure_count >= 1
+    assert stats.max_queue_usage_ratio >= 0.8
+    assert stats.overflow_count == 0
+
+
+def test_full_queue_fails_track_and_records_overflow(tmp_path: Path) -> None:
+    states: list[tuple[ComponentStatus, str | None]] = []
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir()
+    recorder = AudioTrackRecorder(
+        backend=BurstAudioBackend(),
+        device=AudioDevice("fast", "Fast", 2),
+        track_name="system",
+        audio_dir=audio_dir,
+        state_callback=lambda state, code, _message: states.append((state, code)),
+        meter_callback=lambda _level: None,
+        block_frames=800,
+        queue_seconds=0,
+        writer_factory=SlowWaveWriter,
+        queue_put_timeout_seconds=0.001,
+    )
+
+    recorder.start()
+    _wait_for(lambda: (ComponentStatus.FAILED, "AUDIO_QUEUE_PRESSURE") in states)
+    stats = recorder.finish()
+
+    assert stats is not None
+    assert stats.overflow_count == 1
+    assert states[-1] == (ComponentStatus.FAILED, "AUDIO_QUEUE_PRESSURE")

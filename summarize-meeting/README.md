@@ -42,6 +42,8 @@ data/meetings/<session>/
 
 前回使用したマイクとPC音声のdevice ID、画面変更検知設定、保持方針、ログレベルは `data/settings.json` に保存します。壊れた設定は `data/settings.corrupt-<timestamp>.json` へ退避し、既定値で起動します。保存済みdevice IDが見つからない場合、別デバイスへ自動切替はしません。
 
+`audio/manifest.json` には2track共通のmonotonic origin、各trackの推定開始offset、WAV時間、再接続gapを除く稼働時間、duration drift、queue最大使用率、pressure回数、overflow回数を保存します。診断値に基づく音声の自動伸縮や無音挿入は行いません。
+
 ## 開発時の検証
 
 ```powershell

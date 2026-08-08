@@ -28,6 +28,15 @@ class AudioTrackStats:
     sample_width_bytes: int
     frames_written: int
     segments: int
+    estimated_start_offset_ms: int | None = None
+    capture_ended_offset_ms: int | None = None
+    audio_duration_ms: float = 0.0
+    active_capture_duration_ms: float | None = None
+    duration_drift_ms: float | None = None
+    overflow_count: int = 0
+    queue_pressure_count: int = 0
+    max_queue_usage_ratio: float = 0.0
+    queue_capacity_chunks: int = 0
     gaps: tuple[AudioGap, ...] = ()
 
 
@@ -112,6 +121,10 @@ class SegmentedWaveWriter:
             sample_width_bytes=self._format.sample_width_bytes,
             frames_written=self._frames_written,
             segments=len(self._segments),
+            audio_duration_ms=round(
+                self._frames_written * 1000.0 / self._format.sample_rate,
+                3,
+            ),
         )
 
     def _open_segment(self) -> None:
