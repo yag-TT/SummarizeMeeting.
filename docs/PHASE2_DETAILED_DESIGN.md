@@ -17,6 +17,7 @@ Phase 1の長時間・異常系評価は継続課題として残すが、正常�
 - `analysis/transcription.json`生成
 - `output/transcript.md`仮生成
 - GUIからの実行、再実行、キャンセル
+- 録音済みセッション一覧からの解析対象選択
 - AI処理の別プロセス実行
 
 ### 2.2 対象外
@@ -25,7 +26,6 @@ Phase 1の長時間・異常系評価は継続課題として残すが、正常�
 - 発話の重複解消やマイクへの回り込み除去
 - 文字起こし結果のGUI編集
 - 自動実行設定
-- 過去セッションを選択する一覧画面
 - モデルを配布物へ同梱する仕組み
 - Ubuntu対応
 
@@ -131,6 +131,33 @@ session_end_seconds   = estimated_start_offset_ms / 1000 + segment.end
 
 成功結果だけを正式JSONへ保存する。失敗やキャンセルで既存の成功結果を破壊しない。
 
+### 7.1 jobs.json
+
+文字起こしの各実行状態は`analysis/jobs.json`へatomic保存する。Job開始前に`RUNNING`を確定し、worker終了後に同じ`attempt_id`の状態を終端状態へ更新する。
+
+```json
+{
+  "schema_version": 1,
+  "jobs": {
+    "transcription": {
+      "job": "transcription",
+      "status": "SUCCEEDED",
+      "attempt_id": "uuid",
+      "started_at": "2026-08-08T18:00:00.000+09:00",
+      "ended_at": "2026-08-08T18:01:00.000+09:00",
+      "model": "large-v3-turbo",
+      "language": "ja",
+      "output_path": "output/transcript.md",
+      "error_message": null
+    }
+  }
+}
+```
+
+状態は`RUNNING / SUCCEEDED / FAILED / CANCELED`を保存する。Job開始前のセッションはファイル不存在を`NOT_STARTED`として扱う。アプリ異常終了後に`RUNNING`が残っている場合は「前回中断」と表示し、ユーザーによる再実行を許可する。
+
+既存の成功済み`transcription.json`と`transcript.md`が揃っている場合は、その利用可能な結果をJob試行状態より優先して「完了」と表示する。再実行失敗で以前の成功結果を失わないためである。
+
 ## 8. transcript.md
 
 保存先は`output/transcript.md`とする。Phase 3で話者情報を統合した際に同じファイルを再生成する。
@@ -152,6 +179,8 @@ session_end_seconds   = estimated_start_offset_ms / 1000 + segment.end
 ## 9. UIとJob状態
 
 録音画面下部に文字起こし行を追加する。
+
+`data/meetings/`直下のセッションを新しい順に読み、会議日時、会議名、文字起こし状態を「解析対象」selectorへ表示する。アプリ再起動後も過去セッションを選択できる。`session.json`が壊れている場合はフォルダ名と`UNKNOWN`状態で一覧へ残し、他の正常セッションの読取りを継続する。
 
 - 未実行: 実行ボタン
 - 実行中: 進捗表示、キャンセルボタン
@@ -207,8 +236,6 @@ STT精度の数値閾値は社内会議音声の評価データと正解文を�
 ## 12. Phase 2残作業
 
 1. 実マイク・実PC再生音声による短時間正常系試験を行う
-2. 過去セッション選択UIを追加する
-3. 自動文字起こし設定を追加する
-4. Job状態をsession metadataへ永続化する
-5. 1時間音声で処理時間、VRAM、segment品質を測定する
-6. CUDA DLL、依存ライブラリ、モデルの再配布ライセンスを確認する
+2. 自動文字起こし設定を追加する
+3. 1時間音声で処理時間、VRAM、segment品質を測定する
+4. CUDA DLL、依存ライブラリ、モデルの再配布ライセンスを確認する

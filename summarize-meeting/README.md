@@ -20,6 +20,10 @@ uv run summarize-meeting
 
 録音終了後、画面下部の「文字起こし」から実行します。既定モデルは`large-v3-turbo`、言語は日本語です。初回実行時はモデルを`models/faster-whisper/`へ取得するため時間とインターネット接続が必要です。会議音声と文字起こし結果は外部サービスへ送信しません。
 
+「解析対象」には`data/meetings/`内の録音済みセッションが新しい順に表示されます。アプリを再起動した後でも過去の会議を選択し、文字起こしの実行・再実行ができます。壊れた`session.json`が混在しても、そのフォルダ名を使って他のセッションとともに一覧表示します。
+
+文字起こしJobの開始・成功・失敗・キャンセルは`analysis/jobs.json`へatomic保存します。実行中にアプリが終了して`RUNNING`が残った場合、次回起動時は「前回中断」として表示し、再実行できます。
+
 RTX GPUを使う開発環境では、CUDA 12のcuBLASとcuDNN 9をアプリ内へ準備します。スクリプトは固定したarchiveをSHA-256検証後に`runtime/cuda/bin/`へ展開します。DLLを配布物へ含める前にNVIDIAおよびarchiveの再配布条件を別途確認してください。
 
 ```powershell
@@ -41,6 +45,7 @@ data/meetings/<session>/
 │  ├─ events.jsonl
 │  └─ 000001.png ...
 ├─ analysis/
+│  ├─ jobs.json
 │  └─ transcription.json
 └─ output/
    └─ transcript.md

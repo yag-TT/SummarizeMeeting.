@@ -26,6 +26,10 @@ from summarize_meeting.application.recording_controller import (
 )
 from summarize_meeting.application.transcription_controller import TranscriptionController
 from summarize_meeting.domain.capture import AudioDevice, ScreenTarget
+from summarize_meeting.infrastructure.session_catalog import (
+    FileSessionCatalog,
+    SessionSummary,
+)
 from summarize_meeting.ui.status_row import CaptureStatusRow
 
 
@@ -36,10 +40,12 @@ class MainWindow(QMainWindow):
         self,
         controller: RecordingController,
         transcription_controller: TranscriptionController | None = None,
+        session_catalog: FileSessionCatalog | None = None,
     ) -> None:
         super().__init__()
         self._controller = controller
         self._transcription_controller = transcription_controller
+        self._session_catalog = session_catalog or FileSessionCatalog(controller.meetings_directory)
         self._started_at: datetime | None = None
         self._session_path: Path | None = None
         self._sources_loaded = False
@@ -107,6 +113,18 @@ class MainWindow(QMainWindow):
         self._finalize_progress.setVisible(False)
         root.addWidget(self._finalize_progress)
 
+        analysis_selector = QHBoxLayout()
+        analysis_selector.addWidget(QLabel("解析対象"))
+        self._analysis_session = QComboBox()
+        self._analysis_session.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self._analysis_session.setMinimumContentsLength(50)
+        analysis_selector.addWidget(self._analysis_session, 1)
+        self._refresh_sessions = QPushButton("会議一覧を更新")
+        analysis_selector.addWidget(self._refresh_sessions)
+        root.addLayout(analysis_selector)
+
         analysis = QHBoxLayout()
         analysis.addWidget(QLabel("文字起こし"))
         self._transcription_status = QLabel("未実行")
@@ -144,6 +162,8 @@ class MainWindow(QMainWindow):
         self._stop.clicked.connect(self._stop_recording)
         self._reselect.clicked.connect(self._replace_screen)
         self._transcribe.clicked.connect(self._toggle_transcription)
+        self._refresh_sessions.clicked.connect(lambda: self.refresh_analysis_sessions())
+        self._analysis_session.currentIndexChanged.connect(self._on_analysis_session_changed)
         self._microphone.currentIndexChanged.connect(self._update_idle_source_names)
         self._system_audio.currentIndexChanged.connect(self._update_idle_source_names)
         self._screen_target.currentIndexChanged.connect(self._update_idle_source_names)
@@ -167,6 +187,7 @@ class MainWindow(QMainWindow):
             transcription_controller.job_failed.connect(self._on_transcription_failed)
             transcription_controller.job_canceled.connect(self._on_transcription_canceled)
         QTimer.singleShot(0, self.refresh_sources)
+        QTimer.singleShot(0, self.refresh_analysis_sessions)
 
     def refresh_sources(self) -> None:
         self._source_refresh_request_id += 1
@@ -344,7 +365,7 @@ class MainWindow(QMainWindow):
             self.show_error(f"記録の保存中に問題が発生しました: {error_message} 保存先: {path}")
         else:
             self.show_information(f"記録を保存しました: {path}")
-        self._update_transcription_availability()
+        self.refresh_analysis_sessions(Path(path))
         self._close_if_requested()
 
     def _on_finalize_progress(self, percent: int, message: str) -> None:
@@ -382,6 +403,7 @@ class MainWindow(QMainWindow):
         self._finalize_progress.setValue(0)
         self._finalize_progress.setFormat("保存処理 %p%")
         self._session_error_message = None
+        self._on_analysis_session_changed()
 
     def _toggle_transcription(self) -> None:
         controller = self._transcription_controller
@@ -393,11 +415,12 @@ class MainWindow(QMainWindow):
             self._transcription_status.setText("キャンセル中")
             controller.cancel()
             return
-        if self._session_path is None:
+        summary = self._selected_analysis_session()
+        if summary is None:
             self.show_error("文字起こしする会議記録がありません。")
             return
         try:
-            controller.start(self._session_path)
+            controller.start(summary.path)
         except Exception as exc:
             self.show_error(str(exc))
 
@@ -424,6 +447,7 @@ class MainWindow(QMainWindow):
         if not self._is_current_session(session_path):
             return
         self._finish_transcription_ui("完了")
+        self.refresh_analysis_sessions(Path(session_path))
         self.show_information(f"文字起こしを保存しました: {output_path}")
 
     def _on_transcription_failed(self, session_path: str, message: str) -> None:
@@ -447,15 +471,63 @@ class MainWindow(QMainWindow):
         self._start.setEnabled(True)
 
     def _update_transcription_availability(self) -> None:
-        if self._transcription_controller is None or self._session_path is None:
+        summary = self._selected_analysis_session()
+        if self._transcription_controller is None or summary is None:
             self._transcribe.setEnabled(False)
             return
-        manifest = self._session_path / "audio" / "manifest.json"
-        has_audio = any((self._session_path / "audio").glob("*.wav"))
-        self._transcribe.setEnabled(manifest.is_file() and has_audio)
+        self._transcribe.setEnabled(summary.can_transcribe)
 
     def _is_current_session(self, value: str) -> bool:
-        return self._session_path is not None and Path(value) == self._session_path
+        summary = self._selected_analysis_session()
+        return summary is not None and Path(value).resolve() == summary.path
+
+    def refresh_analysis_sessions(self, preferred_path: Path | None = None) -> None:
+        selected = preferred_path
+        current = self._selected_analysis_session()
+        if selected is None and current is not None:
+            selected = current.path
+        if selected is not None:
+            selected = selected.resolve()
+        summaries = self._session_catalog.scan()
+        self._analysis_session.blockSignals(True)
+        self._analysis_session.clear()
+        selected_index = 0
+        if not summaries:
+            self._analysis_session.addItem("録音済みセッションがありません", None)
+        else:
+            for index, summary in enumerate(summaries):
+                self._analysis_session.addItem(summary.display_label, summary)
+                if summary.path == selected:
+                    selected_index = index
+        self._analysis_session.setCurrentIndex(selected_index)
+        self._analysis_session.blockSignals(False)
+        self._on_analysis_session_changed()
+
+    def _on_analysis_session_changed(self, _index: int | None = None) -> None:
+        summary = self._selected_analysis_session()
+        if summary is None:
+            self._transcription_status.setText("対象なし")
+            self._transcribe.setText("実行")
+            self._transcribe.setEnabled(False)
+            return
+        status = {
+            "SUCCEEDED": "完了",
+            "NOT_STARTED": "未実行",
+            "INCOMPLETE": "要再実行",
+            "UNKNOWN": "状態不明",
+            "FAILED": "失敗",
+            "CANCELED": "キャンセル",
+            "RUNNING": "前回中断",
+        }.get(summary.transcription_status, summary.transcription_status)
+        self._transcription_status.setText(status)
+        self._transcribe.setText(
+            "再実行" if summary.transcription_status != "NOT_STARTED" else "実行"
+        )
+        self._update_transcription_availability()
+
+    def _selected_analysis_session(self) -> SessionSummary | None:
+        value = self._analysis_session.currentData()
+        return value if isinstance(value, SessionSummary) else None
 
     def _close_if_requested(self) -> None:
         if self._close_requested:
@@ -492,6 +564,8 @@ class MainWindow(QMainWindow):
         self._system_audio.setEnabled(enabled)
         self._refresh.setEnabled(enabled)
         self._screen_target.setEnabled(enabled)
+        self._analysis_session.setEnabled(enabled)
+        self._refresh_sessions.setEnabled(enabled)
 
     def show_information(self, message: str) -> None:
         self._message.setText(message)

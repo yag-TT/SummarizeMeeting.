@@ -14,6 +14,7 @@ from summarize_meeting.application.recording_controller import (
 from summarize_meeting.domain.capture import AudioDevice, ScreenTarget
 from summarize_meeting.domain.session import RecordingSession
 from summarize_meeting.infrastructure.paths import PortableAppPaths
+from summarize_meeting.infrastructure.session_catalog import FileSessionCatalog
 from summarize_meeting.infrastructure.settings import (
     AppSettings,
     FileSettingsRepository,
@@ -76,6 +77,25 @@ class _UiController(QObject):
         self.replaced_screen_targets.append(target)
 
 
+class _UiTranscriptionController(QObject):
+    job_started = Signal(str)
+    job_progress = Signal(int, str)
+    job_finished = Signal(str, str)
+    job_failed = Signal(str, str)
+    job_canceled = Signal(str)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.is_running = False
+        self.started_paths: list[Path] = []
+
+    def start(self, path: Path) -> None:
+        self.started_paths.append(path)
+
+    def cancel(self) -> None:
+        self.is_running = False
+
+
 def test_ui_restores_devices_by_saved_id(qapp: QApplication) -> None:
     controller = _UiController(microphone_id="mic-2", system_id="system-1")
     window = MainWindow(controller)  # type: ignore[arg-type]
@@ -84,6 +104,55 @@ def test_ui_restores_devices_by_saved_id(qapp: QApplication) -> None:
 
     assert window._microphone.currentData().id == "mic-2"  # noqa: SLF001
     assert window._system_audio.currentData().id == "system-1"  # noqa: SLF001
+    window.close()
+
+
+def test_ui_selects_past_session_and_starts_transcription(
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    older = tmp_path / "older"
+    newer = tmp_path / "newer"
+    for session, title, started_at in (
+        (older, "朝会", "2026-08-08T09:00:00+09:00"),
+        (newer, "設計会議", "2026-08-08T11:00:00+09:00"),
+    ):
+        audio = session / "audio"
+        audio.mkdir(parents=True)
+        (session / "analysis").mkdir()
+        (session / "output").mkdir()
+        (session / "session.json").write_text(
+            f'{{"title":"{title}","started_at":"{started_at}","status":"RECORDED"}}',
+            encoding="utf-8",
+        )
+        (audio / "manifest.json").write_text('{"tracks":{}}', encoding="utf-8")
+        (audio / "microphone.wav").write_bytes(b"wave")
+    (newer / "analysis" / "transcription.json").write_text(
+        '{"status":"SUCCEEDED"}', encoding="utf-8"
+    )
+    (newer / "output" / "transcript.md").write_text("# Transcript\n", encoding="utf-8")
+    recording = _UiController(microphone_id=None, system_id=None)
+    recording.meetings_directory = tmp_path
+    transcription = _UiTranscriptionController()
+    window = MainWindow(  # type: ignore[arg-type]
+        recording,
+        transcription,  # type: ignore[arg-type]
+        FileSessionCatalog(tmp_path),
+    )
+
+    window.refresh_analysis_sessions()
+
+    assert window._analysis_session.count() == 2  # noqa: SLF001
+    assert window._analysis_session.currentData().path == newer.resolve()  # noqa: SLF001
+    assert window._transcription_status.text() == "完了"  # noqa: SLF001
+    assert window._transcribe.text() == "再実行"  # noqa: SLF001
+    window._analysis_session.setCurrentIndex(1)  # noqa: SLF001
+    assert window._analysis_session.currentData().path == older.resolve()  # noqa: SLF001
+    assert window._transcription_status.text() == "未実行"  # noqa: SLF001
+
+    window._toggle_transcription()  # noqa: SLF001
+
+    assert transcription.started_paths == [older.resolve()]
     window.close()
 
 
