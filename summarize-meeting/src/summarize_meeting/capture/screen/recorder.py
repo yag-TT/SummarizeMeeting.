@@ -12,7 +12,10 @@ from summarize_meeting.capture.screen.base import (
 from summarize_meeting.capture.screen.change_detector import ScreenChangeDetector
 from summarize_meeting.domain.capture import ScreenTarget
 from summarize_meeting.domain.session import ComponentStatus
-from summarize_meeting.infrastructure.screenshot_store import ScreenshotStore
+from summarize_meeting.infrastructure.screenshot_store import (
+    ScreenshotSaveError,
+    ScreenshotStore,
+)
 
 StateCallback = Callable[[ComponentStatus, str | None, str | None], None]
 CountCallback = Callable[[int], None]
@@ -83,6 +86,7 @@ class ScreenRecorder:
 
     def _run(self) -> None:
         paused = False
+        save_failed = False
         self._state_callback(ComponentStatus.RUNNING, None, None)
         try:
             while not self._stop.wait(self._interval):
@@ -100,15 +104,32 @@ class ScreenRecorder:
                     decision = self._detector.evaluate(frame, int(timestamp_ms))
                     if decision is None:
                         continue
-                    self._store.save(
-                        frame,
-                        timestamp_ms=int(timestamp_ms),
-                        reason=decision.reason,
-                        metrics={
-                            "changed_ratio": decision.metrics.changed_ratio,
-                            "mean_abs_diff": decision.metrics.mean_abs_diff,
-                        },
-                    )
+                    try:
+                        self._store.save(
+                            frame,
+                            timestamp_ms=int(timestamp_ms),
+                            reason=decision.reason,
+                            metrics={
+                                "changed_ratio": decision.metrics.changed_ratio,
+                                "mean_abs_diff": decision.metrics.mean_abs_diff,
+                            },
+                        )
+                    except ScreenshotSaveError as exc:
+                        if not save_failed:
+                            save_failed = True
+                            self._state_callback(
+                                ComponentStatus.RUNNING,
+                                "SCREEN_SAVE_FAILED",
+                                str(exc),
+                            )
+                        continue
+                    if save_failed:
+                        save_failed = False
+                        self._state_callback(
+                            ComponentStatus.RUNNING,
+                            None,
+                            "画面保存が復旧しました",
+                        )
                     self._detector.mark_saved(decision)
                     self._count_callback(self._store.count)
                 except ScreenTargetPausedError as exc:

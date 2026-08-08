@@ -2,6 +2,7 @@ import json
 import wave
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 from summarize_meeting.application.recovery_service import SessionRecoveryService
@@ -74,3 +75,31 @@ def test_recovery_skips_corrupt_segment_and_keeps_valid_audio(tmp_path: Path) ->
     assert result.tracks[0].skipped_segments == 1
     assert any("000001.wav" in warning for warning in result.warnings)
     assert (work / "000001.wav").read_bytes() == b"not-a-wave"
+
+
+def test_recovery_promotes_valid_screenshot_temp_and_keeps_corrupt_temp(
+    tmp_path: Path,
+) -> None:
+    session_root = _write_interrupted_session(tmp_path)
+    screenshots = session_root / "screenshots"
+    screenshots.mkdir()
+    success, encoded = cv2.imencode(
+        ".png",
+        np.full((10, 12, 3), 100, dtype=np.uint8),
+    )
+    assert success
+    valid_temp = screenshots / "000001.png.tmp"
+    valid_temp.write_bytes(encoded.tobytes())
+    corrupt_temp = screenshots / "000002.png.tmp"
+    corrupt_temp.write_bytes(b"not-a-png")
+    service = SessionRecoveryService(tmp_path)
+
+    result = service.recover(service.scan()[0])
+
+    assert result.recovered_screenshots == ("screenshots/000001.png",)
+    assert (screenshots / "000001.png").is_file()
+    assert not valid_temp.exists()
+    assert corrupt_temp.read_bytes() == b"not-a-png"
+    assert any("000002.png.tmp" in warning for warning in result.warnings)
+    session = json.loads((session_root / "session.json").read_text(encoding="utf-8"))
+    assert session["recovery"]["screenshots"] == ["screenshots/000001.png"]

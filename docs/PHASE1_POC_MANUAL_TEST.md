@@ -182,6 +182,19 @@ uv run pytest -q tests/integration/test_wgc_backend.py
 8. `data/settings.corrupt-<timestamp>.json` に不正JSONの原本がそのまま退避されていることを確認する。
 9. 新しい録音開始後に正常な `settings.json` がatomic保存されることを確認する。
 
+### 4.8 スクリーンショット保存失敗とtemp復旧
+
+テスト専用の保存失敗注入を使用し、実際の会議では実施しない。
+
+1. 画面取得を含むテスト録音を開始し、最初のPNG保存だけを失敗させる。
+2. 画面状態が `SCREEN_SAVE_FAILED` の警告を示す一方、画面Captureと両Audioが継続することを確認する。
+3. 保存失敗を解除し、「画面保存が復旧しました」と表示され、初回画像が保存されることを確認する。
+4. 失敗中のframeでbaselineが進まず、復旧後の画像が欠落しないことを確認する。
+5. 別の中断テスト用セッションの `screenshots/` に、正常なPNG bytesを持つ `000001.png.tmp` と不正bytesの `000002.png.tmp` を置く。
+6. アプリ起動時の中断セッション復旧を実行する。
+7. 正常tempが `000001.png` へ復旧され、不正tempは元の名前・内容のまま残ることを確認する。
+8. `session.json` の `recovery.screenshots` に `screenshots/000001.png` があり、不正tempのwarningがあることを確認する。
+
 ## 5. 15分テスト
 
 2分スモークテスト成功後に実施する。

@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import cv2
 from PySide6.QtCore import QObject, Signal
 
 from summarize_meeting.domain.session import SessionStatus
@@ -46,6 +47,7 @@ class RecoveredTrack:
 class RecoveryResult:
     session_root: str
     tracks: tuple[RecoveredTrack, ...]
+    recovered_screenshots: tuple[str, ...]
     warnings: tuple[str, ...]
 
 
@@ -86,6 +88,7 @@ class SessionRecoveryService:
                     recovered_tracks.append(result)
         else:
             warnings.append("audio/.work が見つかりません")
+        recovered_screenshots = self._recover_screenshots(candidate.root, warnings)
 
         session_value = json.loads(candidate.session_json.read_text(encoding="utf-8"))
         recovered_at = datetime.now().astimezone().isoformat(timespec="seconds")
@@ -93,6 +96,7 @@ class SessionRecoveryService:
         session_value["recovery"] = {
             "recovered_at": recovered_at,
             "tracks": [asdict(track) for track in recovered_tracks],
+            "screenshots": list(recovered_screenshots),
             "warnings": warnings,
         }
         warning_list = session_value.setdefault("warnings", [])
@@ -101,7 +105,11 @@ class SessionRecoveryService:
                 "code": "SESSION_RECOVERY_COMPLETED"
                 if recovered_tracks
                 else "SESSION_RECOVERY_NO_AUDIO",
-                "message": self._summary_message(recovered_tracks, warnings),
+                "message": self._summary_message(
+                    recovered_tracks,
+                    recovered_screenshots,
+                    warnings,
+                ),
                 "timestamp_ms": session_value.get("duration_ms") or 0,
             }
         )
@@ -113,14 +121,43 @@ class SessionRecoveryService:
                 "timestamp_ms": session_value.get("duration_ms") or 0,
                 "type": "session_recovered",
                 "tracks": [asdict(track) for track in recovered_tracks],
+                "screenshots": list(recovered_screenshots),
                 "warnings": warnings,
             },
         )
         return RecoveryResult(
             session_root=str(candidate.root),
             tracks=tuple(recovered_tracks),
+            recovered_screenshots=recovered_screenshots,
             warnings=tuple(warnings),
         )
+
+    @staticmethod
+    def _recover_screenshots(session_root: Path, warnings: list[str]) -> tuple[str, ...]:
+        screenshots_dir = session_root / "screenshots"
+        if not screenshots_dir.is_dir():
+            return ()
+        recovered: list[str] = []
+        for temporary in sorted(screenshots_dir.glob("*.png.tmp")):
+            output = temporary.with_suffix("")
+            if output.exists():
+                warnings.append(
+                    f"screenshots/{temporary.name}: 正式PNGが既に存在するためtempを保持しました"
+                )
+                continue
+            decoded = cv2.imread(str(temporary), cv2.IMREAD_UNCHANGED)
+            if decoded is None or decoded.size == 0:
+                warnings.append(
+                    f"screenshots/{temporary.name}: decodeできないためtempを保持しました"
+                )
+                continue
+            try:
+                os.replace(temporary, output)
+            except OSError as exc:
+                warnings.append(f"screenshots/{temporary.name}: 復旧rename失敗: {exc}")
+                continue
+            recovered.append(str(output.relative_to(session_root)).replace("\\", "/"))
+        return tuple(recovered)
 
     def _recover_track(
         self,
@@ -251,9 +288,13 @@ class SessionRecoveryService:
     @staticmethod
     def _summary_message(
         tracks: Sequence[RecoveredTrack],
+        screenshots: Sequence[str],
         warnings: Sequence[str],
     ) -> str:
-        return f"復旧トラック {len(tracks)}件、警告 {len(warnings)}件"
+        return (
+            f"復旧トラック {len(tracks)}件、"
+            f"復旧画像 {len(screenshots)}件、警告 {len(warnings)}件"
+        )
 
 
 class RecoveryController(QObject):

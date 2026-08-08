@@ -737,7 +737,9 @@ screenshots/000002.png
 {"schema_version":1,"sequence":1,"timestamp_ms":0,"file":"000001.png","width":1920,"height":1080,"reason":"initial","metrics":{"changed_ratio":1.0,"mean_abs_diff":1.0}}
 ```
 
-PNGは同一ディレクトリ内の一時名へ保存し、decode検証後にrenameする。メタデータイベントは画像のrename成功後に追記する。
+PNGは同一ディレクトリの `<sequence>.png.tmp` へ保存してflush、`fsync` し、そのtempをOpenCVで再decodeして寸法を検証した後に `os.replace` で正式名へrenameする。メタデータイベントは画像のrename成功後に追記し、JSONLもflush、`fsync` する。
+
+encode、temp書込み、decode検証、rename、metadata追記の失敗は `ScreenshotSaveError` としてScreen Workerへ返す。Workerは `RUNNING / SCREEN_SAVE_FAILED` warningをepisodeごとに1回記録し、baselineを更新せず次の評価周期で保存を再試行する。次の保存成功時に復旧を通知してからbaselineを更新する。保存失敗だけではCapture sessionとAudioを停止しない。
 
 ## 12. スレッドとプロセス
 
@@ -1052,6 +1054,8 @@ Phase 1では会議予定時間入力を必須にしないため、最低空き�
 6. 元segmentは復旧成功確認まで削除しない。
 7. `session.json` を `INTERRUPTED` に更新し、復旧結果をwarningへ追加する。
 8. 画面一時ファイルはdecode可能なら正式名へ復旧し、不可能なら残してログへ記録する。
+
+画面temp復旧では `screenshots/*.png.tmp` を再decodeする。同名の正式PNGがなくdecode可能な場合だけ `.tmp` を外してatomic renameし、復旧した相対パスを `session.json.recovery.screenshots` と `session_recovered` eventへ記録する。decode不能、同名正式PNGあり、rename失敗の場合はtemp原本を変更せずwarningへ記録する。
 
 復旧処理は自動検出するが、原本削除や破損segmentの切り捨てはユーザー確認なしに行わない。
 
