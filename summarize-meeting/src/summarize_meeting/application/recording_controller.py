@@ -11,6 +11,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal
 
 from summarize_meeting.application.storage_monitor import (
+    ENHANCED_MICROPHONE_RESERVE_BYTES,
     StorageCapacity,
     StorageCapacityCheckError,
     StorageMonitor,
@@ -214,7 +215,11 @@ class RecordingController(QObject):
         title = title.strip()
         if not title:
             raise ValueError("会議名を入力してください")
-        self._storage_monitor.check_start_allowed()
+        self._storage_monitor.check_start_allowed(
+            additional_required_bytes=(
+                ENHANCED_MICROPHONE_RESERVE_BYTES if microphone is not None else 0
+            )
+        )
 
         session = RecordingSession(title=title, status=SessionStatus.PREPARING)
         session.retention = asdict(self._settings.retention)

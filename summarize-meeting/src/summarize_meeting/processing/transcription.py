@@ -269,6 +269,11 @@ class TranscriptionService:
                 raise TranscriptionError(f"{manifest_name}の音声ファイル名が不正です")
             if not audio_path.is_file():
                 raise TranscriptionError(f"音声ファイルが見つかりません: {audio_path.name}")
+            if manifest_name == "microphone":
+                audio_path = _preferred_microphone_audio(
+                    audio_directory.parent,
+                    raw_audio_path=audio_path,
+                )
             offset_value = value.get("estimated_start_offset_ms", 0)
             if offset_value is None:
                 offset_value = 0
@@ -334,6 +339,32 @@ def _format_timestamp(value: float) -> str:
     minutes, remainder = divmod(remainder, 60_000)
     seconds, milliseconds = divmod(remainder, 1000)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{milliseconds:03d}"
+
+
+def _preferred_microphone_audio(session_directory: Path, *, raw_audio_path: Path) -> Path:
+    metadata_path = session_directory / "analysis" / "audio_enhancement.json"
+    try:
+        value = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return raw_audio_path
+    if not isinstance(value, dict) or value.get("status") != "SUCCEEDED":
+        return raw_audio_path
+    source_file = value.get("source_file")
+    output_file = value.get("output_file")
+    if not isinstance(source_file, str) or not isinstance(output_file, str):
+        return raw_audio_path
+    source_relative = Path(source_file)
+    output_relative = Path(output_file)
+    if source_relative.is_absolute() or output_relative.is_absolute():
+        return raw_audio_path
+    source = (session_directory / source_relative).resolve()
+    output = (session_directory / output_relative).resolve()
+    audio_directory = (session_directory / "audio").resolve()
+    if source != raw_audio_path.resolve() or output.parent != audio_directory:
+        return raw_audio_path
+    if output.name != "microphone.enhanced.wav" or not output.is_file():
+        return raw_audio_path
+    return output
 
 
 def _is_cuda_runtime_error(error: RuntimeError) -> bool:

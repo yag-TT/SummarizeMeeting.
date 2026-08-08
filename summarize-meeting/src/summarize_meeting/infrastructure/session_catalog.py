@@ -12,6 +12,9 @@ class SessionSummary:
     title: str
     started_at: str | None
     recording_status: str
+    audio_enhancement_status: str
+    can_enhance_audio: bool
+    has_enhanced_audio: bool
     transcription_status: str
     can_transcribe: bool
     diarization_status: str
@@ -55,6 +58,11 @@ class FileSessionCatalog:
             title = _non_empty_string(metadata.get("title")) or directory.name
             started_at = _non_empty_string(metadata.get("started_at"))
             recording_status = _non_empty_string(metadata.get("status")) or "UNKNOWN"
+            audio_enhancement_status = _analysis_status(
+                directory,
+                job="audio_enhancement",
+                result_name="audio_enhancement.json",
+            )
             transcription_status = _transcription_status(directory)
             diarization_status = _analysis_status(
                 directory,
@@ -75,6 +83,12 @@ class FileSessionCatalog:
             can_transcribe = (audio_directory / "manifest.json").is_file() and any(
                 audio_directory.glob("*.wav")
             )
+            microphone_audio = _microphone_audio_path(directory)
+            can_enhance_audio = recording_status == "RECORDED" and microphone_audio is not None
+            has_enhanced_audio = (
+                audio_enhancement_status == "SUCCEEDED"
+                and (audio_directory / "microphone.enhanced.wav").is_file()
+            )
             can_diarize = (
                 recording_status == "RECORDED"
                 and transcription_status == "SUCCEEDED"
@@ -89,6 +103,9 @@ class FileSessionCatalog:
                 title=title,
                 started_at=started_at,
                 recording_status=recording_status,
+                audio_enhancement_status=audio_enhancement_status,
+                can_enhance_audio=can_enhance_audio,
+                has_enhanced_audio=has_enhanced_audio,
                 transcription_status=transcription_status,
                 can_transcribe=can_transcribe,
                 diarization_status=diarization_status,
@@ -162,6 +179,25 @@ def _has_system_audio(directory: Path) -> bool:
     else:
         return False
     return audio_path.is_file()
+
+
+def _microphone_audio_path(directory: Path) -> Path | None:
+    manifest = _read_object(directory / "audio" / "manifest.json")
+    tracks = manifest.get("tracks")
+    track = tracks.get("microphone") if isinstance(tracks, dict) else None
+    value = track.get("file") if isinstance(track, dict) else None
+    if not isinstance(value, str) or not value:
+        return None
+    relative = Path(value)
+    if relative.is_absolute():
+        return None
+    if relative.parts == (relative.name,):
+        audio_path = directory / "audio" / relative
+    elif relative.parts == ("audio", relative.name):
+        audio_path = directory / relative
+    else:
+        return None
+    return audio_path if audio_path.is_file() else None
 
 
 def _has_screenshots(directory: Path) -> bool:

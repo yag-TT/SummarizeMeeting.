@@ -131,6 +131,55 @@ def test_transcription_accepts_session_relative_audio_path(tmp_path: Path) -> No
     assert [path.name for path in backend.paths] == ["microphone.wav", "system.wav"]
 
 
+def test_transcription_prefers_successful_enhanced_microphone_audio(tmp_path: Path) -> None:
+    session = _session(tmp_path)
+    enhanced = session / "audio" / "microphone.enhanced.wav"
+    _write_wave(enhanced)
+    (session / "analysis" / "audio_enhancement.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "status": "SUCCEEDED",
+                "source_file": "audio/microphone.wav",
+                "output_file": "audio/microphone.enhanced.wav",
+            }
+        ),
+        encoding="utf-8",
+    )
+    backend = _Backend()
+
+    TranscriptionService(backend, model_name="test-model").run(session)
+
+    assert [path.name for path in backend.paths] == ["microphone.enhanced.wav", "system.wav"]
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"status": "FAILED", "output_file": "audio/microphone.enhanced.wav"},
+        {
+            "status": "SUCCEEDED",
+            "source_file": "audio/microphone.wav",
+            "output_file": "../outside.wav",
+        },
+    ],
+)
+def test_transcription_falls_back_to_raw_for_invalid_enhancement(
+    tmp_path: Path,
+    metadata: dict[str, str],
+) -> None:
+    session = _session(tmp_path)
+    (session / "analysis" / "audio_enhancement.json").write_text(
+        json.dumps(metadata),
+        encoding="utf-8",
+    )
+    backend = _Backend()
+
+    TranscriptionService(backend, model_name="test-model").run(session)
+
+    assert backend.paths[0].name == "microphone.wav"
+
+
 def test_transcription_requires_at_least_one_supported_track(tmp_path: Path) -> None:
     session = _session(tmp_path)
     (session / "audio" / "manifest.json").write_text(
