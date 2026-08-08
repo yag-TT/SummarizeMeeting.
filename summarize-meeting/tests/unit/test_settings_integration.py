@@ -21,7 +21,10 @@ class _UiController(QObject):
     component_changed = Signal(str, str, str)
     meter_changed = Signal(str, float)
     screenshot_count_changed = Signal(int)
+    session_preparing = Signal(str)
     session_started = Signal(str)
+    session_start_failed = Signal(str, str)
+    session_start_cancelled = Signal(str)
     session_finished = Signal(str)
     fatal_error = Signal(str)
 
@@ -63,6 +66,32 @@ def test_ui_does_not_fallback_when_saved_device_is_missing(qapp: QApplication) -
 
     assert window._microphone.currentData() is None  # noqa: SLF001
     assert "前回のマイクが見つからない" in window._message.text()  # noqa: SLF001
+    window.close()
+
+
+def test_ui_disables_inputs_while_preparing_and_restores_them_after_cancel(
+    qapp: QApplication,
+) -> None:
+    controller = _UiController(microphone_id=None, system_id=None)
+    window = MainWindow(controller)  # type: ignore[arg-type]
+
+    window._on_session_preparing("C:/sessions/preparing")  # noqa: SLF001
+
+    assert not window._title.isEnabled()  # noqa: SLF001
+    assert not window._microphone.isEnabled()  # noqa: SLF001
+    assert not window._system_audio.isEnabled()  # noqa: SLF001
+    assert not window._screen_target.isEnabled()  # noqa: SLF001
+    assert not window._refresh.isEnabled()  # noqa: SLF001
+    assert not window._start.isEnabled()  # noqa: SLF001
+    assert window._stop.isEnabled()  # noqa: SLF001
+    assert "準備しています" in window._message.text()  # noqa: SLF001
+
+    window._on_session_start_cancelled("C:/sessions/preparing")  # noqa: SLF001
+
+    assert window._title.isEnabled()  # noqa: SLF001
+    assert window._start.isEnabled()  # noqa: SLF001
+    assert not window._stop.isEnabled()  # noqa: SLF001
+    assert "キャンセルしました" in window._message.text()  # noqa: SLF001
     window.close()
 
 

@@ -30,6 +30,7 @@ class MainWindow(QMainWindow):
         self._started_at: datetime | None = None
         self._session_path: Path | None = None
         self._sources_loaded = False
+        self._close_requested = False
         self.setWindowTitle("Summarize Meeting - Phase 1 PoC")
         self.resize(880, 520)
 
@@ -100,7 +101,10 @@ class MainWindow(QMainWindow):
         controller.screenshot_count_changed.connect(
             lambda count: self._screenshots.setText(f"保存画像 {count}")
         )
+        controller.session_preparing.connect(self._on_session_preparing)
         controller.session_started.connect(self._on_session_started)
+        controller.session_start_failed.connect(self._on_session_start_failed)
+        controller.session_start_cancelled.connect(self._on_session_start_cancelled)
         controller.session_finished.connect(self._on_session_finished)
         controller.fatal_error.connect(self.show_error)
         QTimer.singleShot(0, self.refresh_sources)
@@ -183,7 +187,10 @@ class MainWindow(QMainWindow):
 
     def _stop_recording(self) -> None:
         self._stop.setEnabled(False)
-        self.show_information("記録を確定しています。しばらくお待ちください。")
+        if self._started_at is None:
+            self.show_information("録音の準備をキャンセルしています。")
+        else:
+            self.show_information("記録を確定しています。しばらくお待ちください。")
         self._controller.stop_session()
 
     def _replace_screen(self) -> None:
@@ -193,6 +200,17 @@ class MainWindow(QMainWindow):
             return
         self._controller.replace_screen_target(target)
 
+    def _on_session_preparing(self, path: str) -> None:
+        self._session_path = Path(path)
+        self._started_at = None
+        self._timer.stop()
+        self._set_inputs_enabled(False)
+        self._start.setEnabled(False)
+        self._stop.setEnabled(True)
+        self._reselect.setEnabled(False)
+        self._screenshots.setText("保存画像 0")
+        self.show_information("録音デバイスを準備しています。")
+
     def _on_session_started(self, path: str) -> None:
         self._session_path = Path(path)
         self._started_at = datetime.now()
@@ -200,18 +218,41 @@ class MainWindow(QMainWindow):
         self._set_inputs_enabled(False)
         self._start.setEnabled(False)
         self._stop.setEnabled(True)
+        self._refresh.setEnabled(True)
+        self._screen_target.setEnabled(True)
         self._reselect.setEnabled(True)
         self._screenshots.setText("保存画像 0")
         self.show_information(f"記録中: {path}")
 
     def _on_session_finished(self, path: str) -> None:
+        self._reset_after_session()
+        self.show_information(f"記録を保存しました: {path}")
+        self._close_if_requested()
+
+    def _on_session_start_failed(self, path: str, message: str) -> None:
+        self._session_path = Path(path)
+        self._reset_after_session()
+        self.show_error(message)
+        self._close_if_requested()
+
+    def _on_session_start_cancelled(self, path: str) -> None:
+        self._session_path = Path(path)
+        self._reset_after_session()
+        self.show_information("録音の開始をキャンセルしました。")
+        self._close_if_requested()
+
+    def _reset_after_session(self) -> None:
         self._timer.stop()
         self._started_at = None
         self._set_inputs_enabled(True)
         self._start.setEnabled(True)
         self._stop.setEnabled(False)
         self._reselect.setEnabled(False)
-        self.show_information(f"記録を保存しました: {path}")
+
+    def _close_if_requested(self) -> None:
+        if self._close_requested:
+            self._close_requested = False
+            QTimer.singleShot(0, self.close)
 
     def _on_component_changed(self, component: str, state: str, detail: str) -> None:
         rows = {
@@ -241,8 +282,8 @@ class MainWindow(QMainWindow):
         self._title.setEnabled(enabled)
         self._microphone.setEnabled(enabled)
         self._system_audio.setEnabled(enabled)
-        self._refresh.setEnabled(True)
-        self._screen_target.setEnabled(True)
+        self._refresh.setEnabled(enabled)
+        self._screen_target.setEnabled(enabled)
 
     def show_information(self, message: str) -> None:
         self._message.setText(message)
@@ -262,18 +303,23 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         if self._controller.is_recording:
+            preparing = self._started_at is None
             answer = QMessageBox.question(
                 self,
-                "録音中です",
-                "録音を終了してアプリを閉じますか？",
+                "録音準備中です" if preparing else "録音中です",
+                (
+                    "録音の準備をキャンセルしてアプリを閉じますか？"
+                    if preparing
+                    else "録音を終了してアプリを閉じますか？"
+                ),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
             if answer != QMessageBox.StandardButton.Yes:
                 event.ignore()
                 return
+            self._close_requested = True
             self._controller.stop_session()
             event.ignore()
-            self._controller.session_finished.connect(lambda _path: self.close())
             return
         event.accept()

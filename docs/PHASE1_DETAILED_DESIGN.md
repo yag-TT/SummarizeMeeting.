@@ -438,6 +438,10 @@ User                   UI            Controller       Workers/Storage
 
 start gateは完全なサンプル同期を保証しない。各Audio Workerは最初のread完了時刻とchunk長から、そのトラックの推定開始offsetを計算し、manifestへ保存する。
 
+`start_session` は入力検証、容量preflight、Session作成、session log作成までをUI threadで完了した後、`session_preparing` を通知して専用startup threadを開始し、直ちにUIへ制御を返す。デバイスopen、READY待ち、Screen Worker準備、容量監視開始はstartup threadで行い、最大5秒のAudio開始待ちでUI event loopを停止させない。
+
+PREPARING中の終了操作はstartup cancellation eventを設定する。startup threadはREADY待ちを最大50 ms間隔で中断確認し、未解放のAudio start gateを解放して各Workerをcooperativeに停止した後、Sessionを `FAILED_TO_START`、warningを `SESSION_START_CANCELLED` として確定する。Screen・容量監視・Sessionの `RECORDING` 遷移・Audio gate解放・`session_started` 通知は同じController排他区間で確定し、開始と停止の競合を防ぐ。
+
 ## 10. 音声取得詳細
 
 ### 10.1 PC音声の範囲

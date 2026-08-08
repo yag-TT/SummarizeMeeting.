@@ -43,7 +43,10 @@ class RecordingController(QObject):
     component_changed = Signal(str, str, str)
     meter_changed = Signal(str, float)
     screenshot_count_changed = Signal(int)
+    session_preparing = Signal(str)
     session_started = Signal(str)
+    session_start_failed = Signal(str, str)
+    session_start_cancelled = Signal(str)
     session_finished = Signal(str)
     fatal_error = Signal(str)
 
@@ -79,6 +82,8 @@ class RecordingController(QObject):
         self._audio_recorders: dict[ComponentKind, AudioTrackRecorder] = {}
         self._screen_recorder: ScreenRecorder | None = None
         self._lock = threading.RLock()
+        self._start_thread: threading.Thread | None = None
+        self._startup_cancel = threading.Event()
         self._stop_thread: threading.Thread | None = None
         self._audio_unavailable_notified = False
         self._screen_disabled_by_storage = False
@@ -121,6 +126,8 @@ class RecordingController(QObject):
     ) -> Path:
         if self.is_recording:
             raise RuntimeError("既に録音中です")
+        if self._start_thread is not None and self._start_thread.is_alive():
+            raise RuntimeError("前の録音準備を終了しています")
         if microphone is None and system_audio is None:
             raise ValueError("マイクまたはPC音声を1つ以上選択してください")
         title = title.strip()
@@ -175,72 +182,146 @@ class RecordingController(QObject):
             self._session = session
             self._session_paths = paths
             self._session_log = session_log
+            self._audio_recorders = {}
+            self._screen_recorder = None
             self._audio_unavailable_notified = False
             self._screen_disabled_by_storage = False
             self._screenshot_count = 0
+            self._startup_cancel = threading.Event()
 
         self._append_event("session_preparing")
         self._set_component(ComponentKind.SESSION_STORAGE, ComponentStatus.RUNNING)
-        self._audio_recorders = {}
-        audio_start_gate = threading.Event()
-        if microphone is not None:
-            recorder = self._create_audio_recorder(
-                ComponentKind.MICROPHONE,
-                microphone,
-                "microphone",
-                paths,
-                audio_start_gate,
-            )
-            self._audio_recorders[ComponentKind.MICROPHONE] = recorder
-            recorder.start()
-        else:
-            self._set_component(ComponentKind.MICROPHONE, ComponentStatus.NOT_CONFIGURED)
-
-        if system_audio is not None:
-            recorder = self._create_audio_recorder(
-                ComponentKind.SYSTEM_AUDIO,
-                system_audio,
-                "system",
-                paths,
-                audio_start_gate,
-            )
-            self._audio_recorders[ComponentKind.SYSTEM_AUDIO] = recorder
-            recorder.start()
-        else:
-            self._set_component(ComponentKind.SYSTEM_AUDIO, ComponentStatus.NOT_CONFIGURED)
-
-        ready_audio = self._wait_for_audio_initialization()
-        if not ready_audio:
-            audio_start_gate.set()
-            self._fail_session_start(paths)
-            raise RuntimeError(
-                "マイクとPC音声のどちらも開始できませんでした。デバイスを再選択してください。"
-            )
-
-        audio_start_gate.set()
-        if screen_target is not None:
-            self._screen_recorder = self._create_screen_recorder(screen_target, paths)
-            self._screen_recorder.start()
-        else:
-            self._screen_recorder = None
-            self._set_component(ComponentKind.SCREEN, ComponentStatus.NOT_CONFIGURED)
-
-        with self._lock:
-            session.status = SessionStatus.RECORDING
-            self._repository.save(paths, session)
-        self._append_event(
-            "session_started",
-            audio_components=[kind.value for kind in ready_audio],
-            screen_configured=screen_target is not None,
+        self.session_preparing.emit(str(paths.root))
+        self._start_thread = threading.Thread(
+            target=self._start_session_worker,
+            args=(microphone, system_audio, screen_target, paths),
+            name="session-startup",
+            daemon=True,
         )
-        self._storage_monitor.start(
-            low_capacity_callback=self._on_low_disk_space,
-            check_failed_callback=self._on_storage_check_failed,
-        )
-        self.session_started.emit(str(paths.root))
-        self._remember_devices(microphone, system_audio)
-        self._notify_if_all_audio_failed()
+        self._start_thread.start()
         return paths.root
+
+    def _start_session_worker(
+        self,
+        microphone: AudioDevice | None,
+        system_audio: AudioDevice | None,
+        screen_target: ScreenTarget | None,
+        paths: SessionPaths,
+    ) -> None:
+        audio_start_gate = threading.Event()
+        try:
+            if self._startup_cancel.is_set():
+                self._cancel_session_start(paths, audio_start_gate)
+                return
+            self._audio_recorders = {}
+            if microphone is not None:
+                recorder = self._create_audio_recorder(
+                    ComponentKind.MICROPHONE,
+                    microphone,
+                    "microphone",
+                    paths,
+                    audio_start_gate,
+                )
+                self._audio_recorders[ComponentKind.MICROPHONE] = recorder
+                recorder.start()
+            else:
+                self._set_component(
+                    ComponentKind.MICROPHONE,
+                    ComponentStatus.NOT_CONFIGURED,
+                )
+
+            if system_audio is not None:
+                recorder = self._create_audio_recorder(
+                    ComponentKind.SYSTEM_AUDIO,
+                    system_audio,
+                    "system",
+                    paths,
+                    audio_start_gate,
+                )
+                self._audio_recorders[ComponentKind.SYSTEM_AUDIO] = recorder
+                recorder.start()
+            else:
+                self._set_component(
+                    ComponentKind.SYSTEM_AUDIO,
+                    ComponentStatus.NOT_CONFIGURED,
+                )
+
+            ready_audio, cancelled = self._wait_for_audio_initialization()
+            if cancelled:
+                self._cancel_session_start(paths, audio_start_gate)
+                return
+            if not ready_audio:
+                audio_start_gate.set()
+                message = (
+                    "マイクとPC音声のどちらも開始できませんでした。"
+                    "デバイスを再選択してください。"
+                )
+                self._fail_session_start(
+                    paths,
+                    warning_code="FAILED_TO_START",
+                    message=message,
+                    event_type="session_start_failed",
+                )
+                self.session_start_failed.emit(str(paths.root), message)
+                return
+
+            with self._lock:
+                if self._startup_cancel.is_set():
+                    cancelled = True
+                else:
+                    cancelled = False
+                    if screen_target is not None:
+                        self._screen_recorder = self._create_screen_recorder(
+                            screen_target,
+                            paths,
+                        )
+                        self._screen_recorder.start()
+                    else:
+                        self._screen_recorder = None
+                        self._set_component(
+                            ComponentKind.SCREEN,
+                            ComponentStatus.NOT_CONFIGURED,
+                        )
+                    self._storage_monitor.start(
+                        low_capacity_callback=self._on_low_disk_space,
+                        check_failed_callback=self._on_storage_check_failed,
+                    )
+                    assert self._session is not None
+                    self._session.status = SessionStatus.RECORDING
+                    self._repository.save(paths, self._session)
+                    audio_start_gate.set()
+                    self._append_event(
+                        "session_started",
+                        audio_components=[kind.value for kind in ready_audio],
+                        screen_configured=screen_target is not None,
+                    )
+                    self.session_started.emit(str(paths.root))
+            if cancelled:
+                self._cancel_session_start(paths, audio_start_gate)
+                return
+
+            self._remember_devices(microphone, system_audio)
+            self._notify_if_all_audio_failed()
+        except Exception as exc:
+            audio_start_gate.set()
+            self._log_session_exception(
+                "session_start_failed",
+                exc,
+                component="session",
+                error_code="SESSION_START_FAILED",
+            )
+            message = "録音の準備中にエラーが発生しました。デバイスを再選択してください。"
+            self._fail_session_start(
+                paths,
+                warning_code="SESSION_START_FAILED",
+                message=message,
+                event_type="session_start_failed",
+            )
+            self.session_start_failed.emit(str(paths.root), message)
+        finally:
+            with self._lock:
+                if self._start_thread is threading.current_thread():
+                    self._start_thread = None
 
     def replace_screen_target(self, target: ScreenTarget) -> None:
         with self._lock:
@@ -264,7 +345,20 @@ class RecordingController(QObject):
         self._append_event("screen_target_replaced", target=target.title)
 
     def stop_session(self) -> None:
-        if not self.is_recording:
+        with self._lock:
+            if self._session is None:
+                return
+            if self._session.status == SessionStatus.PREPARING:
+                if self._startup_cancel.is_set():
+                    return
+                self._startup_cancel.set()
+                cancel_start = True
+            elif self._session.status == SessionStatus.RECORDING:
+                cancel_start = False
+            else:
+                return
+        if cancel_start:
+            self._append_event("session_start_cancel_requested")
             return
         if self._stop_thread is not None and self._stop_thread.is_alive():
             return
@@ -329,10 +423,19 @@ class RecordingController(QObject):
             error_code=error_code,
         )
 
-    def _wait_for_audio_initialization(self) -> list[ComponentKind]:
+    def _wait_for_audio_initialization(self) -> tuple[list[ComponentKind], bool]:
         deadline = time.monotonic() + self._audio_start_timeout_seconds
-        for recorder in self._audio_recorders.values():
-            recorder.wait_until_initialized(max(0.0, deadline - time.monotonic()))
+        while not all(
+            recorder.startup_complete for recorder in self._audio_recorders.values()
+        ):
+            if self._startup_cancel.wait(
+                timeout=min(0.05, max(0.0, deadline - time.monotonic()))
+            ):
+                return [], True
+            if time.monotonic() >= deadline:
+                break
+        if self._startup_cancel.is_set():
+            return [], True
 
         ready: list[ComponentKind] = []
         for kind, recorder in self._audio_recorders.items():
@@ -351,11 +454,53 @@ class RecordingController(QObject):
                 "音声デバイスを "
                 f"{self._audio_start_timeout_seconds:g} 秒以内に開始できませんでした",
             )
-        return ready
+        return ready, False
 
-    def _fail_session_start(self, paths: SessionPaths) -> None:
+    def _cancel_session_start(
+        self,
+        paths: SessionPaths,
+        audio_start_gate: threading.Event,
+    ) -> None:
+        for recorder in self._audio_recorders.values():
+            if recorder.startup_complete:
+                recorder.request_stop()
+            else:
+                recorder.cancel_start(
+                    "SESSION_START_CANCELLED",
+                    "ユーザー操作により録音準備をキャンセルしました",
+                )
+        audio_start_gate.set()
+        message = "録音の開始をキャンセルしました。"
+        self._fail_session_start(
+            paths,
+            warning_code="SESSION_START_CANCELLED",
+            message=message,
+            event_type="session_start_cancelled",
+        )
+        self.session_start_cancelled.emit(str(paths.root))
+
+    def _fail_session_start(
+        self,
+        paths: SessionPaths,
+        *,
+        warning_code: str,
+        message: str,
+        event_type: str,
+    ) -> None:
         stats: dict[str, AudioTrackStats] = {}
         failures: list[str] = []
+        if self._screen_recorder is not None:
+            self._screen_recorder.request_stop()
+            try:
+                self._screen_recorder.finish()
+            except Exception as exc:
+                failures.append(f"screen: {exc}")
+                self._log_session_exception(
+                    "session_start_cleanup_failed",
+                    exc,
+                    component=ComponentKind.SCREEN.value,
+                    error_code="START_CLEANUP_FAILED",
+                )
         for kind, recorder in self._audio_recorders.items():
             recorder.request_stop()
             try:
@@ -371,6 +516,16 @@ class RecordingController(QObject):
                     error_code="START_CLEANUP_FAILED",
                 )
 
+        try:
+            self._storage_monitor.finish()
+        except Exception as exc:
+            failures.append(f"storage monitor: {exc}")
+            self._log_session_exception(
+                "session_start_cleanup_failed",
+                exc,
+                component=ComponentKind.SESSION_STORAGE.value,
+                error_code="START_CLEANUP_FAILED",
+            )
         self._set_component(ComponentKind.SESSION_STORAGE, ComponentStatus.STOPPED)
         self._write_audio_manifest(
             paths.audio / "manifest.json",
@@ -384,8 +539,8 @@ class RecordingController(QObject):
             self._session.duration_ms = (ended_ns - self._origin_ns) // 1_000_000
             self._session.status = SessionStatus.FAILED_TO_START
             self._session.add_warning(
-                "FAILED_TO_START",
-                "選択した音声デバイスを開始できませんでした",
+                warning_code,
+                message,
                 int(self._session.duration_ms),
             )
             for failure in failures:
@@ -394,7 +549,7 @@ class RecordingController(QObject):
                 )
             self._repository.save(paths, self._session)
         self._append_event(
-            "session_start_failed",
+            event_type,
             failure_count=len(failures),
             failures=failures,
         )
