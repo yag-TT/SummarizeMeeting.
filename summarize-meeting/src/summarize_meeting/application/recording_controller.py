@@ -97,6 +97,7 @@ class RecordingController(QObject):
         self._startup_cancel = threading.Event()
         self._stop_thread: threading.Thread | None = None
         self._audio_unavailable_notified = False
+        self._metadata_write_failed_notified = False
         self._screen_disabled_by_storage = False
         self._screenshot_count = 0
         self._finalize_progress_percent = -1
@@ -251,6 +252,7 @@ class RecordingController(QObject):
             self._audio_recorders = {}
             self._screen_recorder = None
             self._audio_unavailable_notified = False
+            self._metadata_write_failed_notified = False
             self._screen_disabled_by_storage = False
             self._screenshot_count = 0
             self._startup_cancel = threading.Event()
@@ -357,7 +359,11 @@ class RecordingController(QObject):
                     )
                     assert self._session is not None
                     self._session.status = SessionStatus.RECORDING
-                    self._repository.save(paths, self._session)
+                    self._try_save_session(
+                        paths,
+                        self._session,
+                        operation="session_started",
+                    )
                     audio_start_gate.set()
                     self._append_event(
                         "session_started",
@@ -410,7 +416,11 @@ class RecordingController(QObject):
         with self._lock:
             if self._session is not None and self._session_paths is not None:
                 self._session.screen = asdict(target)
-                self._repository.save(self._session_paths, self._session)
+                self._try_save_session(
+                    self._session_paths,
+                    self._session,
+                    operation="screen_target_replaced",
+                )
         self._append_event("screen_target_replaced", target=target.title)
 
     def stop_session(self) -> None:
@@ -628,7 +638,11 @@ class RecordingController(QObject):
                 self._session.add_warning(
                     "START_CLEANUP_FAILED", failure, int(self._session.duration_ms)
                 )
-            self._repository.save(paths, self._session)
+            self._try_save_session(
+                paths,
+                self._session,
+                operation="session_start_failed",
+            )
         self._append_event(
             event_type,
             failure_count=len(failures),
@@ -697,7 +711,7 @@ class RecordingController(QObject):
             if session is None or paths is None:
                 return
             session.status = SessionStatus.STOPPING
-            self._repository.save(paths, session)
+            self._try_save_session(paths, session, operation="session_stopping")
             audio_kinds = list(self._audio_recorders)
             self._finalize_track_ranges = {
                 kind: (
@@ -733,7 +747,7 @@ class RecordingController(QObject):
 
         with self._lock:
             session.status = SessionStatus.FINALIZING
-            self._repository.save(paths, session)
+            self._try_save_session(paths, session, operation="session_finalizing")
         self._emit_finalize_progress(15, "音声ファイルを確定しています")
 
         for kind, recorder in self._audio_recorders.items():
@@ -798,7 +812,16 @@ class RecordingController(QObject):
                 session.add_warning("FINALIZE_FAILED", failure, session.duration_ms)
             for warning in cleanup_warnings:
                 session.add_warning("AUDIO_WORK_CLEANUP_FAILED", warning, session.duration_ms)
-            self._repository.save(paths, session)
+            metadata_saved = self._try_save_session(
+                paths,
+                session,
+                operation="session_finished",
+            )
+            if not metadata_saved:
+                failure = "session metadata: final session.json write failed"
+                failures.append(failure)
+                session.status = SessionStatus.INTERRUPTED
+                session.add_warning("FINALIZE_FAILED", failure, session.duration_ms)
         self._emit_finalize_progress(99, "保存結果を確認しています")
         audio_summary = {
             track: {
@@ -944,7 +967,7 @@ class RecordingController(QObject):
             timestamp_ms = (time.perf_counter_ns() - self._origin_ns) // 1_000_000
             if error_code:
                 self._session.add_warning(error_code, message or error_code, int(timestamp_ms))
-            self._repository.append_event(
+            event_saved = self._try_append_repository_event(
                 self._session_paths,
                 {
                     "schema_version": 1,
@@ -955,9 +978,15 @@ class RecordingController(QObject):
                     "error_code": error_code,
                     "message": message,
                 },
+                operation="component_state_changed_event",
             )
-            self._repository.save(self._session_paths, self._session)
+            metadata_saved = self._try_save_session(
+                self._session_paths,
+                self._session,
+                operation="component_state_changed_session",
+            )
             session_log = self._session_log
+            effective_state = self._session.components[kind.value]
         if session_log is not None:
             level = (
                 "ERROR"
@@ -976,7 +1005,12 @@ class RecordingController(QObject):
                 error_code=error_code,
                 message=message,
             )
-        self.component_changed.emit(kind.value, status.value, message or "")
+        if not (kind == ComponentKind.SESSION_STORAGE and (not event_saved or not metadata_saved)):
+            self.component_changed.emit(
+                kind.value,
+                effective_state.status.value,
+                effective_state.message or "",
+            )
         self._notify_if_all_audio_failed()
 
     def _notify_if_all_audio_failed(self) -> None:
@@ -1007,7 +1041,7 @@ class RecordingController(QObject):
             if self._session_paths is None:
                 return
             timestamp_ms = (time.perf_counter_ns() - self._origin_ns) // 1_000_000
-            self._repository.append_event(
+            self._try_append_repository_event(
                 self._session_paths,
                 {
                     "schema_version": 1,
@@ -1015,6 +1049,7 @@ class RecordingController(QObject):
                     "type": event_type,
                     **extra,
                 },
+                operation=event_type,
             )
             session_log = self._session_log
         if session_log is not None:
@@ -1024,6 +1059,79 @@ class RecordingController(QObject):
                 timestamp_ms=int(timestamp_ms),
                 **extra,
             )
+
+    def _try_save_session(
+        self,
+        paths: SessionPaths,
+        session: RecordingSession,
+        *,
+        operation: str,
+    ) -> bool:
+        try:
+            self._repository.save(paths, session)
+        except OSError as exc:
+            self._handle_metadata_write_failure(exc, operation=operation)
+            return False
+        return True
+
+    def _try_append_repository_event(
+        self,
+        paths: SessionPaths,
+        event: dict[str, object],
+        *,
+        operation: str,
+    ) -> bool:
+        try:
+            self._repository.append_event(paths, event)
+        except OSError as exc:
+            self._handle_metadata_write_failure(exc, operation=operation)
+            return False
+        return True
+
+    def _handle_metadata_write_failure(self, error: OSError, *, operation: str) -> None:
+        message = (
+            "セッション情報を保存できません。音声録音を可能な限り継続しています。"
+            "保存先を確認してください。"
+        )
+        with self._lock:
+            timestamp_ms = (time.perf_counter_ns() - self._origin_ns) // 1_000_000
+            first_failure = not self._metadata_write_failed_notified
+            if self._session is not None:
+                self._session.set_component(
+                    ComponentKind.SESSION_STORAGE,
+                    ComponentStatus.FAILED,
+                    error_code="SESSION_METADATA_WRITE_FAILED",
+                    message=message,
+                )
+            if first_failure:
+                self._metadata_write_failed_notified = True
+                if self._session is not None:
+                    self._session.add_warning(
+                        "SESSION_METADATA_WRITE_FAILED",
+                        message,
+                        int(timestamp_ms),
+                    )
+            session_log = self._session_log
+        logging.getLogger(__name__).error(
+            "Session metadata write failed operation=%s",
+            operation,
+            exc_info=error,
+        )
+        if session_log is not None:
+            session_log.write_exception(
+                "metadata_write_failed",
+                error,
+                component=ComponentKind.SESSION_STORAGE.value,
+                error_code="SESSION_METADATA_WRITE_FAILED",
+                timestamp_ms=int(timestamp_ms),
+            )
+        if first_failure:
+            self.component_changed.emit(
+                ComponentKind.SESSION_STORAGE.value,
+                ComponentStatus.FAILED.value,
+                message,
+            )
+            self.fatal_error.emit(message)
 
     def _log_session_exception(
         self,

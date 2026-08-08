@@ -16,6 +16,7 @@ from summarize_meeting.infrastructure.audio_writer import (
     WaveValidationError,
 )
 from summarize_meeting.infrastructure.paths import PortableAppPaths
+from summarize_meeting.infrastructure.session_repository import FileSessionRepository
 
 
 class _NoopStorageMonitor:
@@ -43,6 +44,22 @@ class _FakeAudioRecorder:
         if self._error is not None:
             raise self._error
         return self._result
+
+
+class _FailNthSaveRepository:
+    def __init__(self, delegate: FileSessionRepository, *, fail_on_call: int) -> None:
+        self._delegate = delegate
+        self._fail_on_call = fail_on_call
+        self.save_calls = 0
+
+    def save(self, paths, session) -> None:
+        self.save_calls += 1
+        if self.save_calls == self._fail_on_call:
+            raise OSError("session.json is temporarily unavailable")
+        self._delegate.save(paths, session)
+
+    def append_event(self, paths, event) -> None:
+        self._delegate.append_event(paths, event)
 
 
 def _prepare_controller(tmp_path: Path) -> tuple[RecordingController, Path]:
@@ -191,3 +208,41 @@ def test_shutdown_stop_requests_stop_and_reports_bounded_wait_timeout(
 
     controller._session_terminal.set()  # noqa: SLF001
     assert controller.stop_for_shutdown(timeout_seconds=0.0)
+
+
+def test_final_metadata_write_failure_does_not_abort_finalize_worker(
+    tmp_path: Path,
+) -> None:
+    controller, session_root = _prepare_controller(tmp_path)
+    repository = _FailNthSaveRepository(
+        controller._repository,  # noqa: SLF001
+        fail_on_call=4,
+    )
+    controller._repository = repository  # type: ignore[assignment]  # noqa: SLF001
+    controller._audio_recorders = {  # type: ignore[dict-item]  # noqa: SLF001
+        ComponentKind.MICROPHONE: _FakeAudioRecorder(result=None)
+    }
+    errors: list[str] = []
+    finished: list[str] = []
+    controller.fatal_error.connect(errors.append)
+    controller.session_finished.connect(finished.append)
+
+    controller._stop_session_worker()  # noqa: SLF001
+
+    assert repository.save_calls == 4
+    assert controller._session is not None  # noqa: SLF001
+    assert controller._session.status == SessionStatus.INTERRUPTED  # noqa: SLF001
+    assert (
+        controller._session.components[  # noqa: SLF001
+            ComponentKind.SESSION_STORAGE.value
+        ].error_code
+        == "SESSION_METADATA_WRITE_FAILED"
+    )
+    assert any(  # noqa: SLF001
+        warning["code"] == "FINALIZE_FAILED" for warning in controller._session.warnings
+    )
+    assert controller._session_terminal.is_set()  # noqa: SLF001
+    assert finished == [str(session_root)]
+    assert any("セッション情報を保存できません" in error for error in errors)
+    persisted = json.loads((session_root / "session.json").read_text(encoding="utf-8"))
+    assert persisted["status"] == SessionStatus.FINALIZING

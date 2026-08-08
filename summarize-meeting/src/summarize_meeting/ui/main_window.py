@@ -41,6 +41,7 @@ class MainWindow(QMainWindow):
         self._source_refresh_pending = False
         self._close_requested = False
         self._os_shutdown_requested = False
+        self._session_error_message: str | None = None
         self.setWindowTitle("Summarize Meeting - Phase 1 PoC")
         self.resize(880, 520)
 
@@ -135,7 +136,7 @@ class MainWindow(QMainWindow):
         controller.session_start_cancelled.connect(self._on_session_start_cancelled)
         controller.finalize_progress.connect(self._on_finalize_progress)
         controller.session_finished.connect(self._on_session_finished)
-        controller.fatal_error.connect(self.show_error)
+        controller.fatal_error.connect(self._on_fatal_error)
         QTimer.singleShot(0, self.refresh_sources)
 
     def refresh_sources(self) -> None:
@@ -277,6 +278,7 @@ class MainWindow(QMainWindow):
 
     def _on_session_preparing(self, path: str) -> None:
         self._session_path = Path(path)
+        self._session_error_message = None
         self._show_save_path(self._session_path)
         self._show_active_source_names()
         self._started_at = None
@@ -305,8 +307,12 @@ class MainWindow(QMainWindow):
     def _on_session_finished(self, path: str) -> None:
         self._session_path = Path(path)
         self._show_save_path(self._session_path)
+        error_message = self._session_error_message
         self._reset_after_session()
-        self.show_information(f"記録を保存しました: {path}")
+        if error_message:
+            self.show_error(f"記録の保存中に問題が発生しました: {error_message} 保存先: {path}")
+        else:
+            self.show_information(f"記録を保存しました: {path}")
         self._close_if_requested()
 
     def _on_finalize_progress(self, percent: int, message: str) -> None:
@@ -343,6 +349,7 @@ class MainWindow(QMainWindow):
         self._finalize_progress.setVisible(False)
         self._finalize_progress.setValue(0)
         self._finalize_progress.setFormat("保存処理 %p%")
+        self._session_error_message = None
 
     def _close_if_requested(self) -> None:
         if self._close_requested:
@@ -387,6 +394,11 @@ class MainWindow(QMainWindow):
     def show_error(self, message: str) -> None:
         self._message.setText(message)
         self._message.setStyleSheet("padding: 8px; background: #ffd9d9; color: #8a1f1f;")
+
+    def _on_fatal_error(self, message: str) -> None:
+        if self._controller.is_recording or self._started_at is not None:
+            self._session_error_message = message
+        self.show_error(message)
 
     def _current_audio_id(self, combo: QComboBox) -> str | None:
         value = combo.currentData()

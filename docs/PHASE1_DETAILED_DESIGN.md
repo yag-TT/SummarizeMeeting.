@@ -1035,6 +1035,8 @@ Phase 1のUI、エラーメッセージ、ログ閲覧用のユーザー向け�
 
 例外はWorker境界で捕捉し、`error_code`、型、メッセージ、stack trace、component、時刻をログへ記録する。UIへ生stack traceを常時表示しない。
 
+録音開始後の `session.json` または `events.jsonl` 書込みで `OSError` が発生しても、例外をAudio/Screenのstate callbackへ返さない。Session Storageを `FAILED / SESSION_METADATA_WRITE_FAILED` にしてin-memory warningを1件だけ追加し、UIの緊急表示も障害episode中1回に抑える。後続のComponent状態変更では永続化を再試行し、成功すれば保持していたwarningを `session.json` へ保存する。最終 `session.json` だけが保存できない場合もWAV finalizeとterminal通知を完走し、in-memory Sessionを `INTERRUPTED` として、次回起動時には最後に永続化できた `RECORDING`、`STOPPING`、`FINALIZING` のいずれかから復旧する。
+
 ## 18. ディスク容量
 
 開始前に概算する。

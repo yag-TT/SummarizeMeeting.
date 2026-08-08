@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
@@ -269,6 +270,22 @@ def test_ui_shows_finalize_progress_and_hides_it_after_completion(
 
     assert not window._finalize_progress.isVisible()  # noqa: SLF001
     assert window._start.isEnabled()  # noqa: SLF001
+    window.close()
+
+
+def test_ui_keeps_session_error_visible_after_session_finishes(
+    qapp: QApplication,
+) -> None:
+    controller = _UiController(microphone_id=None, system_id=None)
+    window = MainWindow(controller)  # type: ignore[arg-type]
+    window._started_at = datetime.now()  # noqa: SLF001
+
+    window._on_fatal_error("最終WAVを確定できませんでした")  # noqa: SLF001
+    window._on_session_finished("C:/sessions/interrupted")  # noqa: SLF001
+
+    assert "最終WAVを確定できませんでした" in window._message.text()  # noqa: SLF001
+    assert "C:/sessions/interrupted" in window._message.text()  # noqa: SLF001
+    assert "#ffd9d9" in window._message.styleSheet()  # noqa: SLF001
     window.close()
 
 
