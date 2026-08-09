@@ -645,7 +645,7 @@ duration_drift_ms = audio_duration_ms - active_capture_duration_ms
 - backendは約2 fpsで最新frameだけを保持し、FIFOを作らない。
 - Portal拒否、Portal不在、対象終了、frame timeoutはScreen componentだけを`FAILED`または`PAUSED`にし、音声を継続する。
 - Waylandでは録音ごとに共有許可を得る。保存済み画面IDを復元せず、ヘッドレス、SSHのみ、ロック画面を対象外とする。
-- Ubuntu診断対象はPipeWire、`xdg-desktop-portal`、`xdg-desktop-portal-gnome`、FFmpegとする。
+- ネイティブUbuntu Waylandの診断対象はPipeWire、`xdg-desktop-portal`、`xdg-desktop-portal-gnome`、ScreenCast Portal APIとする。WSLgは別環境として識別し、Windowsデスクトップの画面取得が対象外であることを表示する。
 
 WinRT/WGC、Windows ctypes、MSSの実装・依存・fallbackは持たない。Windows/X11の複数モニター、DPI、HDR、保護コンテンツとWayland Portal実装差は手動実機試験を継続する。
 

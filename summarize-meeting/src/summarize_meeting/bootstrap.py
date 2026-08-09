@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import platform
 import sys
 from logging.handlers import RotatingFileHandler
 from typing import Protocol
@@ -21,6 +22,7 @@ from summarize_meeting.application.screen_analysis_controller import (
 from summarize_meeting.application.transcription_controller import TranscriptionController
 from summarize_meeting.infrastructure.paths import AppRootNotWritableError, PortableAppPaths
 from summarize_meeting.infrastructure.settings import FileSettingsRepository, SettingsLoadResult
+from summarize_meeting.ui.font_support import configure_japanese_ui_font
 from summarize_meeting.ui.main_window import MainWindow
 
 
@@ -46,6 +48,16 @@ def _configure_logging(paths: PortableAppPaths, log_level: str) -> None:
 def main() -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("Summarize Meeting")
+    selected_font = configure_japanese_ui_font(app)
+    if platform.system() == "Linux" and selected_font is None:
+        detail = (
+            "Japanese UI font is not installed.\n\n"
+            "Run this command and start the application again:\n"
+            "sudo apt install -y fontconfig fonts-noto-cjk"
+        )
+        print(detail, file=sys.stderr)
+        QMessageBox.critical(None, "Missing Japanese font", detail)
+        return 1
     paths = PortableAppPaths.discover()
     try:
         paths.ensure_writable()
@@ -66,6 +78,7 @@ def main() -> int:
     settings_result = settings_repository.load()
     _configure_logging(paths, settings_result.settings.log_level)
     logging.getLogger(__name__).info("Application started app_root=%s", paths.app_root)
+    logging.getLogger(__name__).info("UI font selected family=%s", selected_font)
     if settings_result.error:
         logging.getLogger(__name__).warning(
             "Settings fallback backup=%s error=%s",

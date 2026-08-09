@@ -26,7 +26,8 @@ def test_physical_microphone_falls_back_to_sounddevice(monkeypatch) -> None:
     microphone = _Microphone()
     expected = object()
     received: list[tuple[str, int, int, int]] = []
-    monkeypatch.setattr(backend_module.sc, "get_microphone", lambda *_args, **_kwargs: microphone)
+    soundcard = SimpleNamespace(get_microphone=lambda *_args, **_kwargs: microphone)
+    monkeypatch.setattr(backend_module, "_load_soundcard", lambda: soundcard)
 
     def create_stream(name, *, sample_rate, block_frames, channels):
         received.append((name, sample_rate, block_frames, channels))
@@ -46,7 +47,8 @@ def test_physical_microphone_falls_back_to_sounddevice(monkeypatch) -> None:
 
 def test_loopback_does_not_use_input_only_fallback(monkeypatch) -> None:
     microphone = _Microphone(isloopback=True)
-    monkeypatch.setattr(backend_module.sc, "get_microphone", lambda *_args, **_kwargs: microphone)
+    soundcard = SimpleNamespace(get_microphone=lambda *_args, **_kwargs: microphone)
+    monkeypatch.setattr(backend_module, "_load_soundcard", lambda: soundcard)
 
     with pytest.raises(AssertionError, match="unsupported mix format"):
         SoundCardAudioBackend().open_stream(

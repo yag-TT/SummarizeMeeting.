@@ -29,29 +29,37 @@ uv run python scripts/doctor.py
 uv run summarize-meeting
 ```
 
-### Ubuntu 22.04 GNOME Wayland
+### Ubuntu 22.04 / WSL2 + WSLg
 
 ```bash
 sudo apt update
-sudo apt install -y \
-  pipewire xdg-desktop-portal xdg-desktop-portal-gnome ffmpeg \
-  libportaudio2 libpulse0 libasound2 libegl1 libgl1 libxcb-cursor0 \
-  libglib2.0-bin
+sudo apt install -y fontconfig fonts-noto-cjk libportaudio2 libpulse0 libegl1 libgl1
 
 uv python install 3.11
+export UV_PROJECT_ENVIRONMENT="$HOME/.local/share/uv/venvs/summarize-meeting"
 uv sync --frozen
 uv run python scripts/setup_models.py all
 uv run python scripts/doctor.py
 uv run summarize-meeting
 ```
 
-`pulseaudio-utils`は必須ではありませんが、`pactl info`を使った音声サーバー診断を有効にする場合に導入します。
+Windows用`.venv`とLinux用仮想環境は互換性がありません。また、Windowsドライブをマウントした`/mnt/c`や`/mnt/d`上の仮想環境は小ファイルI/Oが遅いため、WSLではLinux側ファイルシステムの専用環境を使用します。`libasound2`は`libportaudio2`の依存として導入されます。WSLgはWayland/X11とPulseAudioのserverを提供するため、Linux GUIと音声だけを利用する場合に`pipewire`やデスクトップPortalをUbuntu側へ追加する必要はありません。WindowsデスクトップやWindowsアプリの画面取得はWSLgの対象外です。
+
+### Ubuntu 22.04 GNOME Wayland
+
+ネイティブUbuntuのGNOME Waylandで画面取得も使用する場合は次を追加します。
 
 ```bash
-sudo apt install -y pulseaudio-utils
+sudo apt install -y pipewire xdg-desktop-portal xdg-desktop-portal-gnome
 ```
 
-デスクトップがPipeWireを音声サーバーとして使用し、PulseAudio互換層がまだない場合だけ`pipewire-pulse`も導入します。Ubuntu 22.04の既存PulseAudio構成を無条件に置き換える必要はありません。
+X11セッションではQt XCB plugin用に`libxcb-cursor0`も導入します。
+
+```bash
+sudo apt install -y libxcb-cursor0
+```
+
+`pulseaudio-utils`は必須ではありませんが、`pactl info`を使った音声サーバー名の追加診断を有効にする場合だけ導入します。デスクトップがPipeWireを音声サーバーとして使用し、PulseAudio互換層がまだない場合だけ`pipewire-pulse`も導入します。
 
 ## uvとPython
 
@@ -132,17 +140,19 @@ uv run --frozen pytest -q
 | `pipewire` | Waylandで必須 | QtとPortal間の画面ストリーム |
 | `xdg-desktop-portal` | Waylandで必須 | OSの画面共有許可・対象選択API |
 | `xdg-desktop-portal-gnome` | GNOME Waylandで必須 | GNOME用Portal backend |
-| `ffmpeg` | Wayland診断対象 | Qt Multimediaの実行環境と診断 |
-| `libglib2.0-bin` | Wayland診断で必要 | `gdbus`によるScreenCast Portal確認 |
 | `libpulse0` | 音声で必須 | SoundCardのPulseAudio互換API |
 | `libportaudio2` | マイクfallbackで必須 | sounddeviceのPortAudio runtime |
-| `libasound2` | 音声runtime | ALSA共有ライブラリ。CIでも導入 |
+| `libasound2` | 音声runtime（間接導入） | ALSA共有ライブラリ。`libportaudio2`が依存 |
+| `fontconfig` | 日本語UIで必須 | Qtからシステムフォントを検索し、診断で日本語font familyを確認 |
+| `fonts-noto-cjk` | 日本語UIで必須 | `Noto Sans CJK JP`などの日本語グリフ |
 | `libegl1`、`libgl1` | Qt runtime | Qt GUI/Multimediaの描画共有ライブラリ。CIでも導入 |
-| `libxcb-cursor0` | X11/Qt runtime | Qt XCB cursor plugin |
+| `libxcb-cursor0` | X11の場合のみ | Qt XCB cursor plugin。Wayland/WSLgでは不要 |
 | `pulseaudio-utils` | 任意 | `pactl`による音声サーバー診断 |
 | `pipewire-pulse` | 構成依存 | PipeWireをPulseAudio互換サーバーとして使う場合 |
 
 PortalとPipeWireはパッケージが存在するだけでなく、ログイン中のデスクトップセッションでserviceが動作している必要があります。SSHのみ、ヘッドレス、ロック画面は画面取得対象外です。
+
+システムの`ffmpeg`コマンドは使用しません。PySide6 6.11.1とPyAV 18.0.0のLinux wheel内に、使用するFFmpeg共有ライブラリが含まれます。`gdbus`も使用せず、Portal診断は直接依存のPySide6に含まれるQtDBusで行います。このため`ffmpeg`と`libglib2.0-bin`は標準セットアップへ含めません。
 
 ### Windows
 
@@ -230,7 +240,8 @@ uv run python scripts/doctor.py
 - Windows/Linux、Python 3.11以上
 - `data/`への書込権限
 - Wayland/X11とdisplayの有無
-- PipeWire、FFmpeg、`gdbus`、Portal API
+- ネイティブWaylandではPipeWire、Portal package、Portal API
+- WSLgではWayland/PulseAudio接続と画面取得の制約
 - Ubuntuパッケージの導入状態
 - SoundCardから見えるマイクとloopback
 - PulseAudio互換サーバー名（`pactl`がある場合）

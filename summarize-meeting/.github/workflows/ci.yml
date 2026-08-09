@@ -22,7 +22,9 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2 libegl1 libgl1 libportaudio2 libpulse0
+          sudo apt-get install -y \
+            fontconfig fonts-noto-cjk \
+            libasound2 libegl1 libgl1 libportaudio2 libpulse0
       - run: uv sync --frozen
       - run: uv run --frozen ruff check .
       - run: uv run --frozen pytest -q

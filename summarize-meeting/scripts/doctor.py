@@ -34,6 +34,7 @@ def main() -> int:
         _check_platform(),
         _check_write_access(paths),
         *_check_desktop_session(),
+        _check_japanese_font(),
         _check_audio(),
         _check_ocr_models(paths),
         _check_cuda(),
@@ -65,6 +66,20 @@ def _check_write_access(paths: PortableAppPaths) -> Check:
 def _check_desktop_session() -> list[Check]:
     if platform.system() != "Linux":
         return [Check("OK", "screen-capture", "Qt Multimedia (Windows)")]
+    if _is_wslg():
+        return [
+            Check(
+                "OK",
+                "desktop-session",
+                "type=WSLg, display="
+                + (os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY", "not found")),
+            ),
+            Check(
+                "WARN",
+                "screen-capture",
+                "WSLgはLinux GUI/音声を提供しますが、Windowsデスクトップの画面取得は対象外です",
+            ),
+        ]
     session_type = os.environ.get("XDG_SESSION_TYPE", "unknown").casefold()
     display = os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY")
     checks = [
@@ -77,24 +92,33 @@ def _check_desktop_session() -> list[Check]:
     if os.environ.get("SSH_CONNECTION"):
         checks.append(Check("WARN", "remote-session", "SSHのみの実行は画面取得対象外です"))
     if session_type == "wayland":
-        missing = [name for name in ("pipewire", "ffmpeg", "gdbus") if shutil.which(name) is None]
+        missing = [name for name in ("pipewire",) if shutil.which(name) is None]
         checks.append(
             Check(
                 "ERROR" if missing else "OK",
                 "wayland-tools",
-                "missing: " + ", ".join(missing) if missing else "PipeWire/Portal tools found",
+                "missing: " + ", ".join(missing) if missing else "PipeWire found",
             )
         )
         checks.append(
             _check_debian_packages(
                 "wayland-packages",
-                ("pipewire", "xdg-desktop-portal", "xdg-desktop-portal-gnome", "ffmpeg"),
+                ("pipewire", "xdg-desktop-portal", "xdg-desktop-portal-gnome"),
             )
         )
         checks.append(_check_portal())
     elif session_type != "x11":
         checks.append(Check("WARN", "screen-capture", "Wayland/X11を判定できません"))
     return checks
+
+
+def _is_wslg() -> bool:
+    pulse_server = os.environ.get("PULSE_SERVER", "")
+    return bool(
+        os.environ.get("WSL_INTEROP")
+        and os.environ.get("WAYLAND_DISPLAY")
+        and pulse_server.startswith("unix:/mnt/wslg/")
+    )
 
 
 def _check_debian_packages(name: str, packages: tuple[str, ...]) -> Check:
@@ -122,33 +146,64 @@ def _check_debian_packages(name: str, packages: tuple[str, ...]) -> Check:
     )
 
 
-def _check_portal() -> Check:
-    if shutil.which("gdbus") is None:
-        return Check("ERROR", "screen-cast-portal", "gdbusがありません")
+def _check_japanese_font() -> Check:
+    if platform.system() != "Linux":
+        return Check("OK", "japanese-font", "OS font database")
+    if shutil.which("fc-list") is None:
+        return Check(
+            "ERROR",
+            "japanese-font",
+            "fontconfigがありません: sudo apt install -y fontconfig fonts-noto-cjk",
+        )
     try:
         result = subprocess.run(
-            [
-                "gdbus",
-                "call",
-                "--session",
-                "--dest",
-                "org.freedesktop.portal.Desktop",
-                "--object-path",
-                "/org/freedesktop/portal/desktop",
-                "--method",
-                "org.freedesktop.DBus.Properties.Get",
-                "org.freedesktop.portal.ScreenCast",
-                "version",
-            ],
+            ["fc-list", ":lang=ja", "family"],
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=10,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
+        return Check("ERROR", "japanese-font", str(exc))
+    families = sorted(
+        {
+            family.strip()
+            for line in result.stdout.splitlines()
+            for family in line.split(",")
+            if family.strip()
+        }
+    )
+    if result.returncode != 0 or not families:
+        return Check(
+            "ERROR",
+            "japanese-font",
+            "日本語フォントがありません: sudo apt install -y fonts-noto-cjk",
+        )
+    return Check("OK", "japanese-font", ", ".join(families[:5]))
+
+
+def _check_portal() -> Check:
+    try:
+        from PySide6.QtDBus import QDBusConnection, QDBusInterface, QDBusMessage
+
+        connection = QDBusConnection.sessionBus()
+        if not connection.isConnected():
+            return Check("ERROR", "screen-cast-portal", "session D-Busへ接続できません")
+        properties = QDBusInterface(
+            "org.freedesktop.portal.Desktop",
+            "/org/freedesktop/portal/desktop",
+            "org.freedesktop.DBus.Properties",
+            connection,
+        )
+        if not properties.isValid():
+            detail = properties.lastError().message() or "ScreenCast Portalが見つかりません"
+            return Check("ERROR", "screen-cast-portal", detail)
+        reply = properties.call("Get", "org.freedesktop.portal.ScreenCast", "version")
+        if reply.type() == QDBusMessage.MessageType.ErrorMessage:
+            return Check("ERROR", "screen-cast-portal", reply.errorMessage())
+    except Exception as exc:
         return Check("ERROR", "screen-cast-portal", str(exc))
-    detail = result.stdout.strip() or result.stderr.strip()
-    return Check("OK" if result.returncode == 0 else "ERROR", "screen-cast-portal", detail)
+    return Check("OK", "screen-cast-portal", f"version={reply.arguments()!r}")
 
 
 def _check_audio() -> Check:

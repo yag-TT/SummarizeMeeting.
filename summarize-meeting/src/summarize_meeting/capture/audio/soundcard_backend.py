@@ -4,11 +4,19 @@ from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
-import soundcard as sc
 import sounddevice as sd
 
 from summarize_meeting.capture.audio.base import FloatAudio
 from summarize_meeting.domain.capture import AudioDevice, AudioFormat
+
+
+def _load_soundcard() -> Any:
+    # SoundCard connects to PulseAudio while importing on Linux. Keep that
+    # connection out of package import so diagnostics and offline workers can
+    # run even when the desktop audio server is temporarily unavailable.
+    import soundcard
+
+    return soundcard
 
 
 def _to_device(microphone: Any) -> AudioDevice:
@@ -108,6 +116,7 @@ class SoundDeviceInputStream:
 
 class SoundCardAudioBackend:
     def list_input_devices(self) -> Sequence[AudioDevice]:
+        sc = _load_soundcard()
         return [
             _to_device(device)
             for device in sc.all_microphones(include_loopback=False)
@@ -115,6 +124,7 @@ class SoundCardAudioBackend:
         ]
 
     def list_loopback_devices(self) -> Sequence[AudioDevice]:
+        sc = _load_soundcard()
         return [
             _to_device(device)
             for device in sc.all_microphones(include_loopback=True)
@@ -128,6 +138,7 @@ class SoundCardAudioBackend:
         sample_rate: int,
         block_frames: int,
     ) -> SoundCardAudioStream:
+        sc = _load_soundcard()
         microphone = sc.get_microphone(device_id, include_loopback=True)
         if microphone is None:
             raise RuntimeError(f"Audio device not found: {device_id}")

@@ -16,18 +16,40 @@ uv sync --frozen
 uv run summarize-meeting
 ```
 
-### Ubuntu 22.04
+### Ubuntu 22.04 / WSL2
 
-UbuntuではPython 3.11を`uv`に管理させることができます。Waylandの画面共有と音声入出力に必要なOSパッケージを先に導入します。
+UbuntuではPython 3.11を`uv`に管理させることができます。
+
+WSL2 + WSLgでは、GUI、マイク、Linux側の再生音声に次のOSパッケージが必要です。`libasound2`は`libportaudio2`の依存として導入されます。
 
 ```bash
 sudo apt update
-sudo apt install pipewire xdg-desktop-portal xdg-desktop-portal-gnome ffmpeg \
-  libportaudio2 libpulse0 libasound2 libegl1 libgl1 libxcb-cursor0 libglib2.0-bin
+sudo apt install -y fontconfig fonts-noto-cjk libportaudio2 libpulse0 libegl1 libgl1
 uv python install 3.11
+export UV_PROJECT_ENVIRONMENT="$HOME/.local/share/uv/venvs/summarize-meeting"
 uv sync --frozen
 uv run summarize-meeting
 ```
+
+Windows用`.venv`とLinux用仮想環境は互換性がありません。また、`/mnt/c`や`/mnt/d`上の仮想環境は多数の小ファイルI/Oが遅いため、WSLではLinux側ファイルシステムの専用環境を使用します。同じshellで後続の`uv run`を実行するか、新しいshellでも`UV_PROJECT_ENVIRONMENT="$HOME/.local/share/uv/venvs/summarize-meeting"`を設定してください。
+
+ネイティブのUbuntu 22.04 GNOME Waylandで画面取得も使用する場合は、Qtが要求するScreenCast PortalとPipeWireを追加します。
+
+```bash
+sudo apt install -y pipewire xdg-desktop-portal xdg-desktop-portal-gnome
+```
+
+X11セッションを使用する場合だけ、Qt XCB plugin用の`libxcb-cursor0`も導入します。
+
+```bash
+sudo apt install -y libxcb-cursor0
+```
+
+システムの`ffmpeg`コマンドは使用しません。PySide6とPyAVのwheelが必要なFFmpeg共有ライブラリを同梱するため、`ffmpeg`パッケージは不要です。診断にはPySide6のQtDBusを使うため、`gdbus`を提供する`libglib2.0-bin`も必須ではありません。
+
+日本語UIには`fonts-noto-cjk`の`Noto Sans CJK JP`を優先して使用します。日本語フォントが見つからない場合、読めないUIを起動せず、インストールコマンドを端末とエラーダイアログへ表示します。
+
+WSLgはWayland/X11とPulseAudioの接続を提供しますが、完全なUbuntuデスクトップセッションではありません。Windows側のデスクトップやWindowsアプリの画面取得は対象外です。ネイティブWayland向けPortalパッケージをWSLへ追加しても、この制限は解消しません。
 
 画面取得は両OSともQt Multimediaを使用します。WindowsとX11では画面またはウィンドウを選択できます。Ubuntu 22.04 Waylandでは「開始時にOSダイアログで共有画面を選択」を選び、会議開始後にXDG Desktop Portalの共有対象選択へ応答します。許可は録音ごとに必要です。Portalを拒否した場合や共有対象が終了した場合は画面取得だけが停止し、音声録音は継続します。ヘッドレス、SSHのみ、ロック画面での取得は対象外です。
 
