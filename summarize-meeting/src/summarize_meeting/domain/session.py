@@ -7,6 +7,9 @@ from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
+SESSION_SCHEMA_VERSION = 2
+AUDIO_MANIFEST_SCHEMA_VERSION = 2
+
 
 class SessionStatus(StrEnum):
     CREATED = "CREATED"
@@ -49,7 +52,7 @@ class ComponentState:
 class RecordingSession:
     title: str
     id: str = field(default_factory=lambda: str(uuid4()))
-    schema_version: int = 1
+    schema_version: int = SESSION_SCHEMA_VERSION
     status: SessionStatus = SessionStatus.CREATED
     started_at: str | None = None
     ended_at: str | None = None

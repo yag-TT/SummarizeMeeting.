@@ -105,7 +105,7 @@ def test_finalize_validation_failure_interrupts_session(tmp_path: Path) -> None:
 def test_finalize_cleanup_failure_is_recorded_as_warning(tmp_path: Path) -> None:
     controller, session_root = _prepare_controller(tmp_path)
     stats = AudioTrackStats(
-        file="audio/microphone.wav",
+        file="microphone.wav",
         sample_rate=48_000,
         channels=1,
         sample_width_bytes=2,
@@ -261,7 +261,7 @@ def test_audio_manifest_write_failure_keeps_final_wav_and_completes_terminal_flo
         stream.setframerate(100)
         stream.writeframes(b"\0\0" * 20)
     stats = AudioTrackStats(
-        file="audio/microphone.wav",
+        file="microphone.wav",
         sample_rate=100,
         channels=1,
         sample_width_bytes=2,

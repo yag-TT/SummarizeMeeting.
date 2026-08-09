@@ -9,6 +9,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from summarize_meeting.domain.session import (
+    AUDIO_MANIFEST_SCHEMA_VERSION,
+    SESSION_SCHEMA_VERSION,
+)
 from summarize_meeting.domain.transcript import TranscribedTrack, TranscriptSegment
 
 ProgressCallback = Callable[[int, str], None]
@@ -147,7 +151,6 @@ class TranscriptionService:
     _SOURCE_NAMES = {
         "microphone": "microphone",
         "system": "system",
-        "system_audio": "system",
     }
 
     def __init__(self, backend: TranscriptionBackend, *, model_name: str) -> None:
@@ -162,9 +165,16 @@ class TranscriptionService:
         progress_callback: ProgressCallback | None = None,
     ) -> Path:
         session_directory = session_directory.resolve()
+        session = self._read_object(session_directory / "session.json", "session.json")
+        if session.get("schema_version") != SESSION_SCHEMA_VERSION:
+            raise TranscriptionError("現在のデータ形式ではないため文字起こしできません")
+        if session.get("status") != "RECORDED":
+            raise TranscriptionError("録音完了セッションだけを文字起こしできます")
         audio_directory = session_directory / "audio"
         manifest_path = audio_directory / "manifest.json"
         manifest = self._read_object(manifest_path, "音声manifest")
+        if manifest.get("schema_version") != AUDIO_MANIFEST_SCHEMA_VERSION:
+            raise TranscriptionError("現在の音声manifest形式ではありません")
         manifest_tracks = manifest.get("tracks")
         if not isinstance(manifest_tracks, dict):
             raise TranscriptionError("音声manifestにtracksがありません")
@@ -251,7 +261,7 @@ class TranscriptionService:
         audio_directory: Path,
         tracks: dict[str, object],
     ) -> Iterable[tuple[str, Path, int]]:
-        for manifest_name in ("microphone", "system", "system_audio"):
+        for manifest_name in ("microphone", "system"):
             value = tracks.get(manifest_name)
             if not isinstance(value, dict):
                 continue
@@ -261,12 +271,9 @@ class TranscriptionService:
             relative_path = Path(file_value)
             if relative_path.is_absolute():
                 raise TranscriptionError(f"{manifest_name}の音声ファイル名が不正です")
-            if relative_path.parts == (relative_path.name,):
-                audio_path = audio_directory / relative_path
-            elif relative_path.parts == ("audio", relative_path.name):
-                audio_path = audio_directory.parent / relative_path
-            else:
+            if relative_path.parts != (relative_path.name,):
                 raise TranscriptionError(f"{manifest_name}の音声ファイル名が不正です")
+            audio_path = audio_directory / relative_path
             if not audio_path.is_file():
                 raise TranscriptionError(f"音声ファイルが見つかりません: {audio_path.name}")
             offset_value = value.get("estimated_start_offset_ms", 0)

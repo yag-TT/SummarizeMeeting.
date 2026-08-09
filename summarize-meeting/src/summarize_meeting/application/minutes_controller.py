@@ -41,7 +41,6 @@ class MinutesController(QObject):
         self._base_url = (
             base_url
             or os.environ.get("SUMMARIZE_MEETING_LLM_URL")
-            or os.environ.get("SUMMARIZE_MEETING_LMSTUDIO_URL")
             or DEFAULT_LLM_BASE_URL
         )
         configured_model = model or os.environ.get("SUMMARIZE_MEETING_LLM_MODEL")
@@ -61,7 +60,7 @@ class MinutesController(QObject):
         try:
             session_directory.relative_to(self._app_paths.meetings_dir.resolve())
         except ValueError as exc:
-            raise ValueError("アプリのmeetingsフォルダ外は議事録化できません") from exc
+            raise ValueError("アプリのmeetingsフォルダ外は会話要約できません") from exc
         if not (session_directory / "analysis" / "transcription.json").is_file():
             raise RuntimeError("文字起こし結果がありません")
         state = AnalysisJobState.start(
@@ -71,14 +70,14 @@ class MinutesController(QObject):
         )
         with self._lock:
             if self._running:
-                raise RuntimeError("議事録生成は既に実行中です")
+                raise RuntimeError("会話要約は既に実行中です")
             self._cancel_requested = False
             self._running = True
         try:
             self._job_repository.save(session_directory, state)
         except OSError as exc:
             self._clear_process()
-            raise RuntimeError(f"議事録生成状態を保存できません: {exc}") from exc
+            raise RuntimeError(f"会話要約状態を保存できません: {exc}") from exc
         try:
             threading.Thread(
                 target=self._run_worker,
@@ -130,7 +129,7 @@ class MinutesController(QObject):
                 **platform_popen_options(),
             )
         except OSError as exc:
-            message = f"議事録生成を開始できません: {exc}"
+            message = f"会話要約を開始できません: {exc}"
             persistence_error = self._persist_terminal(
                 session_directory,
                 state,
@@ -192,7 +191,7 @@ class MinutesController(QObject):
                 self.job_failed.emit(str(session_directory), persistence_error)
         else:
             detail = diagnostics[-1] if diagnostics else f"終了コード {exit_code}"
-            message = f"議事録生成に失敗しました: {detail}"
+            message = f"会話要約に失敗しました: {detail}"
             persistence_error = self._persist_terminal(
                 session_directory,
                 state,
@@ -216,7 +215,7 @@ class MinutesController(QObject):
                 state.finish(status, output_path=output_path, error_message=error_message),
             )
         except OSError as exc:
-            return f"議事録生成状態を保存できません: {exc}"
+            return f"会話要約状態を保存できません: {exc}"
         return None
 
     def _clear_process(self) -> None:

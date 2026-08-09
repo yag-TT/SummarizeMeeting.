@@ -23,6 +23,7 @@ def _session(
     (session / "session.json").write_text(
         json.dumps(
             {
+                "schema_version": 2,
                 "title": title,
                 "started_at": started_at,
                 "status": "RECORDED",
@@ -30,7 +31,10 @@ def _session(
         ),
         encoding="utf-8",
     )
-    (audio / "manifest.json").write_text('{"tracks": {}}', encoding="utf-8")
+    (audio / "manifest.json").write_text(
+        '{"schema_version":2,"tracks":{"microphone":{"file":"microphone.wav"}}}',
+        encoding="utf-8",
+    )
     (audio / "microphone.wav").write_bytes(b"wave")
     if transcription_json:
         (session / "analysis" / "transcription.json").write_text(
@@ -67,7 +71,7 @@ def test_catalog_lists_newest_session_first_and_reports_transcription(tmp_path: 
     assert values[1].transcription_status == "NOT_STARTED"
 
 
-def test_catalog_keeps_corrupt_session_without_breaking_other_entries(tmp_path: Path) -> None:
+def test_catalog_skips_corrupt_and_legacy_sessions(tmp_path: Path) -> None:
     valid = _session(
         tmp_path,
         "valid",
@@ -77,14 +81,16 @@ def test_catalog_keeps_corrupt_session_without_breaking_other_entries(tmp_path: 
     corrupt = tmp_path / "corrupt"
     corrupt.mkdir()
     (corrupt / "session.json").write_text("{broken", encoding="utf-8")
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    (legacy / "session.json").write_text(
+        '{"schema_version":1,"title":"旧形式","status":"RECORDED"}',
+        encoding="utf-8",
+    )
 
     values = FileSessionCatalog(tmp_path).scan()
 
-    assert {value.path for value in values} == {valid.resolve(), corrupt.resolve()}
-    corrupt_summary = next(value for value in values if value.path == corrupt.resolve())
-    assert corrupt_summary.title == "corrupt"
-    assert corrupt_summary.recording_status == "UNKNOWN"
-    assert not corrupt_summary.can_transcribe
+    assert [value.path for value in values] == [valid.resolve()]
 
 
 def test_catalog_marks_success_without_markdown_as_incomplete(tmp_path: Path) -> None:
@@ -124,7 +130,7 @@ def test_catalog_reads_persisted_failed_job_state(tmp_path: Path) -> None:
     assert "文字起こし失敗" in value.display_label
 
 
-def test_catalog_enables_diarization_for_transcribed_system_audio(tmp_path: Path) -> None:
+def test_catalog_enables_diarization_for_transcribed_system_track(tmp_path: Path) -> None:
     session = _session(
         tmp_path,
         "diarization",
@@ -135,7 +141,7 @@ def test_catalog_enables_diarization_for_transcribed_system_audio(tmp_path: Path
     )
     (session / "audio" / "system.wav").write_bytes(b"wave")
     (session / "audio" / "manifest.json").write_text(
-        '{"tracks":{"system_audio":{"file":"system.wav"}}}',
+        '{"schema_version":2,"tracks":{"system":{"file":"system.wav"}}}',
         encoding="utf-8",
     )
     (session / "analysis" / "jobs.json").write_text(
@@ -146,6 +152,24 @@ def test_catalog_enables_diarization_for_transcribed_system_audio(tmp_path: Path
 
     assert value.can_diarize
     assert value.diarization_status == "FAILED"
+
+
+def test_catalog_does_not_accept_legacy_system_audio_track(tmp_path: Path) -> None:
+    session = _session(
+        tmp_path,
+        "legacy-audio",
+        title="旧音声形式",
+        started_at="2026-08-08T10:00:00+09:00",
+        transcript=True,
+        transcription_json=True,
+    )
+    (session / "audio" / "system.wav").write_bytes(b"wave")
+    (session / "audio" / "manifest.json").write_text(
+        '{"schema_version":2,"tracks":{"system_audio":{"file":"system.wav"}}}',
+        encoding="utf-8",
+    )
+
+    assert not FileSessionCatalog(tmp_path).scan()[0].can_diarize
 
 
 def test_catalog_enables_screen_analysis_for_recorded_images(tmp_path: Path) -> None:

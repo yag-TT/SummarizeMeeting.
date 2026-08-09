@@ -15,7 +15,7 @@ def _write_interrupted_session(root: Path) -> Path:
     (session_root / "session.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "id": "deadbeef",
                 "title": "復旧テスト",
                 "status": "RECORDING",
@@ -54,10 +54,10 @@ def _write_audio_manifest(session_root: Path, *, frames: int = 20) -> None:
     (session_root / "audio" / "manifest.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "tracks": {
                     "microphone": {
-                        "file": "audio/microphone.wav",
+                        "file": "microphone.wav",
                         "sample_rate": 100,
                         "channels": 1,
                         "sample_width_bytes": 2,
@@ -186,3 +186,12 @@ def test_recovery_promotes_valid_screenshot_temp_and_keeps_corrupt_temp(
     assert any("000002.png.tmp" in warning for warning in result.warnings)
     session = json.loads((session_root / "session.json").read_text(encoding="utf-8"))
     assert session["recovery"]["screenshots"] == ["screenshots/000001.png"]
+
+
+def test_recovery_ignores_legacy_session_schema(tmp_path: Path) -> None:
+    session_root = _write_interrupted_session(tmp_path)
+    metadata = json.loads((session_root / "session.json").read_text(encoding="utf-8"))
+    metadata["schema_version"] = 1
+    (session_root / "session.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+    assert SessionRecoveryService(tmp_path).scan() == []

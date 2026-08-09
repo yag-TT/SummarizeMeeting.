@@ -8,7 +8,7 @@ from summarize_meeting.infrastructure.audio_writer import AudioTrackStats
 def test_audio_manifest_includes_origin_and_diagnostics(tmp_path: Path) -> None:
     path = tmp_path / "manifest.json"
     stats = AudioTrackStats(
-        file="audio/microphone.wav",
+        file="microphone.wav",
         sample_rate=48_000,
         channels=1,
         sample_width_bytes=2,
@@ -32,8 +32,10 @@ def test_audio_manifest_includes_origin_and_diagnostics(tmp_path: Path) -> None:
     )
 
     value = json.loads(path.read_text(encoding="utf-8"))
+    assert value["schema_version"] == 2
     assert value["monotonic_origin_ns"] == 123_456_789
     track = value["tracks"]["microphone"]
+    assert track["file"] == "microphone.wav"
     assert track["estimated_start_offset_ms"] == 12
     assert track["duration_drift_ms"] == -8.0
     assert track["queue_pressure_count"] == 1

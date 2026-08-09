@@ -1,8 +1,8 @@
 # Summarize Meeting
 
-Teams、Google Meetなどのオンライン会議について、マイク音声、PC再生音声、選択したウィンドウの重要な画面変更をローカル保存し、会議終了後に議事録を生成するデスクトップアプリケーションです。
+Teams、Google Meetなどのオンライン会議や一般的な会話について、マイク音声、PC再生音声、選択したウィンドウの重要な画面変更をローカル保存し、録音終了後に会話内容を要約するデスクトップアプリケーションです。会議では議事録として利用できます。
 
-Phase 5「統合議事録」の正常系PoCまで実装しています。Phase 1の記録、Phase 2のfaster-whisper文字起こし、Phase 3の話者分離、Phase 4のローカルOCR画面解析をtimestampで統合し、llama.cppで実行する既存モデルを使って根拠付き議事録を生成できます。
+Phase 5「統合会話要約」の正常系PoCまで実装しています。Phase 1の記録、Phase 2のfaster-whisper文字起こし、Phase 3の話者分離、Phase 4のローカルOCR画面解析をtimestampで統合し、llama.cppで実行する既存モデルを使って根拠付きの会話要約を生成できます。
 
 ## 開発環境
 
@@ -39,7 +39,7 @@ uv run summarize-meeting
 
 「録音終了後に自動で文字起こし」をONにすると、正常に確定した録音だけを会議終了後に自動処理します。既定はOFFです。録音確定エラー、音声不足、アプリ終了時には自動実行せず、録音済みセッションから手動で再実行できます。
 
-「解析対象」には`data/meetings/`内の録音済みセッションが新しい順に表示されます。アプリを再起動した後でも過去の会議を選択し、文字起こしの実行・再実行ができます。壊れた`session.json`が混在しても、そのフォルダ名を使って他のセッションとともに一覧表示します。
+「解析対象」には`data/meetings/`内の現行形式（`session.json` schema version 2）の録音済みセッションだけが新しい順に表示されます。壊れたデータや旧形式は一覧・復旧・解析の対象になりません。
 
 文字起こしJobの開始・成功・失敗・キャンセルは`analysis/jobs.json`へatomic保存します。実行中にアプリが終了して`RUNNING`が残った場合、次回起動時は「前回中断」として表示し、再実行できます。
 
@@ -47,7 +47,7 @@ uv run summarize-meeting
 
 録音済みセッションにスクリーンショットがある場合は「画面解析」を実行できます。両OSともPaddleOCR 3.7とPP-OCRv6 mediumのONNXモデルを使用し、日本語・英語を含むOCR結果、画面種別、タイトル候補、重要行を外部サービスへ送信せず`analysis/screens.json`へ保存します。
 
-文字起こし完了後は「議事録生成」を実行できます。話者付き文字起こしを優先し、画面解析結果を任意で統合して`analysis/timeline.json`、`analysis/minutes.json`、`output/minutes.md`を生成します。LAN内のllama.cpp serverとサーバーへ導入済みのモデルを使用し、アプリからLLMをダウンロードしません。
+文字起こし完了後は「会話要約」を実行できます。会議、雑談、相談、インタビューなどの種類を問わず、話者付き文字起こしを優先して、全体要約・主な話題・会話の要点を生成します。明示的な合意、今後の対応、未解決事項は存在する場合だけ出力します。画面解析結果も任意で統合し、`analysis/timeline.json`、`analysis/minutes.json`、`output/minutes.md`へ保存します。LAN内のllama.cpp serverとサーバーへ導入済みのモデルを使用し、アプリからLLMをダウンロードしません。
 
 llama.cpp serverでモデルをロードし、OpenAI互換APIをLANへ公開します。現在の既定接続先は`http://192.168.1.158:8081/v1`です。
 
@@ -56,7 +56,7 @@ llama-server --host 0.0.0.0 --port 8081 --model <model.gguf> --ctx-size 16384
 uv run summarize-meeting
 ```
 
-接続先を変更する場合は、起動環境へ`SUMMARIZE_MEETING_LLM_URL`を設定します。HTTPとHTTPSを使用でき、HTTPの場合は文字起こし内容が暗号化されず送信されます。`GET /v1/models`でモデルが1つだけ見える場合は自動選択します。複数モデルが見える場合は`SUMMARIZE_MEETING_LLM_MODEL`で使用するモデルIDを指定します。従来の`SUMMARIZE_MEETING_LMSTUDIO_URL`も互換目的で引き続き読み取ります。
+接続先を変更する場合は、起動環境へ`SUMMARIZE_MEETING_LLM_URL`を設定します。HTTPとHTTPSを使用でき、HTTPの場合は文字起こし内容が暗号化されず送信されます。`GET /v1/models`でモデルが1つだけ見える場合は自動選択します。複数モデルが見える場合は`SUMMARIZE_MEETING_LLM_MODEL`で使用するモデルIDを指定します。
 
 初回は固定URLとSHA-256検証付きスクリプトで、CPU話者分離モデルを`models/sherpa-onnx/diarization/`へ配置します。
 
@@ -83,6 +83,8 @@ uv run python scripts/doctor.py
 OS、デスクトップセッション、Portal、PipeWire/PulseAudio、音声デバイス、OCRモデル、CUDA、保存先の書込権限を表示します。
 
 記録データは次へ保存されます。
+
+データ形式は現行版だけをサポートします。`session.json`と`audio/manifest.json`はschema version 2です。manifest内のtrack名は`microphone`または`system`、`file`は`microphone.wav`のような`audio/`基準の単純なファイル名です。旧形式からの移行・読み替えは行いません。
 
 ```text
 data/meetings/<session>/
@@ -130,7 +132,7 @@ uv run python -m summarize_meeting.processing.diarization_worker --session "<dat
 uv run python -m summarize_meeting.processing.screen_analysis_worker --session "<data/meetings/セッション>" --models-dir "<アプリルート/models>" --language ja
 ```
 
-議事録生成workerだけを実行する場合:
+会話要約workerだけを実行する場合:
 
 ```console
 uv run python -m summarize_meeting.processing.minutes_worker --session "<data/meetings/セッション>" --base-url http://192.168.1.158:8081/v1

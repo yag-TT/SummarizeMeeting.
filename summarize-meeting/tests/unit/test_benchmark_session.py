@@ -25,6 +25,7 @@ def test_create_repeated_audio_session_preserves_track_offset(tmp_path: Path) ->
     (audio / "manifest.json").write_text(
         json.dumps(
             {
+                "schema_version": 2,
                 "tracks": {
                     "microphone": {
                         "file": "microphone.wav",
@@ -58,7 +59,7 @@ def test_create_repeated_audio_session_refuses_existing_output(tmp_path: Path) -
         create_repeated_audio_session(tmp_path / "source", output, duration_seconds=1.0)
 
 
-def test_create_repeated_audio_session_accepts_session_relative_track_path(
+def test_create_repeated_audio_session_rejects_legacy_track_path(
     tmp_path: Path,
 ) -> None:
     source = tmp_path / "source"
@@ -68,6 +69,7 @@ def test_create_repeated_audio_session_accepts_session_relative_track_path(
     (audio / "manifest.json").write_text(
         json.dumps(
             {
+                "schema_version": 2,
                 "tracks": {
                     "microphone": {
                         "file": "audio/microphone.wav",
@@ -79,10 +81,9 @@ def test_create_repeated_audio_session_accepts_session_relative_track_path(
         encoding="utf-8",
     )
 
-    output = create_repeated_audio_session(
-        source,
-        tmp_path / "output",
-        duration_seconds=1.0,
-    )
-
-    assert (output / "audio" / "microphone.wav").is_file()
+    with pytest.raises(ValueError, match="invalid track file"):
+        create_repeated_audio_session(
+            source,
+            tmp_path / "output",
+            duration_seconds=1.0,
+        )

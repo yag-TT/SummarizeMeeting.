@@ -171,10 +171,13 @@ def _create_recorded_session(root: Path, name: str = "session") -> Path:
     (session / "analysis").mkdir()
     (session / "output").mkdir()
     (session / "session.json").write_text(
-        '{"title":"自動実行テスト","started_at":"2026-08-08T12:00:00+09:00","status":"RECORDED"}',
+        '{"schema_version":2,"title":"自動実行テスト","started_at":"2026-08-08T12:00:00+09:00","status":"RECORDED"}',
         encoding="utf-8",
     )
-    (audio / "manifest.json").write_text('{"tracks":{}}', encoding="utf-8")
+    (audio / "manifest.json").write_text(
+        '{"schema_version":2,"tracks":{"microphone":{"file":"microphone.wav"}}}',
+        encoding="utf-8",
+    )
     (audio / "microphone.wav").write_bytes(b"wave")
     return session
 
@@ -183,10 +186,10 @@ def _add_microphone_track(session: Path) -> None:
     (session / "audio" / "manifest.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "tracks": {
                     "microphone": {
-                        "file": "audio/microphone.wav",
+                        "file": "microphone.wav",
                         "estimated_start_offset_ms": 0,
                     }
                 },
@@ -222,10 +225,12 @@ def test_ui_selects_past_session_and_starts_transcription(
         (session / "analysis").mkdir()
         (session / "output").mkdir()
         (session / "session.json").write_text(
-            f'{{"title":"{title}","started_at":"{started_at}","status":"RECORDED"}}',
+            f'{{"schema_version":2,"title":"{title}","started_at":"{started_at}","status":"RECORDED"}}',
             encoding="utf-8",
         )
-        (audio / "manifest.json").write_text('{"tracks":{}}', encoding="utf-8")
+        (audio / "manifest.json").write_text(
+            '{"schema_version":2,"tracks":{}}', encoding="utf-8"
+        )
         (audio / "microphone.wav").write_bytes(b"wave")
     (newer / "analysis" / "transcription.json").write_text(
         '{"status":"SUCCEEDED"}', encoding="utf-8"
@@ -264,7 +269,9 @@ def test_ui_starts_diarization_and_updates_speaker_names(
     session = _create_recorded_session(tmp_path)
     (session / "audio" / "system.wav").write_bytes(b"wave")
     (session / "audio" / "manifest.json").write_text(
-        json.dumps({"tracks": {"system_audio": {"file": "system.wav"}}}),
+        json.dumps(
+            {"schema_version": 2, "tracks": {"system": {"file": "system.wav"}}}
+        ),
         encoding="utf-8",
     )
     (session / "analysis" / "transcription.json").write_text(
@@ -635,6 +642,8 @@ def test_ui_uses_scrollable_content_with_persistent_action_bar(qapp: QApplicatio
 
     assert window._scroll.widgetResizable()  # noqa: SLF001
     assert window._start.parentWidget() is not window._scroll.widget()  # noqa: SLF001
+    assert window._open_minutes.text() == "要約を開く"  # noqa: SLF001
+    assert window._generate_minutes.text() == "要約を生成"  # noqa: SLF001
     assert window.minimumHeight() <= 560
     window.close()
 

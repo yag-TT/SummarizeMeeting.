@@ -52,7 +52,6 @@ def _setup(tmp_path: Path) -> tuple[PortableAppPaths, Path]:
 def test_controller_uses_llama_cpp_default_endpoint(tmp_path: Path, monkeypatch) -> None:
     paths, _session = _setup(tmp_path)
     monkeypatch.delenv("SUMMARIZE_MEETING_LLM_URL", raising=False)
-    monkeypatch.delenv("SUMMARIZE_MEETING_LMSTUDIO_URL", raising=False)
 
     controller = MinutesController(paths)
 
@@ -64,7 +63,6 @@ def test_controller_prefers_new_llm_url_environment_variable(
 ) -> None:
     paths, _session = _setup(tmp_path)
     monkeypatch.setenv("SUMMARIZE_MEETING_LLM_URL", "http://192.168.1.10:9000/v1")
-    monkeypatch.setenv("SUMMARIZE_MEETING_LMSTUDIO_URL", "http://127.0.0.1:1234/v1")
 
     controller = MinutesController(paths)
 

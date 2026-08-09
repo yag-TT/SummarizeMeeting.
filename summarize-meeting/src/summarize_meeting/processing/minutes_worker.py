@@ -13,7 +13,7 @@ from summarize_meeting.processing.minutes import (
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Generate meeting minutes with llama.cpp")
+    parser = argparse.ArgumentParser(description="Summarize a conversation with llama.cpp")
     parser.add_argument("--session", required=True, type=Path)
     parser.add_argument("--base-url", default=DEFAULT_LLM_BASE_URL)
     parser.add_argument("--model")

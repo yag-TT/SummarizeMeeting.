@@ -15,7 +15,11 @@ import cv2
 from PySide6.QtCore import QObject, Signal
 
 from summarize_meeting.domain.capture import AudioFormat
-from summarize_meeting.domain.session import SessionStatus
+from summarize_meeting.domain.session import (
+    AUDIO_MANIFEST_SCHEMA_VERSION,
+    SESSION_SCHEMA_VERSION,
+    SessionStatus,
+)
 from summarize_meeting.infrastructure.audio_writer import (
     WaveValidation,
     WaveValidationError,
@@ -71,6 +75,8 @@ class SessionRecoveryService:
             try:
                 value = json.loads(session_json.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(value, dict) or value.get("schema_version") != SESSION_SCHEMA_VERSION:
                 continue
             status = str(value.get("status", ""))
             if status not in _INTERRUPTED_STATUSES:
@@ -188,6 +194,10 @@ class SessionRecoveryService:
             return {}
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(value, dict):
+                raise ValueError("objectではありません")
+            if value.get("schema_version") != AUDIO_MANIFEST_SCHEMA_VERSION:
+                raise ValueError("現在の音声manifest形式ではありません")
             tracks = value.get("tracks", {})
             if not isinstance(tracks, dict):
                 raise ValueError("tracksがobjectではありません")
@@ -196,15 +206,22 @@ class SessionRecoveryService:
             return {}
 
         expectations: dict[str, dict[str, Any]] = {}
-        for track_name, track in tracks.items():
+        for track_name in ("microphone", "system"):
+            track = tracks.get(track_name)
+            if track is None:
+                continue
             if not isinstance(track, dict):
                 warnings.append(f"audio/manifest.json: {track_name} がobjectではありません")
                 continue
             file_value = track.get("file")
-            if not isinstance(file_value, str):
+            if not isinstance(file_value, str) or not file_value:
                 warnings.append(f"audio/manifest.json: {track_name}.file がありません")
                 continue
-            expectations[Path(file_value).name] = track
+            relative = Path(file_value)
+            if relative.is_absolute() or relative.parts != (relative.name,):
+                warnings.append(f"audio/manifest.json: {track_name}.file が不正です")
+                continue
+            expectations[file_value] = track
         return expectations
 
     @staticmethod

@@ -6,6 +6,11 @@ import wave
 from datetime import datetime
 from pathlib import Path
 
+from summarize_meeting.domain.session import (
+    AUDIO_MANIFEST_SCHEMA_VERSION,
+    SESSION_SCHEMA_VERSION,
+)
+
 
 def create_repeated_audio_session(
     source_session: Path,
@@ -24,6 +29,8 @@ def create_repeated_audio_session(
 
     source_audio = source_session / "audio"
     manifest = _read_object(source_audio / "manifest.json")
+    if manifest.get("schema_version") != AUDIO_MANIFEST_SCHEMA_VERSION:
+        raise ValueError("source manifest schema is not current")
     tracks = manifest.get("tracks")
     if not isinstance(tracks, dict) or not tracks:
         raise ValueError("source manifest has no tracks")
@@ -40,12 +47,9 @@ def create_repeated_audio_session(
         if not isinstance(file_name, str):
             raise ValueError(f"invalid track file: {name}")
         relative_path = Path(file_name)
-        if relative_path.parts == (relative_path.name,):
-            source_wave = source_audio / relative_path
-        elif relative_path.parts == ("audio", relative_path.name):
-            source_wave = source_session / relative_path
-        else:
+        if relative_path.parts != (relative_path.name,):
             raise ValueError(f"invalid track file: {name}")
+        source_wave = source_audio / relative_path
         output_wave = output_audio / relative_path.name
         frames, sample_rate = _repeat_wave(
             source_wave,
@@ -56,7 +60,7 @@ def create_repeated_audio_session(
         start_offset = start_offset if isinstance(start_offset, int) else 0
         output_tracks[name] = {
             **raw_track,
-            "file": file_name,
+            "file": relative_path.name,
             "frames_written": frames,
             "audio_duration_ms": frames * 1000 / sample_rate,
             "capture_ended_offset_ms": start_offset + round(frames * 1000 / sample_rate),
@@ -67,7 +71,7 @@ def create_repeated_audio_session(
     (output_audio / "manifest.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": AUDIO_MANIFEST_SCHEMA_VERSION,
                 "monotonic_origin_ns": 0,
                 "tracks": output_tracks,
             },
@@ -82,7 +86,7 @@ def create_repeated_audio_session(
     (output_session / "session.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": SESSION_SCHEMA_VERSION,
                 "id": f"benchmark-{output_session.name}",
                 "title": f"STT benchmark {duration_seconds:g}s",
                 "status": "RECORDED",

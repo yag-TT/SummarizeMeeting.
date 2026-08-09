@@ -9,6 +9,11 @@ from pathlib import Path
 
 import numpy as np
 
+from summarize_meeting.domain.session import (
+    AUDIO_MANIFEST_SCHEMA_VERSION,
+    SESSION_SCHEMA_VERSION,
+)
+
 
 @dataclass(slots=True)
 class ValidationReport:
@@ -45,6 +50,11 @@ def validate_phase2_session(
     if None in (session_value, manifest, transcription, jobs):
         return report
 
+    if session_value.get("schema_version") != SESSION_SCHEMA_VERSION:
+        report.fail("session schema is not current")
+    if manifest.get("schema_version") != AUDIO_MANIFEST_SCHEMA_VERSION:
+        report.fail("audio manifest schema is not current")
+
     if session_value.get("status") != "RECORDED":
         report.fail(f"session status is not RECORDED: {session_value.get('status')}")
 
@@ -53,11 +63,10 @@ def validate_phase2_session(
         report.fail("audio manifest has no tracks object")
         tracks = {}
     audio_metrics: dict[str, object] = {}
-    for source, candidates in (
-        ("microphone", ("microphone",)),
-        ("system", ("system_audio", "system")),
-    ):
-        name, track = _find_track(tracks, candidates)
+    for source in ("microphone", "system"):
+        value = tracks.get(source)
+        name = source if isinstance(value, dict) else None
+        track = value if isinstance(value, dict) else None
         if track is None:
             report.fail(f"{source} audio track is missing")
             continue
@@ -163,28 +172,13 @@ def _read_object(path: Path, label: str, report: ValidationReport) -> dict[str, 
     return value
 
 
-def _find_track(
-    tracks: dict[str, object],
-    candidates: tuple[str, ...],
-) -> tuple[str | None, dict[str, object] | None]:
-    for name in candidates:
-        value = tracks.get(name)
-        if isinstance(value, dict):
-            return name, value
-    return None, None
-
-
 def _resolve_audio_path(session: Path, value: object) -> Path | None:
     if not isinstance(value, str) or not value:
         return None
     relative = Path(value)
     if relative.is_absolute():
         return None
-    if relative.parts == (relative.name,):
-        return session / "audio" / relative
-    if relative.parts == ("audio", relative.name):
-        return session / relative
-    return None
+    return session / "audio" / relative if relative.parts == (relative.name,) else None
 
 
 def _wave_metrics(path: Path) -> dict[str, object]:

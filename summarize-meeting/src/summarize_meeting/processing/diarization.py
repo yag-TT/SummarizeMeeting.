@@ -15,6 +15,10 @@ import av
 import numpy as np
 
 from summarize_meeting.domain.diarization import BackendSpeakerTurn, SpeakerTurn
+from summarize_meeting.domain.session import (
+    AUDIO_MANIFEST_SCHEMA_VERSION,
+    SESSION_SCHEMA_VERSION,
+)
 
 ProgressCallback = Callable[[int, str], None]
 BackendProgressCallback = Callable[[float], None]
@@ -161,12 +165,16 @@ class DiarizationService:
             raise DiarizationError("話者数は1から10の範囲で指定してください")
         session_directory = session_directory.resolve()
         session_value = _read_object(session_directory / "session.json", "session.json")
+        if session_value.get("schema_version") != SESSION_SCHEMA_VERSION:
+            raise DiarizationError("現在のデータ形式ではないため話者分離できません")
         if session_value.get("status") != "RECORDED":
             raise DiarizationError("録音完了セッションだけを話者分離できます")
         manifest = _read_object(
             session_directory / "audio" / "manifest.json",
             "音声manifest",
         )
+        if manifest.get("schema_version") != AUDIO_MANIFEST_SCHEMA_VERSION:
+            raise DiarizationError("現在の音声manifest形式ではありません")
         track = _system_track(manifest)
         audio_path = _resolve_audio_path(session_directory, track.get("file"))
         if not audio_path.is_file():
@@ -277,6 +285,11 @@ class DiarizationService:
         names: Mapping[str, str],
     ) -> Path:
         session_directory = session_directory.resolve()
+        session = _read_object(session_directory / "session.json", "セッション情報")
+        if session.get("schema_version") != SESSION_SCHEMA_VERSION:
+            raise DiarizationError(
+                "現在のデータ形式ではないため話者名を更新できません"
+            )
         diarization = _read_object(
             session_directory / "analysis" / "diarization.json",
             "話者分離結果",
@@ -522,10 +535,9 @@ def _system_track(manifest: dict[str, object]) -> dict[str, object]:
     tracks = manifest.get("tracks")
     if not isinstance(tracks, dict):
         raise DiarizationError("音声manifestにtracksがありません")
-    for name in ("system_audio", "system"):
-        value = tracks.get(name)
-        if isinstance(value, dict):
-            return value
+    value = tracks.get("system")
+    if isinstance(value, dict):
+        return value
     raise DiarizationError("PC音声trackがありません")
 
 
@@ -535,11 +547,9 @@ def _resolve_audio_path(session: Path, value: object) -> Path:
     relative = Path(value)
     if relative.is_absolute():
         raise DiarizationError("PC音声ファイル名が不正です")
-    if relative.parts == (relative.name,):
-        return session / "audio" / relative
-    if relative.parts == ("audio", relative.name):
-        return session / relative
-    raise DiarizationError("PC音声ファイル名が不正です")
+    if relative.parts != (relative.name,):
+        raise DiarizationError("PC音声ファイル名が不正です")
+    return session / "audio" / relative
 
 
 def _speaker_turn_from_dict(value: object) -> SpeakerTurn:

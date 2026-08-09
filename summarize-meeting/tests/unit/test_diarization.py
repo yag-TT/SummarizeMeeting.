@@ -59,15 +59,16 @@ def _create_session(tmp_path: Path) -> Path:
     (session / "analysis").mkdir()
     (session / "output").mkdir()
     (session / "session.json").write_text(
-        json.dumps({"status": "RECORDED"}),
+        json.dumps({"schema_version": 2, "status": "RECORDED"}),
         encoding="utf-8",
     )
     (session / "audio" / "manifest.json").write_text(
         json.dumps(
             {
+                "schema_version": 2,
                 "tracks": {
-                    "system_audio": {
-                        "file": "audio/system.wav",
+                    "system": {
+                        "file": "system.wav",
                         "estimated_start_offset_ms": 500,
                     }
                 }
@@ -188,10 +189,21 @@ def test_service_rejects_manifest_path_traversal(tmp_path: Path) -> None:
     session = _create_session(tmp_path)
     manifest_path = session / "audio" / "manifest.json"
     manifest = json.loads(manifest_path.read_text("utf-8"))
-    manifest["tracks"]["system_audio"]["file"] = "../outside.wav"
+    manifest["tracks"]["system"]["file"] = "../outside.wav"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     with pytest.raises(DiarizationError, match="ファイル名が不正"):
+        DiarizationService(_Backend((BackendSpeakerTurn(0, 1, 0),))).run(session)
+
+
+def test_service_rejects_legacy_session_schema(tmp_path: Path) -> None:
+    session = _create_session(tmp_path)
+    (session / "session.json").write_text(
+        json.dumps({"schema_version": 1, "status": "RECORDED"}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(DiarizationError, match="現在のデータ形式"):
         DiarizationService(_Backend((BackendSpeakerTurn(0, 1, 0),))).run(session)
 
 

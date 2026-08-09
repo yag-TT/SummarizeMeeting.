@@ -23,7 +23,7 @@
 
 `来週の金曜日までに、テスト結果を共有します。`
 
-## 3. 初回試験で検出した不具合
+## 3. 初回試験で検出した不具合（旧形式の記録）
 
 Windowsデバイスからの2トラック録音とWAV確定は成功したが、文字起こしが次のエラーで失敗した。
 
@@ -31,23 +31,21 @@ Windowsデバイスからの2トラック録音とWAV確定は成功したが、
 TranscriptionError: microphoneの音声ファイル名が不正です
 ```
 
-Phase 1の録音manifestはセッション起点の`audio/microphone.wav`を保存する。一方、Phase 2の文字起こしは音声フォルダ起点の`microphone.wav`だけを許可していたため、実録音セッションを入力できなかった。
+当時のPhase 1録音manifestはセッション起点の`audio/microphone.wav`を保存していた。一方、Phase 2の文字起こしは音声フォルダ起点の`microphone.wav`だけを許可していたため、実録音セッションを入力できなかった。
 
-文字起こし側を修正し、安全な相対パスとして次の両形式を受理するようにした。絶対パス、`..`、これ以外の階層は引き続き拒否する。
+この試験時点では両形式を受理する暫定対応を行ったが、現行形式では廃止した。現在は`audio/manifest.json` schema version 2と、音声フォルダ基準の単純なファイル名だけを受理する。
 
 - `microphone.wav`
-- `audio/microphone.wav`
-
-長時間ベンチマーク用セッション生成ツールにも同じ互換性を追加した。
+旧形式の`audio/microphone.wav`は移行せず拒否する。長時間ベンチマーク用セッション生成ツールも同じ現行形式だけを扱う。
 
 ## 4. 修正後の結果
 
 | 確認項目 | 結果 |
 |---|---|
 | セッション状態 | `RECORDED` |
-| 録音トラック | microphone、system_audioの2件 |
+| 録音トラック | microphone、systemの2件 |
 | WAV形式 | 48 kHz、PCM16、2ch |
-| WAV時間 | microphone 6.2秒、system_audio 6.0秒 |
+| WAV時間 | microphone 6.2秒、system 6.0秒 |
 | 録音overflow | 両トラック0 |
 | 録音queue pressure | 両トラック0 |
 | WAV検証 | 両トラック`validated: true` |

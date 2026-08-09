@@ -15,6 +15,8 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
+from summarize_meeting.domain.session import SESSION_SCHEMA_VERSION
+
 ProgressCallback = Callable[[int, str], None]
 
 DEFAULT_LLM_BASE_URL = "http://192.168.1.158:8081/v1"
@@ -69,7 +71,10 @@ class LlamaCppMinutesBackend:
             "messages": [
                 {
                     "role": "system",
-                    "content": "入力資料だけを根拠に日本語の議事録JSONを作成してください。",
+                    "content": (
+                        "入力資料だけを根拠に、会議・雑談・相談・インタビューなど"
+                        "種類を問わない日本語の会話要約JSONを作成してください。"
+                    ),
                 },
                 {"role": "user", "content": prompt},
             ],
@@ -80,7 +85,7 @@ class LlamaCppMinutesBackend:
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
-                    "name": "meeting_minutes",
+                    "name": "conversation_summary",
                     "strict": True,
                     "schema": schema,
                 },
@@ -93,7 +98,7 @@ class LlamaCppMinutesBackend:
         message = choices[0].get("message")
         content = message.get("content") if isinstance(message, dict) else None
         if not isinstance(content, str):
-            raise MinutesError("llama.cpp APIの応答に議事録JSONがありません")
+            raise MinutesError("llama.cpp APIの応答に会話要約JSONがありません")
         return _extract_json_object(content)
 
     def _resolve_model(self) -> str:
@@ -148,10 +153,6 @@ class LlamaCppMinutesBackend:
         return value
 
 
-# Phase 5で公開した名前との互換性を維持する。
-LMStudioMinutesBackend = LlamaCppMinutesBackend
-
-
 class MinutesService:
     def __init__(
         self,
@@ -172,8 +173,10 @@ class MinutesService:
     ) -> Path:
         session_directory = session_directory.resolve()
         session = _read_object(session_directory / "session.json", "session.json")
+        if session.get("schema_version") != SESSION_SCHEMA_VERSION:
+            raise MinutesError("現在のデータ形式ではないため会話要約できません")
         if session.get("status") != "RECORDED":
-            raise MinutesError("録音完了セッションだけを議事録化できます")
+            raise MinutesError("録音完了セッションだけを会話要約できます")
 
         _notify(progress_callback, 0, "文字起こしと画面解析結果を確認しています")
         transcript, transcript_path, transcript_mode = _load_transcript(session_directory)
@@ -198,7 +201,7 @@ class MinutesService:
             _notify(
                 progress_callback,
                 start,
-                f"議事録の材料を整理しています ({index}/{len(chunks)})",
+                f"会話の内容を整理しています ({index}/{len(chunks)})",
             )
             partials.append(
                 self._backend.generate(
@@ -229,7 +232,7 @@ class MinutesService:
             json.dumps(timeline, ensure_ascii=False, sort_keys=True).encode("utf-8")
         ).hexdigest()
         minutes_value = {
-            "schema_version": 1,
+            "schema_version": 2,
             "status": "SUCCEEDED",
             "generation_id": generation_id,
             "completed_at": completed_at,
@@ -243,11 +246,11 @@ class MinutesService:
             "minutes": validated,
             "warnings": warnings,
         }
-        _notify(progress_callback, 96, "議事録を保存しています")
+        _notify(progress_callback, 96, "会話要約を保存しています")
         _write_json_atomic(session_directory / "analysis" / "minutes.json", minutes_value)
         output = session_directory / "output" / "minutes.md"
         _write_text_atomic(output, _render_markdown(session, timeline, validated, warnings))
-        _notify(progress_callback, 100, "議事録生成が完了しました")
+        _notify(progress_callback, 100, "会話要約が完了しました")
         return output
 
 
@@ -272,6 +275,10 @@ MINUTES_JSON_SCHEMA: dict[str, object] = {
             "items": _evidenced_object(
                 {"title": {"type": "string"}, "summary": {"type": "string"}}
             ),
+        },
+        "key_points": {
+            "type": "array",
+            "items": _evidenced_object({"text": {"type": "string"}}),
         },
         "decisions": {
             "type": "array",
@@ -300,6 +307,7 @@ MINUTES_JSON_SCHEMA: dict[str, object] = {
     "required": [
         "summary",
         "topics",
+        "key_points",
         "decisions",
         "todos",
         "pending",
@@ -421,7 +429,7 @@ def _build_timeline(
 
 def _timeline_chunks(items: object, max_characters: int) -> list[list[object]]:
     if not isinstance(items, list) or not items:
-        raise MinutesError("議事録化できるタイムライン項目がありません")
+        raise MinutesError("要約できる会話のタイムライン項目がありません")
     chunks: list[list[object]] = []
     current: list[object] = []
     current_size = 0
@@ -447,12 +455,16 @@ def _generation_prompt(
 ) -> str:
     title = session.get("title") if isinstance(session.get("title"), str) else "会議"
     return (
-        "あなたは日本語の議事録作成者です。以下のタイムラインだけを根拠にJSONを生成してください。\n"
-        "推測や一般知識を足してはいけません。決定、TODO、保留、参考情報、議題には必ず根拠のidをevidence_idsへ入れてください。\n"
+        "あなたは日本語の会話要約者です。会議、雑談、相談、インタビューなどの種類を決めつけず、"
+        "以下のタイムラインだけを根拠にJSONを生成してください。\n"
+        "全体像が分かるsummary、主なtopics、重要なkey_pointsを中心に整理してください。"
+        "推測や一般知識を足してはいけません。各項目には必ず根拠のidをevidence_idsへ入れてください。\n"
+        "decisions、todos、pendingは、明示的な合意、今後の対応、未解決事項がある場合だけ記載し、"
+        "該当しなければ空配列にしてください。\n"
         "相対的な期限は原文のまま記載し、絶対日付へ変換してはいけません。"
         "担当者または期限が明示されていないTODOは「不明」としてください。\n"
-        "画面OCRだけから決定を推測せず、該当項目がなければ空配列にしてください。\n"
-        f"会議名: {title}\n分割: {index}/{total}\nタイムライン:\n"
+        "画面OCRだけから合意や決定を推測しないでください。\n"
+        f"記録名: {title}\n分割: {index}/{total}\nタイムライン:\n"
         + json.dumps(items, ensure_ascii=False, separators=(",", ":"))
     )
 
@@ -460,10 +472,13 @@ def _generation_prompt(
 def _merge_prompt(session: Mapping[str, object], partials: Sequence[Mapping[str, object]]) -> str:
     title = session.get("title") if isinstance(session.get("title"), str) else "会議"
     return (
-        "次の分割議事録を重複なく統合し、同じJSON形式で返してください。入力にない事実を追加してはいけません。\n"
+        "次の分割会話要約を重複なく統合し、同じJSON形式で返してください。"
+        "入力にない事実を追加してはいけません。\n"
+        "summary、topics、key_pointsを中心に会話全体を理解できる内容へまとめ、"
+        "decisions、todos、pendingは明示的な内容だけを保持してください。\n"
         "evidence_idsは保持し、相対期限は原文のままにしてください。"
         "担当者または期限が不明なTODOは「不明」としてください。\n"
-        f"会議名: {title}\n分割議事録:\n"
+        f"記録名: {title}\n分割会話要約:\n"
         + json.dumps(partials, ensure_ascii=False, separators=(",", ":"))
     )
 
@@ -539,11 +554,31 @@ def _validate_generated(
             result.append(converted)
         return result
 
+    topics = validate_list("topics", ("title", "summary"))
+    key_points = validate_list("key_points", ("text",))
+    if not key_points:
+        key_points = [
+            {
+                "text": str(topic["summary"]),
+                "evidence_ids": list(topic["evidence_ids"]),
+            }
+            for topic in topics
+            if topic.get("summary")
+        ]
+    if not key_points and summary:
+        summary_evidence = [
+            evidence_id
+            for evidence_id, item in evidence.items()
+            if item.get("kind") == "speech"
+        ][:3]
+        key_points = [{"text": summary, "evidence_ids": summary_evidence}]
+
     return (
         {
             "summary": summary.strip(),
             "participants": participants,
-            "topics": validate_list("topics", ("title", "summary")),
+            "topics": topics,
+            "key_points": key_points,
             "decisions": validate_list("decisions", ("text",)),
             "todos": validate_list("todos", ("assignee", "task", "deadline")),
             "pending": validate_list("pending", ("text",)),
@@ -563,18 +598,18 @@ def _render_markdown(
     participants = (
         minutes.get("participants") if isinstance(minutes.get("participants"), list) else []
     )
-    lines = [f"# {title}", "", "## 会議概要", ""]
+    lines = [f"# {title}", "", "## 会話情報", ""]
     lines.extend(
         [
-            f"- 日時: {_meeting_datetime(session)}",
-            f"- 所要時間: {_meeting_duration(session, timeline)}",
-            f"- 参加者: {', '.join(str(item) for item in participants) or '不明'}",
+            f"- 記録日時: {_meeting_datetime(session)}",
+            f"- 長さ: {_meeting_duration(session, timeline)}",
+            f"- 話者: {', '.join(str(item) for item in participants) or '不明'}",
             "",
-            "## 要約",
+            "## 会話の要約",
             "",
             str(minutes.get("summary") or "記載なし"),
             "",
-            "## 議題",
+            "## 主な話題",
             "",
         ]
     )
@@ -584,32 +619,42 @@ def _render_markdown(
             if isinstance(topic, dict):
                 lines.extend(
                     [
-                        f"### {topic.get('title') or '議題'}",
+                        f"### {topic.get('title') or '話題'}",
                         "",
                         str(topic.get("summary") or ""),
                         "",
                     ]
                 )
     else:
-        lines.extend(["- 記載なし", ""])
-    lines.extend(["## 決定事項", ""])
-    _append_bullets(lines, minutes.get("decisions"), "text")
-    lines.extend(["## TODO", "", "| 担当 | 内容 | 期限 |", "|---|---|---|"])
+        lines.extend(["- 話題を特定できませんでした", ""])
+
+    lines.extend(["## 会話の要点", ""])
+    _append_bullets(lines, minutes.get("key_points"), "text")
+
+    decisions = minutes.get("decisions") if isinstance(minutes.get("decisions"), list) else []
+    if decisions:
+        lines.extend(["## 明確な合意・決定", ""])
+        _append_bullets(lines, decisions, "text")
+
     todos = minutes.get("todos") if isinstance(minutes.get("todos"), list) else []
     if todos:
+        lines.extend(["## 今後の対応", "", "| 担当 | 内容 | 時期・期限 |", "|---|---|---|"])
         for todo in todos:
             if isinstance(todo, dict):
                 lines.append(
                     f"| {_table(todo.get('assignee'))} | {_table(todo.get('task'))} "
                     f"| {_table(todo.get('deadline'))} |"
                 )
-    else:
-        lines.append("| - | 記載なし | - |")
-    lines.extend(["", "## 保留事項", ""])
-    _append_bullets(lines, minutes.get("pending"), "text")
-    lines.extend(["## 参考情報", ""])
+        lines.append("")
+
+    pending = minutes.get("pending") if isinstance(minutes.get("pending"), list) else []
+    if pending:
+        lines.extend(["## 未解決・確認事項", ""])
+        _append_bullets(lines, pending, "text")
+
     references = minutes.get("references") if isinstance(minutes.get("references"), list) else []
     if references:
+        lines.extend(["## 関連する画面情報", ""])
         for reference in references:
             if not isinstance(reference, dict):
                 continue
@@ -618,10 +663,9 @@ def _render_markdown(
             markdown_image = f"../{image}" if isinstance(image, str) and image else ""
             suffix = f" ([画面]({markdown_image}))" if markdown_image else ""
             lines.append(f"- {timestamp} {reference.get('text') or ''}{suffix}")
-    else:
-        lines.append("- 記載なし")
+        lines.append("")
     if warnings:
-        lines.extend(["", "## 生成時の注意", ""])
+        lines.extend(["## 要約時の注意", ""])
         lines.extend(f"- {warning}" for warning in warnings)
     return "\n".join(lines).rstrip() + "\n"
 

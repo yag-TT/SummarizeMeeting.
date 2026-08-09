@@ -24,21 +24,26 @@ def _write_wave(path: Path, *, silent: bool = False) -> None:
 
 def _create_session(tmp_path: Path) -> Path:
     session = tmp_path / "session"
-    _write_json(session / "session.json", {"status": "RECORDED"})
+    _write_json(
+        session / "session.json", {"schema_version": 2, "status": "RECORDED"}
+    )
     tracks = {}
     for source, file_name in (
         ("microphone", "microphone.wav"),
-        ("system_audio", "system.wav"),
+        ("system", "system.wav"),
     ):
         _write_wave(session / "audio" / file_name)
         tracks[source] = {
-            "file": f"audio/{file_name}",
+            "file": file_name,
             "validated": True,
             "overflow_count": 0,
             "queue_pressure_count": 0,
             "gaps": [],
         }
-    _write_json(session / "audio" / "manifest.json", {"tracks": tracks})
+    _write_json(
+        session / "audio" / "manifest.json",
+        {"schema_version": 2, "tracks": tracks},
+    )
     segments = [
         {"start": 0.1, "end": 0.5, "source": "microphone", "text": "確認します"},
         {"start": 0.2, "end": 0.6, "source": "system", "text": "共有します"},

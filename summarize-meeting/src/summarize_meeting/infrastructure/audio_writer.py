@@ -247,7 +247,7 @@ class SegmentedWaveWriter:
 
     def stats(self) -> AudioTrackStats:
         return AudioTrackStats(
-            file=f"audio/{self._track_name}.wav",
+            file=f"{self._track_name}.wav",
             sample_rate=self._format.sample_rate,
             channels=self._format.channels,
             sample_width_bytes=self._format.sample_width_bytes,

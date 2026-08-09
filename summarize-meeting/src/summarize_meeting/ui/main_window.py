@@ -262,21 +262,21 @@ class MainWindow(QMainWindow):
         analysis_layout.addWidget(self._screen_analysis_progress)
 
         minutes = QHBoxLayout()
-        minutes.addWidget(QLabel("議事録生成"))
+        minutes.addWidget(QLabel("会話要約"))
         self._minutes_status = QLabel("未実行")
         minutes.addWidget(self._minutes_status)
         minutes.addStretch(1)
-        self._open_minutes = QPushButton("議事録を開く")
+        self._open_minutes = QPushButton("要約を開く")
         self._open_minutes.setEnabled(False)
         minutes.addWidget(self._open_minutes)
-        self._generate_minutes = QPushButton("議事録を生成")
+        self._generate_minutes = QPushButton("要約を生成")
         self._generate_minutes.setEnabled(False)
         minutes.addWidget(self._generate_minutes)
         analysis_layout.addLayout(minutes)
         self._minutes_progress = QProgressBar()
         self._minutes_progress.setRange(0, 100)
         self._minutes_progress.setValue(0)
-        self._minutes_progress.setFormat("議事録生成 %p%")
+        self._minutes_progress.setFormat("会話要約 %p%")
         self._minutes_progress.setVisible(False)
         analysis_layout.addWidget(self._minutes_progress)
         root.addWidget(analysis_group)
@@ -442,7 +442,7 @@ class MainWindow(QMainWindow):
         )
 
     def _open_selected_minutes(self) -> None:
-        self._open_selected_output(Path("output/minutes.md"), "議事録ファイルが見つかりません。")
+        self._open_selected_output(Path("output/minutes.md"), "会話要約ファイルが見つかりません。")
 
     def _open_selected_output(self, relative_path: Path, missing_message: str) -> None:
         summary = self._selected_analysis_session()
@@ -755,7 +755,7 @@ class MainWindow(QMainWindow):
     def _toggle_minutes(self) -> None:
         controller = self._minutes_controller
         if controller is None:
-            self.show_error("議事録生成機能を初期化できませんでした。")
+            self.show_error("会話要約機能を初期化できませんでした。")
             return
         if controller.is_running:
             self._generate_minutes.setEnabled(False)
@@ -764,7 +764,7 @@ class MainWindow(QMainWindow):
             return
         summary = self._selected_analysis_session()
         if summary is None:
-            self.show_error("議事録を生成する会議記録がありません。")
+            self.show_error("要約する会話記録がありません。")
             return
         try:
             controller.start(summary.path)
@@ -786,7 +786,7 @@ class MainWindow(QMainWindow):
             self.show_error(str(exc))
             return
         self._load_speaker_names(summary.path)
-        self.show_information(f"話者名と議事録を更新しました: {output}")
+        self.show_information(f"話者名と会話要約を更新しました: {output}")
 
     def _maybe_start_auto_transcription(
         self,
@@ -957,15 +957,15 @@ class MainWindow(QMainWindow):
         self._diarize.setEnabled(False)
         self._analyze_screens.setEnabled(False)
         self._minutes_status.setText("実行中")
-        self._generate_minutes.setText("議事録生成をキャンセル")
+        self._generate_minutes.setText("要約生成をキャンセル")
         self._generate_minutes.setEnabled(True)
         self._minutes_progress.setValue(0)
         self._minutes_progress.setVisible(True)
-        self.show_information("ローカルLLMで議事録を生成しています。")
+        self.show_information("ローカルLLMで会話内容を要約しています。")
 
     def _on_minutes_progress(self, percent: int, message: str) -> None:
         self._minutes_progress.setValue(percent)
-        self._minutes_progress.setFormat(f"議事録生成 %p% - {message}")
+        self._minutes_progress.setFormat(f"会話要約 %p% - {message}")
         self.show_information(message)
 
     def _on_minutes_finished(self, session_path: str, output_path: str) -> None:
@@ -973,7 +973,7 @@ class MainWindow(QMainWindow):
             return
         self._finish_minutes_ui("完了")
         self.refresh_analysis_sessions(Path(session_path))
-        self.show_information(f"議事録を保存しました: {output_path}")
+        self.show_information(f"会話要約を保存しました: {output_path}")
 
     def _on_minutes_failed(self, session_path: str, message: str) -> None:
         if not self._is_current_session(session_path):
@@ -985,11 +985,11 @@ class MainWindow(QMainWindow):
         if not self._is_current_session(session_path):
             return
         self._finish_minutes_ui("キャンセル")
-        self.show_information("議事録生成をキャンセルしました。")
+        self.show_information("会話要約をキャンセルしました。")
 
     def _finish_minutes_ui(self, status: str) -> None:
         self._minutes_status.setText(status)
-        self._generate_minutes.setText("議事録を再生成")
+        self._generate_minutes.setText("要約を再生成")
         self._minutes_progress.setVisible(False)
         self._set_inputs_enabled(True)
         self._update_analysis_availability()
@@ -1116,7 +1116,7 @@ class MainWindow(QMainWindow):
             self._analyze_screens.setText("画面解析を実行")
             self._analyze_screens.setEnabled(False)
             self._minutes_status.setText("対象なし")
-            self._generate_minutes.setText("議事録を生成")
+            self._generate_minutes.setText("要約を生成")
             self._generate_minutes.setEnabled(False)
             self._open_session.setEnabled(False)
             self._open_transcript.setEnabled(False)
@@ -1177,9 +1177,9 @@ class MainWindow(QMainWindow):
         }.get(summary.minutes_status, summary.minutes_status)
         self._minutes_status.setText(minutes_status)
         self._generate_minutes.setText(
-            "議事録を再生成"
+            "要約を再生成"
             if summary.minutes_status != "NOT_STARTED"
-            else "議事録を生成"
+            else "要約を生成"
         )
         self._load_speaker_names(summary.path)
         self._update_analysis_availability()

@@ -48,7 +48,9 @@ def _session(tmp_path: Path, events: list[dict[str, object]]) -> Path:
     session = tmp_path / "session"
     screenshots = session / "screenshots"
     screenshots.mkdir(parents=True)
-    (session / "session.json").write_text('{"status":"RECORDED"}', encoding="utf-8")
+    (session / "session.json").write_text(
+        '{"schema_version":2,"status":"RECORDED"}', encoding="utf-8"
+    )
     (screenshots / "events.jsonl").write_text(
         "\n".join(json.dumps(value, ensure_ascii=False) for value in events) + "\n",
         encoding="utf-8",
@@ -143,6 +145,16 @@ def test_service_rejects_path_traversal(tmp_path: Path) -> None:
 
     with pytest.raises(ScreenAnalysisError, match="fileが不正"):
         ScreenAnalysisService(backend).run(session)
+
+
+def test_service_rejects_legacy_session_schema(tmp_path: Path) -> None:
+    session = _session(tmp_path, [_event(1, 1000, "000001.png")])
+    (session / "session.json").write_text(
+        '{"schema_version":1,"status":"RECORDED"}', encoding="utf-8"
+    )
+
+    with pytest.raises(ScreenAnalysisError, match="現在のデータ形式"):
+        ScreenAnalysisService(_FakeBackend({})).run(session)
 
 
 def test_understanding_does_not_invent_important_items() -> None:

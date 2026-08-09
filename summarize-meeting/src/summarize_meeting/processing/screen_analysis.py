@@ -14,6 +14,7 @@ from typing import Protocol
 import numpy as np
 
 from summarize_meeting.domain.screen_analysis import OcrLine, ScreenRecognition
+from summarize_meeting.domain.session import SESSION_SCHEMA_VERSION
 
 ProgressCallback = Callable[[int, str], None]
 
@@ -248,6 +249,8 @@ class ScreenAnalysisService:
     ) -> Path:
         session_directory = session_directory.resolve()
         session = _read_object(session_directory / "session.json", "session.json")
+        if session.get("schema_version") != SESSION_SCHEMA_VERSION:
+            raise ScreenAnalysisError("現在のデータ形式ではないため画面解析できません")
         if session.get("status") != "RECORDED":
             raise ScreenAnalysisError("録音完了セッションだけを画面解析できます")
         screenshots_directory = session_directory / "screenshots"

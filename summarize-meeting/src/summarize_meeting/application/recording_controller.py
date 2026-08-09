@@ -23,6 +23,7 @@ from summarize_meeting.capture.screen.platform_backend import create_screen_capt
 from summarize_meeting.capture.screen.recorder import ScreenRecorder
 from summarize_meeting.domain.capture import AudioDevice, ScreenTarget
 from summarize_meeting.domain.session import (
+    AUDIO_MANIFEST_SCHEMA_VERSION,
     ComponentKind,
     ComponentStatus,
     RecordingSession,
@@ -1206,7 +1207,7 @@ class RecordingController(QObject):
         monotonic_origin_ns: int,
     ) -> None:
         value = {
-            "schema_version": 1,
+            "schema_version": AUDIO_MANIFEST_SCHEMA_VERSION,
             "monotonic_origin_ns": monotonic_origin_ns,
             "tracks": {name: asdict(track_stats) for name, track_stats in stats.items()},
         }

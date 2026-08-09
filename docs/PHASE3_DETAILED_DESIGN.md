@@ -8,7 +8,7 @@ Phase 3では、Phase 2で文字起こししたPC音声へ話者情報を付与�
 
 ## 2. 前提
 
-- 正式対象はWindows 11
+- 正式対象はWindows 11とUbuntu 22.04
 - 会議音声、話者埋め込み、解析結果を外部サービスへ送信しない
 - Phase 2の`analysis/transcription.json`が`SUCCEEDED`
 - `audio/manifest.json`と`audio/system.wav`が存在する
@@ -107,8 +107,8 @@ Job開始前に以下を確認する。
 1. セッションディレクトリが`data/meetings/`配下にある
 2. `session.json`が`RECORDED`
 3. `analysis/transcription.json`が`SUCCEEDED`
-4. `audio/manifest.json`に`system_audio`または`system`trackがある
-5. trackのfileが`system.wav`または`audio/system.wav`形式の安全な相対パス
+4. `audio/manifest.json`がschema version 2で、`system`trackがある
+5. trackのfileが`system.wav`形式の安全な単純ファイル名である
 6. WAVが存在し、PCMとして最後まで読み取れる
 7. WAV時間が0秒より大きい
 8. STT出力に少なくとも1つのsystem segmentがある

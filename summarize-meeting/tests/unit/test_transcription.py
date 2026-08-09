@@ -53,16 +53,20 @@ def _session(tmp_path: Path) -> Path:
     (session / "output").mkdir()
     _write_wave(audio / "microphone.wav")
     _write_wave(audio / "system.wav")
+    (session / "session.json").write_text(
+        json.dumps({"schema_version": 2, "status": "RECORDED"}),
+        encoding="utf-8",
+    )
     (audio / "manifest.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "tracks": {
                     "microphone": {
                         "file": "microphone.wav",
                         "estimated_start_offset_ms": 100,
                     },
-                    "system_audio": {
+                    "system": {
                         "file": "system.wav",
                         "estimated_start_offset_ms": 700,
                     },
@@ -114,47 +118,32 @@ def test_transcription_rejects_manifest_path_traversal(tmp_path: Path) -> None:
         TranscriptionService(_Backend(), model_name="test-model").run(session)
 
 
-def test_transcription_accepts_session_relative_audio_path(tmp_path: Path) -> None:
+def test_transcription_rejects_legacy_session_relative_audio_path(tmp_path: Path) -> None:
     session = _session(tmp_path)
     manifest_path = session / "audio" / "manifest.json"
     value = json.loads(manifest_path.read_text("utf-8"))
     value["tracks"]["microphone"]["file"] = "audio/microphone.wav"
-    value["tracks"]["system_audio"]["file"] = "audio/system.wav"
+    value["tracks"]["system"]["file"] = "audio/system.wav"
     manifest_path.write_text(json.dumps(value), encoding="utf-8")
-    backend = _Backend()
-
-    output = TranscriptionService(backend, model_name="test-model").run(session)
-
-    assert output.is_file()
-    assert [path.name for path in backend.paths] == ["microphone.wav", "system.wav"]
+    with pytest.raises(TranscriptionError, match="音声ファイル名が不正"):
+        TranscriptionService(_Backend(), model_name="test-model").run(session)
 
 
-def test_transcription_ignores_legacy_enhanced_microphone_audio(tmp_path: Path) -> None:
+def test_transcription_rejects_legacy_session_schema(tmp_path: Path) -> None:
     session = _session(tmp_path)
-    enhanced = session / "audio" / "microphone.enhanced.wav"
-    _write_wave(enhanced)
-    (session / "analysis" / "audio_enhancement.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "status": "SUCCEEDED",
-                "source_file": "audio/microphone.wav",
-                "output_file": "audio/microphone.enhanced.wav",
-            }
-        ),
+    (session / "session.json").write_text(
+        json.dumps({"schema_version": 1, "status": "RECORDED"}),
         encoding="utf-8",
     )
-    backend = _Backend()
 
-    TranscriptionService(backend, model_name="test-model").run(session)
-
-    assert [path.name for path in backend.paths] == ["microphone.wav", "system.wav"]
+    with pytest.raises(TranscriptionError, match="現在のデータ形式"):
+        TranscriptionService(_Backend(), model_name="test-model").run(session)
 
 
 def test_transcription_requires_at_least_one_supported_track(tmp_path: Path) -> None:
     session = _session(tmp_path)
     (session / "audio" / "manifest.json").write_text(
-        json.dumps({"schema_version": 1, "tracks": {}}),
+        json.dumps({"schema_version": 2, "tracks": {}}),
         encoding="utf-8",
     )
 

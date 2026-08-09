@@ -553,7 +553,7 @@ audio/
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "monotonic_origin_ns": 123456789000,
   "tracks": {
     "microphone": {
@@ -850,7 +850,7 @@ Phase 1スキーマ例:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "id": "cda1d61c-44f2-44f0-bd9e-f6697ca4337b",
   "title": "開発定例",
   "status": "RECORDED",
@@ -866,12 +866,12 @@ Phase 1スキーマ例:
     "microphone": {
       "device_id": "backend-stable-id",
       "device_name": "Realtek Microphone",
-      "file": "audio/microphone.wav"
+      "file": "microphone.wav"
     },
     "system": {
       "device_id": "backend-stable-id",
       "device_name": "Speakers",
-      "file": "audio/system.wav",
+      "file": "system.wav",
       "scope": "selected_output_endpoint"
     }
   },

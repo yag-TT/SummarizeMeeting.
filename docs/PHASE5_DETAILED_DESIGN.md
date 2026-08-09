@@ -171,12 +171,13 @@ Phase 5ではtokenizer依存を避けるため文字数を保守的な上限と�
 - `summary`
 - `participants`
 - `topics[]`
+- `key_points[]`
 - `decisions[]`
 - `todos[]`
 - `pending[]`
 - `references[]`
 
-議題、決定、TODO、保留、参考情報は`evidence_ids[]`を必須とする。API要求では`response_format.type=json_schema`、`strict=true`を指定し、推論表示は`reasoning_effort=none`とする。
+会議、雑談、相談、インタビューなどの種類を決めつけず、`summary`、`topics[]`、`key_points[]`を中心に会話内容を整理する。明示的な合意、今後の対応、未解決事項がある場合だけ`decisions[]`、`todos[]`、`pending[]`へ格納する。各構造化項目は`evidence_ids[]`を必須とする。API要求では`response_format.type=json_schema`、`strict=true`を指定し、推論表示は`reasoning_effort=none`とする。
 
 ## 11. 生成後検証
 
@@ -198,7 +199,7 @@ LLMのJSON Schema適合だけでは内容の正しさを保証できないため
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "status": "SUCCEEDED",
   "generation_id": "uuid",
   "completed_at": "2026-08-08T20:52:15.086+09:00",
@@ -212,7 +213,19 @@ LLMのJSON Schema適合だけでは内容の正しさを保証できないため
   "minutes": {
     "summary": "テスト結果の共有予定を確認した。",
     "participants": ["自分", "田中"],
-    "topics": [],
+    "topics": [
+      {
+        "title": "テスト結果の共有",
+        "summary": "共有時期について話した。",
+        "evidence_ids": ["speech-00002"]
+      }
+    ],
+    "key_points": [
+      {
+        "text": "テスト結果は来週の金曜日までに共有される。",
+        "evidence_ids": ["speech-00002"]
+      }
+    ],
     "decisions": [],
     "todos": [
       {
@@ -229,30 +242,31 @@ LLMのJSON Schema適合だけでは内容の正しさを保証できないため
 }
 ```
 
-`timeline_sha256`により議事録がどのtimelineから生成されたかを確認できる。
+`timeline_sha256`により会話要約がどのtimelineから生成されたかを確認できる。
 
 ## 13. `output/minutes.md`
 
 次の順で生成する。
 
-1. 会議名
-2. 会議概要（日付、所要時間、参加者）
-3. 要約
-4. 議題
-5. 決定事項
-6. TODO表（担当、内容、期限）
-7. 保留事項
-8. 参考情報
-9. 生成時の注意（warningがある場合）
+1. 記録名
+2. 会話情報（記録日時、長さ、話者）
+3. 会話の要約
+4. 主な話題
+5. 会話の要点
+6. 明確な合意・決定（存在する場合だけ）
+7. 今後の対応表（存在する場合だけ）
+8. 未解決・確認事項（存在する場合だけ）
+9. 関連する画面情報（存在する場合だけ）
+10. 要約時の注意（warningがある場合）
 
-空の節は`記載なし`とする。画面リンクは`output/`から見た`../screenshots/...`を使う。
+一般的な会話でも空の会議用見出しが並ばないよう、補助的な節は内容がある場合だけ出力する。画面リンクは`output/`から見た`../screenshots/...`を使う。
 
 ## 14. 再実行と失敗
 
 - timelineはLLM呼び出し前にatomic保存する
 - LLM接続・生成失敗では既存`minutes.json`と`minutes.md`を変更しない
 - 成功時は各ファイルを`.tmp`、flush、`fsync`、`os.replace()`で確定する
-- 話者名変更後は議事録生成を再実行できる
+- 話者名変更後は会話要約を再実行できる
 - llama.cpp server未起動時は起動案内を含むエラーを表示する
 - 複数モデルが見えるのにモデル未指定なら誤選択せず失敗する
 
@@ -260,7 +274,7 @@ LLMのJSON Schema適合だけでは内容の正しさを保証できないため
 
 `analysis/jobs.json`の`minutes`へ`RUNNING`、`SUCCEEDED`、`FAILED`、`CANCELED`を保存する。成功時の`output_path`は`output/minutes.md`。
 
-GUIは文字起こし成功後に「議事録生成」を有効化する。実行中は他のAI Jobと録音を無効化し、ボタンを「キャンセル」にする。再起動後も保存済みJob状態を表示する。
+GUIは文字起こし成功後に「会話要約」を有効化する。実行中は他のAI Jobと録音を無効化し、ボタンを「キャンセル」にする。再起動後も保存済みJob状態を表示する。
 
 ## 16. テスト
 
@@ -277,6 +291,7 @@ GUIは文字起こし成功後に「議事録生成」を有効化する。実�
 - 架空の絶対期限を原文へ補正
 - 生成制御tokenの除去
 - Markdown各節と画面相対リンク
+- 雑談などで会議用の空セクションを出力しないこと
 - Job成功、失敗、キャンセル
 - 全Phase回帰テスト
 
@@ -286,6 +301,7 @@ GUIは文字起こし成功後に「議事録生成」を有効化する。実�
 - 画面解析がなくても音声だけで生成できる
 - 既存llama.cppモデルだけを使用し、データを指定したLAN内サーバー以外へ送信しない
 - `minutes.json`と`minutes.md`を生成できる
+- 会議以外の会話でも全体要約、主な話題、会話の要点を生成できる
 - TODOの担当不明・期限不明を明示できる
 - 根拠のない重要項目を保存前に除外できる
 - 再実行、キャンセル、再起動後状態表示ができる

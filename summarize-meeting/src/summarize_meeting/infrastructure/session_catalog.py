@@ -5,6 +5,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from summarize_meeting.domain.session import (
+    AUDIO_MANIFEST_SCHEMA_VERSION,
+    SESSION_SCHEMA_VERSION,
+)
+
 
 @dataclass(frozen=True, slots=True)
 class SessionSummary:
@@ -52,9 +57,15 @@ class FileSessionCatalog:
             if not directory.is_dir():
                 continue
             metadata = _read_object(directory / "session.json")
-            title = _non_empty_string(metadata.get("title")) or directory.name
+            if metadata.get("schema_version") != SESSION_SCHEMA_VERSION:
+                continue
+            title = _non_empty_string(metadata.get("title"))
+            if title is None:
+                continue
             started_at = _non_empty_string(metadata.get("started_at"))
-            recording_status = _non_empty_string(metadata.get("status")) or "UNKNOWN"
+            recording_status = _non_empty_string(metadata.get("status"))
+            if recording_status is None:
+                continue
             transcription_status = _transcription_status(directory)
             diarization_status = _analysis_status(
                 directory,
@@ -71,10 +82,7 @@ class FileSessionCatalog:
                 job="minutes",
                 result_name="minutes.json",
             )
-            audio_directory = directory / "audio"
-            can_transcribe = (audio_directory / "manifest.json").is_file() and any(
-                audio_directory.glob("*.wav")
-            )
+            can_transcribe = _has_transcribable_audio(directory)
             can_diarize = (
                 recording_status == "RECORDED"
                 and transcription_status == "SUCCEEDED"
@@ -143,10 +151,12 @@ def _analysis_status(directory: Path, *, job: str, result_name: str) -> str:
 
 def _has_system_audio(directory: Path) -> bool:
     manifest = _read_object(directory / "audio" / "manifest.json")
+    if manifest.get("schema_version") != AUDIO_MANIFEST_SCHEMA_VERSION:
+        return False
     tracks = manifest.get("tracks")
     if not isinstance(tracks, dict):
         return False
-    track = tracks.get("system_audio") or tracks.get("system")
+    track = tracks.get("system")
     if not isinstance(track, dict):
         return False
     value = track.get("file")
@@ -155,13 +165,32 @@ def _has_system_audio(directory: Path) -> bool:
     relative = Path(value)
     if relative.is_absolute():
         return False
-    if relative.parts == (relative.name,):
-        audio_path = directory / "audio" / relative
-    elif relative.parts == ("audio", relative.name):
-        audio_path = directory / relative
-    else:
+    if relative.parts != (relative.name,):
         return False
+    audio_path = directory / "audio" / relative
     return audio_path.is_file()
+
+
+def _has_transcribable_audio(directory: Path) -> bool:
+    manifest = _read_object(directory / "audio" / "manifest.json")
+    if manifest.get("schema_version") != AUDIO_MANIFEST_SCHEMA_VERSION:
+        return False
+    tracks = manifest.get("tracks")
+    if not isinstance(tracks, dict):
+        return False
+    for name in ("microphone", "system"):
+        track = tracks.get(name)
+        if not isinstance(track, dict):
+            continue
+        value = track.get("file")
+        if not isinstance(value, str) or not value:
+            continue
+        relative = Path(value)
+        if relative.is_absolute() or relative.parts != (relative.name,):
+            continue
+        if (directory / "audio" / relative).is_file():
+            return True
+    return False
 
 
 def _has_screenshots(directory: Path) -> bool:
@@ -213,4 +242,4 @@ def _format_started_at(started_at: str | None) -> str | None:
     try:
         return datetime.fromisoformat(started_at).astimezone().strftime("%Y-%m-%d %H:%M")
     except ValueError:
-        return started_at
+        return None

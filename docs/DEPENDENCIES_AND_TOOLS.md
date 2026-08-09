@@ -181,7 +181,7 @@ uv run python scripts/setup_models.py all --force
 
 ## llama.cpp server
 
-llama.cppとGGUFモデルは`uv`や`setup_models.py`では導入しません。議事録生成には、同一PCまたはLAN内の別PCでOpenAI互換APIを公開する`llama-server`が必要です。
+llama.cppとGGUFモデルは`uv`や`setup_models.py`では導入しません。会話要約の生成には、同一PCまたはLAN内の別PCでOpenAI互換APIを公開する`llama-server`が必要です。
 
 ```console
 llama-server --host 0.0.0.0 --port 8081 --model <model.gguf> --ctx-size 16384
@@ -194,7 +194,7 @@ llama-server --host 0.0.0.0 --port 8081 --model <model.gguf> --ctx-size 16384
 | `SUMMARIZE_MEETING_LLM_URL` | OpenAI互換APIのbase URL |
 | `SUMMARIZE_MEETING_LLM_MODEL` | `/v1/models`に複数モデルがある場合のmodel ID |
 
-HTTP接続も許可していますが、文字起こし内容は暗号化されません。llama.cppが利用できない場合でも録音、文字起こし、話者分離、画面解析は実行でき、議事録生成だけが利用できません。
+HTTP接続も許可していますが、文字起こし内容は暗号化されません。llama.cppが利用できない場合でも録音、文字起こし、話者分離、画面解析は実行でき、会話要約だけが利用できません。
 
 ## 任意のNVIDIA GPU
 
@@ -215,9 +215,9 @@ CPUだけで全機能を実行できます。GPUを使用するのはfaster-whis
 | 初回文字起こし | Hugging Face | Whisperモデルが配置済みなら不要 |
 | `setup_models.py ocr` | Hugging Face | 検証済みOCRモデルが配置済みなら不要 |
 | `setup_models.py diarization` | GitHub Releases | 話者分離モデルが配置済みなら不要 |
-| 議事録生成 | 設定されたllama.cpp server | 接続できない場合は議事録生成だけ失敗 |
+| 会話要約 | 設定されたllama.cpp server | 接続できない場合は会話要約だけ失敗 |
 
-録音データ、OCR画像、文字起こし内容をクラウド推論サービスへ送信する実装はありません。LAN上のllama.cppを使用する場合だけ、議事録生成に必要な内容をそのserverへ送信します。
+録音データ、OCR画像、文字起こし内容をクラウド推論サービスへ送信する実装はありません。LAN上のllama.cppを使用する場合だけ、会話要約に必要な内容をそのserverへ送信します。
 
 ## 診断とトラブルシュート
 
