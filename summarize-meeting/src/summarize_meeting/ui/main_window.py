@@ -5,12 +5,13 @@ from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QCloseEvent, QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -39,6 +40,7 @@ from summarize_meeting.infrastructure.session_catalog import (
     FileSessionCatalog,
     SessionSummary,
 )
+from summarize_meeting.ui.analysis_stage import AnalysisStageCard, AnalysisStageState
 from summarize_meeting.ui.status_row import CaptureStatusRow
 
 
@@ -166,7 +168,6 @@ class MainWindow(QMainWindow):
         self._finalize_progress.setValue(0)
         self._finalize_progress.setFormat("保存処理 %p%")
         self._finalize_progress.setVisible(False)
-        root.addWidget(self._finalize_progress)
 
         analysis_group = QGroupBox("録音後の解析")
         analysis_layout = QVBoxLayout(analysis_group)
@@ -176,7 +177,7 @@ class MainWindow(QMainWindow):
         self._analysis_session.setSizeAdjustPolicy(
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
         )
-        self._analysis_session.setMinimumContentsLength(50)
+        self._analysis_session.setMinimumContentsLength(28)
         analysis_selector.addWidget(self._analysis_session, 1)
         self._open_session = QPushButton("フォルダを開く")
         self._open_session.setEnabled(False)
@@ -190,10 +191,28 @@ class MainWindow(QMainWindow):
         self._auto_transcribe.setChecked(controller.auto_transcribe_after_recording)
         analysis_layout.addWidget(self._auto_transcribe)
 
+        flow = QGridLayout()
+        flow.setContentsMargins(0, 4, 0, 0)
+        flow.setHorizontalSpacing(12)
+        flow.setVerticalSpacing(5)
+        flow.setColumnStretch(0, 1)
+        flow.setColumnStretch(1, 1)
+
+        self._save_stage = AnalysisStageCard("1", "会議終了・録音保存")
+        self._recording_save_status = self._save_stage.status_label
+        self._save_stage.body_layout.addWidget(self._finalize_progress)
+        flow.addWidget(self._save_stage, 0, 0, 1, 2)
+        flow.addWidget(
+            self._flow_arrow("録音の保存完了後に文字起こしへ進みます"),
+            1,
+            0,
+            1,
+            2,
+        )
+
+        self._transcription_stage = AnalysisStageCard("2", "文字起こし")
+        self._transcription_status = self._transcription_stage.status_label
         analysis = QHBoxLayout()
-        analysis.addWidget(QLabel("文字起こし"))
-        self._transcription_status = QLabel("未実行")
-        analysis.addWidget(self._transcription_status)
         analysis.addStretch(1)
         self._open_transcript = QPushButton("文字起こしを開く")
         self._open_transcript.setEnabled(False)
@@ -201,19 +220,21 @@ class MainWindow(QMainWindow):
         self._transcribe = QPushButton("文字起こしを実行")
         self._transcribe.setEnabled(False)
         analysis.addWidget(self._transcribe)
-        analysis_layout.addLayout(analysis)
+        self._transcription_stage.body_layout.addLayout(analysis)
         self._transcription_progress = QProgressBar()
         self._transcription_progress.setRange(0, 100)
         self._transcription_progress.setValue(0)
         self._transcription_progress.setFormat("文字起こし %p%")
         self._transcription_progress.setVisible(False)
-        analysis_layout.addWidget(self._transcription_progress)
+        self._transcription_stage.body_layout.addWidget(self._transcription_progress)
+        flow.addWidget(self._transcription_stage, 2, 0, 1, 2)
+        flow.addWidget(
+            self._flow_arrow("文字起こし後に任意の追加解析へ分岐します"), 3, 0, 1, 2
+        )
 
+        self._diarization_stage = AnalysisStageCard("3A", "話者分離", optional=True)
+        self._diarization_status = self._diarization_stage.status_label
         diarization = QHBoxLayout()
-        diarization.addWidget(QLabel("話者分離"))
-        self._diarization_status = QLabel("未実行")
-        diarization.addWidget(self._diarization_status)
-        diarization.addStretch(1)
         diarization.addWidget(QLabel("話者数"))
         self._speaker_count = QComboBox()
         self._speaker_count.addItem("自動", None)
@@ -223,29 +244,31 @@ class MainWindow(QMainWindow):
         self._diarize = QPushButton("話者分離を実行")
         self._diarize.setEnabled(False)
         diarization.addWidget(self._diarize)
-        analysis_layout.addLayout(diarization)
+        diarization.addStretch(1)
+        self._diarization_stage.body_layout.addLayout(diarization)
         self._diarization_progress = QProgressBar()
         self._diarization_progress.setRange(0, 100)
         self._diarization_progress.setValue(0)
         self._diarization_progress.setFormat("話者分離 %p%")
         self._diarization_progress.setVisible(False)
-        analysis_layout.addWidget(self._diarization_progress)
+        self._diarization_stage.body_layout.addWidget(self._diarization_progress)
         reset_note = QLabel("再実行すると保存済みの話者名は既定名へ戻ります。")
         reset_note.setStyleSheet("color: #aeb4bd;")
-        analysis_layout.addWidget(reset_note)
+        reset_note.setWordWrap(True)
+        self._diarization_stage.body_layout.addWidget(reset_note)
 
         self._speaker_names_widget = QWidget()
         self._speaker_names_layout = QFormLayout(self._speaker_names_widget)
         self._speaker_name_inputs: dict[str, QLineEdit] = {}
-        analysis_layout.addWidget(self._speaker_names_widget)
+        self._diarization_stage.body_layout.addWidget(self._speaker_names_widget)
         self._save_speaker_names = QPushButton("話者名を保存")
         self._save_speaker_names.setVisible(False)
-        analysis_layout.addWidget(self._save_speaker_names)
+        self._diarization_stage.body_layout.addWidget(self._save_speaker_names)
+        flow.addWidget(self._diarization_stage, 4, 0)
 
+        self._screen_analysis_stage = AnalysisStageCard("3B", "画面解析", optional=True)
+        self._screen_analysis_status = self._screen_analysis_stage.status_label
         screen_analysis = QHBoxLayout()
-        screen_analysis.addWidget(QLabel("画面解析"))
-        self._screen_analysis_status = QLabel("未実行")
-        screen_analysis.addWidget(self._screen_analysis_status)
         screen_analysis.addStretch(1)
         self._open_screen_analysis = QPushButton("解析結果を開く")
         self._open_screen_analysis.setEnabled(False)
@@ -253,18 +276,25 @@ class MainWindow(QMainWindow):
         self._analyze_screens = QPushButton("画面解析を実行")
         self._analyze_screens.setEnabled(False)
         screen_analysis.addWidget(self._analyze_screens)
-        analysis_layout.addLayout(screen_analysis)
+        self._screen_analysis_stage.body_layout.addLayout(screen_analysis)
         self._screen_analysis_progress = QProgressBar()
         self._screen_analysis_progress.setRange(0, 100)
         self._screen_analysis_progress.setValue(0)
         self._screen_analysis_progress.setFormat("画面解析 %p%")
         self._screen_analysis_progress.setVisible(False)
-        analysis_layout.addWidget(self._screen_analysis_progress)
+        self._screen_analysis_stage.body_layout.addWidget(self._screen_analysis_progress)
+        flow.addWidget(self._screen_analysis_stage, 4, 1)
 
+        flow.addWidget(
+            self._flow_arrow("話者情報を会話要約へ反映できます"), 5, 0
+        )
+        flow.addWidget(
+            self._flow_arrow("画面情報を会話要約へ反映できます"), 5, 1
+        )
+
+        self._minutes_stage = AnalysisStageCard("4", "会話要約")
+        self._minutes_status = self._minutes_stage.status_label
         minutes = QHBoxLayout()
-        minutes.addWidget(QLabel("会話要約"))
-        self._minutes_status = QLabel("未実行")
-        minutes.addWidget(self._minutes_status)
         minutes.addStretch(1)
         self._open_minutes = QPushButton("要約を開く")
         self._open_minutes.setEnabled(False)
@@ -272,13 +302,24 @@ class MainWindow(QMainWindow):
         self._generate_minutes = QPushButton("要約を生成")
         self._generate_minutes.setEnabled(False)
         minutes.addWidget(self._generate_minutes)
-        analysis_layout.addLayout(minutes)
+        self._minutes_stage.body_layout.addLayout(minutes)
         self._minutes_progress = QProgressBar()
         self._minutes_progress.setRange(0, 100)
         self._minutes_progress.setValue(0)
         self._minutes_progress.setFormat("会話要約 %p%")
         self._minutes_progress.setVisible(False)
-        analysis_layout.addWidget(self._minutes_progress)
+        self._minutes_stage.body_layout.addWidget(self._minutes_progress)
+        flow.addWidget(self._minutes_stage, 6, 0, 1, 2)
+
+        flow_note = QLabel(
+            "話者分離と画面解析は任意です。先に完了してから会話要約を生成すると、"
+            "利用可能な追加情報が要約へ反映されます。"
+        )
+        flow_note.setWordWrap(True)
+        flow_note.setStyleSheet("color: #aeb4bd; padding: 4px 2px;")
+        flow_note.setAccessibleName("解析工程についての説明")
+        flow.addWidget(flow_note, 7, 0, 1, 2)
+        analysis_layout.addLayout(flow)
         root.addWidget(analysis_group)
         root.addStretch(1)
 
@@ -373,6 +414,15 @@ class MainWindow(QMainWindow):
             minutes_controller.job_canceled.connect(self._on_minutes_canceled)
         QTimer.singleShot(0, self.refresh_sources)
         QTimer.singleShot(0, self.refresh_analysis_sessions)
+
+    @staticmethod
+    def _flow_arrow(accessible_description: str) -> QLabel:
+        arrow = QLabel("↓")
+        arrow.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        arrow.setStyleSheet("color: #8fa8bf; font-size: 20px; font-weight: 700;")
+        arrow.setAccessibleName(accessible_description)
+        arrow.setToolTip(accessible_description)
+        return arrow
 
     def _on_title_changed(self, _text: str) -> None:
         if self._title.text().strip():
@@ -618,14 +668,25 @@ class MainWindow(QMainWindow):
         self._stop.setEnabled(True)
         self._reselect.setEnabled(False)
         self._screenshots.setText("保存画像 0")
-        self._transcription_status.setText("未実行")
         self._transcribe.setEnabled(False)
-        self._diarization_status.setText("未実行")
         self._diarize.setEnabled(False)
-        self._screen_analysis_status.setText("未実行")
         self._analyze_screens.setEnabled(False)
-        self._minutes_status.setText("未実行")
         self._generate_minutes.setEnabled(False)
+        self._save_stage.set_state(
+            AnalysisStageState.WAITING,
+            detail="録音デバイスを準備しています。会議終了後に音声を保存します。",
+            status_text="準備中",
+        )
+        for stage in (
+            self._transcription_stage,
+            self._diarization_stage,
+            self._screen_analysis_stage,
+            self._minutes_stage,
+        ):
+            stage.set_state(
+                AnalysisStageState.WAITING,
+                detail="録音の保存完了後に状態を確認します。",
+            )
         self._clear_speaker_names()
         self._action_hint.setText("録音デバイスを準備しています。")
         self.show_information("録音デバイスを準備しています。")
@@ -642,6 +703,11 @@ class MainWindow(QMainWindow):
         self._screen_target.setEnabled(True)
         self._reselect.setEnabled(True)
         self._screenshots.setText("保存画像 0")
+        self._save_stage.set_state(
+            AnalysisStageState.WAITING,
+            detail="会議終了後に録音ファイルを保存します。",
+            status_text="会議中",
+        )
         self._action_hint.setText("録音中です。終了後に新しい会議を開始できます。")
         self.show_information(f"記録中: {path}")
 
@@ -655,6 +721,12 @@ class MainWindow(QMainWindow):
         else:
             self.show_information(f"記録を保存しました: {path}")
         self.refresh_analysis_sessions(Path(path))
+        if error_message:
+            self._save_stage.set_state(
+                AnalysisStageState.FAILED,
+                detail="録音の保存中に問題が発生しました。エラー内容を確認してください。",
+                status_text="保存失敗",
+            )
         self._maybe_start_auto_transcription(Path(path), error_message=error_message)
         self._close_if_requested()
 
@@ -666,12 +738,22 @@ class MainWindow(QMainWindow):
         self._finalize_progress.setValue(percent)
         self._finalize_progress.setFormat(f"保存処理 %p% - {message}")
         self._finalize_progress.setVisible(True)
+        self._save_stage.set_state(
+            AnalysisStageState.RUNNING,
+            detail=message,
+            status_text="保存中",
+        )
         self.show_information(message)
 
     def _on_session_start_failed(self, path: str, message: str) -> None:
         self._session_path = Path(path)
         self._show_save_path(self._session_path)
         self._reset_after_session()
+        self._save_stage.set_state(
+            AnalysisStageState.FAILED,
+            detail=message,
+            status_text="開始失敗",
+        )
         self.show_error(message)
         self._close_if_requested()
 
@@ -679,6 +761,10 @@ class MainWindow(QMainWindow):
         self._session_path = Path(path)
         self._show_save_path(self._session_path)
         self._reset_after_session()
+        self._save_stage.set_state(
+            AnalysisStageState.CANCELED,
+            detail="録音の開始をキャンセルしました。",
+        )
         self.show_information("録音の開始をキャンセルしました。")
         self._close_if_requested()
 
@@ -702,7 +788,11 @@ class MainWindow(QMainWindow):
             return
         if controller.is_running:
             self._transcribe.setEnabled(False)
-            self._transcription_status.setText("キャンセル中")
+            self._transcription_stage.set_state(
+                AnalysisStageState.RUNNING,
+                detail="文字起こしの停止を待っています。",
+                status_text="キャンセル中",
+            )
             controller.cancel()
             return
         summary = self._selected_analysis_session()
@@ -721,7 +811,11 @@ class MainWindow(QMainWindow):
             return
         if controller.is_running:
             self._diarize.setEnabled(False)
-            self._diarization_status.setText("キャンセル中")
+            self._diarization_stage.set_state(
+                AnalysisStageState.RUNNING,
+                detail="話者分離の停止を待っています。",
+                status_text="キャンセル中",
+            )
             controller.cancel()
             return
         summary = self._selected_analysis_session()
@@ -740,7 +834,11 @@ class MainWindow(QMainWindow):
             return
         if controller.is_running:
             self._analyze_screens.setEnabled(False)
-            self._screen_analysis_status.setText("キャンセル中")
+            self._screen_analysis_stage.set_state(
+                AnalysisStageState.RUNNING,
+                detail="画面解析の停止を待っています。",
+                status_text="キャンセル中",
+            )
             controller.cancel()
             return
         summary = self._selected_analysis_session()
@@ -759,7 +857,11 @@ class MainWindow(QMainWindow):
             return
         if controller.is_running:
             self._generate_minutes.setEnabled(False)
-            self._minutes_status.setText("キャンセル中")
+            self._minutes_stage.set_state(
+                AnalysisStageState.RUNNING,
+                detail="会話要約の停止を待っています。",
+                status_text="キャンセル中",
+            )
             controller.cancel()
             return
         summary = self._selected_analysis_session()
@@ -832,7 +934,10 @@ class MainWindow(QMainWindow):
             return
         self._set_inputs_enabled(False)
         self._start.setEnabled(False)
-        self._transcription_status.setText("実行中")
+        self._transcription_stage.set_state(
+            AnalysisStageState.RUNNING,
+            detail="文字起こしモデルを準備しています。",
+        )
         self._transcribe.setText("文字起こしをキャンセル")
         self._transcribe.setEnabled(True)
         self._diarize.setEnabled(False)
@@ -847,6 +952,7 @@ class MainWindow(QMainWindow):
     def _on_transcription_progress(self, percent: int, message: str) -> None:
         self._transcription_progress.setValue(percent)
         self._transcription_progress.setFormat(f"文字起こし %p% - {message}")
+        self._transcription_stage.set_state(AnalysisStageState.RUNNING, detail=message)
         self.show_information(message)
 
     def _on_transcription_finished(self, session_path: str, output_path: str) -> None:
@@ -876,7 +982,10 @@ class MainWindow(QMainWindow):
         self._transcribe.setEnabled(False)
         self._analyze_screens.setEnabled(False)
         self._generate_minutes.setEnabled(False)
-        self._diarization_status.setText("実行中")
+        self._diarization_stage.set_state(
+            AnalysisStageState.RUNNING,
+            detail="PC音声から話者を分離しています。",
+        )
         self._diarize.setText("話者分離をキャンセル")
         self._diarize.setEnabled(True)
         self._diarization_progress.setValue(0)
@@ -888,6 +997,7 @@ class MainWindow(QMainWindow):
     def _on_diarization_progress(self, percent: int, message: str) -> None:
         self._diarization_progress.setValue(percent)
         self._diarization_progress.setFormat(f"話者分離 %p% - {message}")
+        self._diarization_stage.set_state(AnalysisStageState.RUNNING, detail=message)
         self.show_information(message)
 
     def _on_diarization_finished(self, session_path: str, output_path: str) -> None:
@@ -917,7 +1027,10 @@ class MainWindow(QMainWindow):
         self._transcribe.setEnabled(False)
         self._diarize.setEnabled(False)
         self._generate_minutes.setEnabled(False)
-        self._screen_analysis_status.setText("実行中")
+        self._screen_analysis_stage.set_state(
+            AnalysisStageState.RUNNING,
+            detail="保存済みスクリーンショットを解析しています。",
+        )
         self._analyze_screens.setText("画面解析をキャンセル")
         self._analyze_screens.setEnabled(True)
         self._screen_analysis_progress.setValue(0)
@@ -927,6 +1040,7 @@ class MainWindow(QMainWindow):
     def _on_screen_analysis_progress(self, percent: int, message: str) -> None:
         self._screen_analysis_progress.setValue(percent)
         self._screen_analysis_progress.setFormat(f"画面解析 %p% - {message}")
+        self._screen_analysis_stage.set_state(AnalysisStageState.RUNNING, detail=message)
         self.show_information(message)
 
     def _on_screen_analysis_finished(self, session_path: str, output_path: str) -> None:
@@ -956,7 +1070,10 @@ class MainWindow(QMainWindow):
         self._transcribe.setEnabled(False)
         self._diarize.setEnabled(False)
         self._analyze_screens.setEnabled(False)
-        self._minutes_status.setText("実行中")
+        self._minutes_stage.set_state(
+            AnalysisStageState.RUNNING,
+            detail="ローカルLLMで会話内容を要約しています。",
+        )
         self._generate_minutes.setText("要約生成をキャンセル")
         self._generate_minutes.setEnabled(True)
         self._minutes_progress.setValue(0)
@@ -966,6 +1083,7 @@ class MainWindow(QMainWindow):
     def _on_minutes_progress(self, percent: int, message: str) -> None:
         self._minutes_progress.setValue(percent)
         self._minutes_progress.setFormat(f"会話要約 %p% - {message}")
+        self._minutes_stage.set_state(AnalysisStageState.RUNNING, detail=message)
         self.show_information(message)
 
     def _on_minutes_finished(self, session_path: str, output_path: str) -> None:
@@ -988,7 +1106,11 @@ class MainWindow(QMainWindow):
         self.show_information("会話要約をキャンセルしました。")
 
     def _finish_minutes_ui(self, status: str) -> None:
-        self._minutes_status.setText(status)
+        self._set_finished_stage(
+            self._minutes_stage,
+            status,
+            completed_detail="会話要約を保存しました。",
+        )
         self._generate_minutes.setText("要約を再生成")
         self._minutes_progress.setVisible(False)
         self._set_inputs_enabled(True)
@@ -996,7 +1118,11 @@ class MainWindow(QMainWindow):
         self._update_start_enabled()
 
     def _finish_screen_analysis_ui(self, status: str) -> None:
-        self._screen_analysis_status.setText(status)
+        self._set_finished_stage(
+            self._screen_analysis_stage,
+            status,
+            completed_detail="画面解析結果を保存しました。",
+        )
         self._analyze_screens.setText("画面解析を再実行")
         self._screen_analysis_progress.setVisible(False)
         self._set_inputs_enabled(True)
@@ -1004,7 +1130,11 @@ class MainWindow(QMainWindow):
         self._update_start_enabled()
 
     def _finish_diarization_ui(self, status: str) -> None:
-        self._diarization_status.setText(status)
+        self._set_finished_stage(
+            self._diarization_stage,
+            status,
+            completed_detail="話者付き文字起こしを保存しました。",
+        )
         self._diarize.setText("話者分離を再実行")
         self._diarization_progress.setVisible(False)
         self._speaker_names_widget.setEnabled(True)
@@ -1013,7 +1143,11 @@ class MainWindow(QMainWindow):
         self._update_start_enabled()
 
     def _finish_transcription_ui(self, status: str) -> None:
-        self._transcription_status.setText(status)
+        self._set_finished_stage(
+            self._transcription_stage,
+            status,
+            completed_detail="文字起こし結果を保存しました。",
+        )
         self._transcribe.setText("文字起こしを再実行")
         self._transcribe.setEnabled(True)
         self._transcription_progress.setVisible(False)
@@ -1077,6 +1211,195 @@ class MainWindow(QMainWindow):
             summary is not None and (summary.path / "output" / "minutes.md").is_file()
         )
 
+    @staticmethod
+    def _set_finished_stage(
+        stage: AnalysisStageCard,
+        status: str,
+        *,
+        completed_detail: str,
+    ) -> None:
+        state = {
+            "完了": AnalysisStageState.COMPLETED,
+            "失敗": AnalysisStageState.FAILED,
+            "キャンセル": AnalysisStageState.CANCELED,
+        }.get(status, AnalysisStageState.FAILED)
+        detail = {
+            "完了": completed_detail,
+            "失敗": "処理に失敗しました。内容を確認して再実行できます。",
+            "キャンセル": "処理をキャンセルしました。必要な場合は再実行できます。",
+        }.get(status, "処理状態を確認できません。再実行してください。")
+        stage.set_state(state, detail=detail, status_text=status)
+
+    @staticmethod
+    def _set_persisted_job_stage(
+        stage: AnalysisStageCard,
+        *,
+        status: str,
+        can_start: bool,
+        ready_detail: str,
+        blocked_state: AnalysisStageState,
+        blocked_detail: str,
+        completed_detail: str,
+    ) -> None:
+        if status == "SUCCEEDED":
+            stage.set_state(AnalysisStageState.COMPLETED, detail=completed_detail)
+            return
+        if status == "NOT_STARTED":
+            if can_start:
+                stage.set_state(AnalysisStageState.READY, detail=ready_detail)
+            else:
+                stage.set_state(blocked_state, detail=blocked_detail)
+            return
+        state, text, detail = {
+            "INCOMPLETE": (
+                AnalysisStageState.FAILED,
+                "要再実行",
+                "出力が揃っていません。処理を再実行してください。",
+            ),
+            "UNKNOWN": (
+                AnalysisStageState.FAILED,
+                "状態不明",
+                "保存された状態を確認できません。処理を再実行してください。",
+            ),
+            "FAILED": (
+                AnalysisStageState.FAILED,
+                "失敗",
+                "前回の処理に失敗しました。再実行できます。",
+            ),
+            "CANCELED": (
+                AnalysisStageState.CANCELED,
+                "キャンセル",
+                "前回の処理はキャンセルされました。再実行できます。",
+            ),
+            "RUNNING": (
+                AnalysisStageState.FAILED,
+                "前回中断",
+                "前回の実行が中断されています。再実行してください。",
+            ),
+        }.get(
+            status,
+            (
+                AnalysisStageState.FAILED,
+                status,
+                "保存された処理状態を確認してください。",
+            ),
+        )
+        stage.set_state(state, detail=detail, status_text=text)
+
+    def _sync_analysis_flow(self, summary: SessionSummary | None) -> None:
+        if summary is None:
+            for stage in (
+                self._save_stage,
+                self._transcription_stage,
+                self._diarization_stage,
+                self._screen_analysis_stage,
+                self._minutes_stage,
+            ):
+                stage.set_state(
+                    AnalysisStageState.UNAVAILABLE,
+                    detail="解析対象の会議を選択してください。",
+                )
+            return
+
+        if summary.recording_status == "RECORDED":
+            self._save_stage.set_state(
+                AnalysisStageState.COMPLETED,
+                detail="録音ファイルの保存が完了しています。",
+            )
+        elif summary.recording_status in {"PREPARING", "RECORDING"}:
+            self._save_stage.set_state(
+                AnalysisStageState.WAITING,
+                detail="会議終了後に録音ファイルを保存します。",
+                status_text="会議中",
+            )
+        else:
+            self._save_stage.set_state(
+                AnalysisStageState.FAILED,
+                detail="録音を正常に保存できていません。セッション情報を確認してください。",
+                status_text="保存失敗",
+            )
+
+        transcription_available = self._transcription_controller is not None
+        self._set_persisted_job_stage(
+            self._transcription_stage,
+            status=summary.transcription_status,
+            can_start=summary.can_transcribe and transcription_available,
+            ready_detail="保存された音声を文字に変換できます。",
+            blocked_state=AnalysisStageState.UNAVAILABLE,
+            blocked_detail=(
+                "文字起こし機能を初期化できませんでした。"
+                if not transcription_available
+                else "文字起こし可能な音声がありません。"
+            ),
+            completed_detail="文字起こし結果を保存済みです。",
+        )
+
+        diarization_available = self._diarization_controller is not None
+        transcription_completed = summary.transcription_status == "SUCCEEDED"
+        if not transcription_completed:
+            diarization_blocked_state = AnalysisStageState.WAITING
+            diarization_blocked_detail = "文字起こしの完了後に実行できます。"
+        elif not diarization_available:
+            diarization_blocked_state = AnalysisStageState.UNAVAILABLE
+            diarization_blocked_detail = "話者分離機能を初期化できませんでした。"
+        else:
+            diarization_blocked_state = AnalysisStageState.UNAVAILABLE
+            diarization_blocked_detail = "PC音声がないため話者分離の対象外です。"
+        self._set_persisted_job_stage(
+            self._diarization_stage,
+            status=summary.diarization_status,
+            can_start=summary.can_diarize and diarization_available,
+            ready_detail="PC音声から話者を分離できます。",
+            blocked_state=diarization_blocked_state,
+            blocked_detail=diarization_blocked_detail,
+            completed_detail="話者付き文字起こしを保存済みです。",
+        )
+
+        screen_analysis_available = self._screen_analysis_controller is not None
+        self._set_persisted_job_stage(
+            self._screen_analysis_stage,
+            status=summary.screen_analysis_status,
+            can_start=summary.can_analyze_screens and screen_analysis_available,
+            ready_detail="保存された画面画像を解析できます。",
+            blocked_state=AnalysisStageState.UNAVAILABLE,
+            blocked_detail=(
+                "画面解析機能を初期化できませんでした。"
+                if not screen_analysis_available
+                else "保存画像がないため画面解析の対象外です。"
+            ),
+            completed_detail="画面解析結果を保存済みです。",
+        )
+
+        minutes_available = self._minutes_controller is not None
+        optional_pending: list[str] = []
+        if summary.can_diarize and summary.diarization_status != "SUCCEEDED":
+            optional_pending.append("話者分離")
+        if summary.can_analyze_screens and summary.screen_analysis_status != "SUCCEEDED":
+            optional_pending.append("画面解析")
+        ready_detail = "会話要約を生成できます。"
+        if optional_pending:
+            ready_detail = (
+                f"{'・'.join(optional_pending)}を先に完了すると、追加情報を要約へ反映できます。"
+            )
+        if not transcription_completed:
+            minutes_blocked_state = AnalysisStageState.WAITING
+            minutes_blocked_detail = "文字起こしの完了後に実行できます。"
+        elif not minutes_available:
+            minutes_blocked_state = AnalysisStageState.UNAVAILABLE
+            minutes_blocked_detail = "会話要約機能を初期化できませんでした。"
+        else:
+            minutes_blocked_state = AnalysisStageState.UNAVAILABLE
+            minutes_blocked_detail = "会話要約に必要な文字起こし結果がありません。"
+        self._set_persisted_job_stage(
+            self._minutes_stage,
+            status=summary.minutes_status,
+            can_start=summary.can_generate_minutes and minutes_available,
+            ready_detail=ready_detail,
+            blocked_state=minutes_blocked_state,
+            blocked_detail=minutes_blocked_detail,
+            completed_detail="会話要約を保存済みです。",
+        )
+
     def _is_current_session(self, value: str) -> bool:
         summary = self._selected_analysis_session()
         return summary is not None and Path(value).resolve() == summary.path
@@ -1105,17 +1428,14 @@ class MainWindow(QMainWindow):
 
     def _on_analysis_session_changed(self, _index: int | None = None) -> None:
         summary = self._selected_analysis_session()
+        self._sync_analysis_flow(summary)
         if summary is None:
-            self._transcription_status.setText("対象なし")
             self._transcribe.setText("文字起こしを実行")
             self._transcribe.setEnabled(False)
-            self._diarization_status.setText("対象なし")
             self._diarize.setText("話者分離を実行")
             self._diarize.setEnabled(False)
-            self._screen_analysis_status.setText("対象なし")
             self._analyze_screens.setText("画面解析を実行")
             self._analyze_screens.setEnabled(False)
-            self._minutes_status.setText("対象なし")
             self._generate_minutes.setText("要約を生成")
             self._generate_minutes.setEnabled(False)
             self._open_session.setEnabled(False)
@@ -1124,58 +1444,21 @@ class MainWindow(QMainWindow):
             self._open_minutes.setEnabled(False)
             self._clear_speaker_names()
             return
-        status = {
-            "SUCCEEDED": "完了",
-            "NOT_STARTED": "未実行",
-            "INCOMPLETE": "要再実行",
-            "UNKNOWN": "状態不明",
-            "FAILED": "失敗",
-            "CANCELED": "キャンセル",
-            "RUNNING": "前回中断",
-        }.get(summary.transcription_status, summary.transcription_status)
-        self._transcription_status.setText(status)
         self._transcribe.setText(
             "文字起こしを再実行"
             if summary.transcription_status != "NOT_STARTED"
             else "文字起こしを実行"
         )
-        diarization_status = {
-            "SUCCEEDED": "完了",
-            "NOT_STARTED": "未実行",
-            "UNKNOWN": "状態不明",
-            "FAILED": "失敗",
-            "CANCELED": "キャンセル",
-            "RUNNING": "前回中断",
-        }.get(summary.diarization_status, summary.diarization_status)
-        self._diarization_status.setText(diarization_status)
         self._diarize.setText(
             "話者分離を再実行"
             if summary.diarization_status != "NOT_STARTED"
             else "話者分離を実行"
         )
-        screen_analysis_status = {
-            "SUCCEEDED": "完了",
-            "NOT_STARTED": "未実行",
-            "UNKNOWN": "状態不明",
-            "FAILED": "失敗",
-            "CANCELED": "キャンセル",
-            "RUNNING": "前回中断",
-        }.get(summary.screen_analysis_status, summary.screen_analysis_status)
-        self._screen_analysis_status.setText(screen_analysis_status)
         self._analyze_screens.setText(
             "画面解析を再実行"
             if summary.screen_analysis_status != "NOT_STARTED"
             else "画面解析を実行"
         )
-        minutes_status = {
-            "SUCCEEDED": "完了",
-            "NOT_STARTED": "未実行",
-            "UNKNOWN": "状態不明",
-            "FAILED": "失敗",
-            "CANCELED": "キャンセル",
-            "RUNNING": "前回中断",
-        }.get(summary.minutes_status, summary.minutes_status)
-        self._minutes_status.setText(minutes_status)
         self._generate_minutes.setText(
             "要約を再生成"
             if summary.minutes_status != "NOT_STARTED"

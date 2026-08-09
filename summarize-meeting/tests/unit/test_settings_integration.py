@@ -21,6 +21,7 @@ from summarize_meeting.infrastructure.settings import (
     FileSettingsRepository,
     ScreenChangeSettings,
 )
+from summarize_meeting.ui.analysis_stage import AnalysisStageState
 from summarize_meeting.ui.main_window import MainWindow
 
 
@@ -164,6 +165,10 @@ class _UiScreenAnalysisController(QObject):
         self.is_running = False
 
 
+class _UiMinutesController(_UiScreenAnalysisController):
+    pass
+
+
 def _create_recorded_session(root: Path, name: str = "session") -> Path:
     session = root / name
     audio = session / "audio"
@@ -229,7 +234,8 @@ def test_ui_selects_past_session_and_starts_transcription(
             encoding="utf-8",
         )
         (audio / "manifest.json").write_text(
-            '{"schema_version":2,"tracks":{}}', encoding="utf-8"
+            '{"schema_version":2,"tracks":{"microphone":{"file":"microphone.wav"}}}',
+            encoding="utf-8",
         )
         (audio / "microphone.wav").write_bytes(b"wave")
     (newer / "analysis" / "transcription.json").write_text(
@@ -254,7 +260,7 @@ def test_ui_selects_past_session_and_starts_transcription(
     assert window._open_transcript.isEnabled()  # noqa: SLF001
     window._analysis_session.setCurrentIndex(1)  # noqa: SLF001
     assert window._analysis_session.currentData().path == older.resolve()  # noqa: SLF001
-    assert window._transcription_status.text() == "未実行"  # noqa: SLF001
+    assert window._transcription_status.text() == "実行可能"  # noqa: SLF001
 
     window._toggle_transcription()  # noqa: SLF001
 
@@ -370,6 +376,144 @@ def test_ui_starts_transcription_after_successful_recording(
 
     assert transcription.started_paths == [session.resolve()]
     assert "自動実行" in window._message.text()  # noqa: SLF001
+    window.close()
+
+
+def test_ui_shows_analysis_flow_dependencies_and_unavailable_inputs(
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    session = _create_recorded_session(tmp_path)
+    recording = _UiController(microphone_id=None, system_id=None)
+    recording.meetings_directory = tmp_path
+    transcription = _UiTranscriptionController()
+    diarization = _UiDiarizationController()
+    screen_analysis = _UiScreenAnalysisController()
+    minutes = _UiMinutesController()
+    window = MainWindow(  # type: ignore[arg-type]
+        recording,
+        transcription,  # type: ignore[arg-type]
+        FileSessionCatalog(tmp_path),
+        diarization,  # type: ignore[arg-type]
+        screen_analysis,  # type: ignore[arg-type]
+        minutes,  # type: ignore[arg-type]
+    )
+
+    window.refresh_analysis_sessions()
+
+    assert window._save_stage.state == AnalysisStageState.COMPLETED  # noqa: SLF001
+    assert window._transcription_stage.state == AnalysisStageState.READY  # noqa: SLF001
+    assert window._diarization_stage.state == AnalysisStageState.WAITING  # noqa: SLF001
+    assert "文字起こし" in window._diarization_stage.detail_label.text()  # noqa: SLF001
+    assert window._screen_analysis_stage.state == AnalysisStageState.UNAVAILABLE  # noqa: SLF001
+    assert "保存画像がない" in window._screen_analysis_stage.detail_label.text()  # noqa: SLF001
+    assert window._minutes_stage.state == AnalysisStageState.WAITING  # noqa: SLF001
+
+    (session / "analysis" / "transcription.json").write_text(
+        '{"status":"SUCCEEDED"}', encoding="utf-8"
+    )
+    (session / "output" / "transcript.md").write_text("# Transcript\n", encoding="utf-8")
+    window.refresh_analysis_sessions(session)
+
+    assert window._transcription_stage.state == AnalysisStageState.COMPLETED  # noqa: SLF001
+    assert window._diarization_stage.state == AnalysisStageState.UNAVAILABLE  # noqa: SLF001
+    assert "PC音声がない" in window._diarization_stage.detail_label.text()  # noqa: SLF001
+    assert window._minutes_stage.state == AnalysisStageState.READY  # noqa: SLF001
+    window.close()
+
+
+def test_ui_shows_optional_branches_that_can_enrich_minutes(
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    session = _create_recorded_session(tmp_path)
+    (session / "audio" / "system.wav").write_bytes(b"wave")
+    (session / "audio" / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "tracks": {
+                    "microphone": {"file": "microphone.wav"},
+                    "system": {"file": "system.wav"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    screenshots = session / "screenshots"
+    screenshots.mkdir()
+    (screenshots / "events.jsonl").write_text(
+        '{"sequence":1,"file":"000001.png"}\n', encoding="utf-8"
+    )
+    (screenshots / "000001.png").write_bytes(b"image")
+    (session / "analysis" / "transcription.json").write_text(
+        '{"status":"SUCCEEDED"}', encoding="utf-8"
+    )
+    (session / "output" / "transcript.md").write_text("# Transcript\n", encoding="utf-8")
+    recording = _UiController(microphone_id=None, system_id=None)
+    recording.meetings_directory = tmp_path
+    window = MainWindow(  # type: ignore[arg-type]
+        recording,
+        _UiTranscriptionController(),  # type: ignore[arg-type]
+        FileSessionCatalog(tmp_path),
+        _UiDiarizationController(),  # type: ignore[arg-type]
+        _UiScreenAnalysisController(),  # type: ignore[arg-type]
+        _UiMinutesController(),  # type: ignore[arg-type]
+    )
+
+    window.refresh_analysis_sessions()
+
+    assert window._diarization_stage.state == AnalysisStageState.READY  # noqa: SLF001
+    assert window._screen_analysis_stage.state == AnalysisStageState.READY  # noqa: SLF001
+    assert window._minutes_stage.state == AnalysisStageState.READY  # noqa: SLF001
+    detail = window._minutes_stage.detail_label.text()  # noqa: SLF001
+    assert "話者分離" in detail
+    assert "画面解析" in detail
+    window.close()
+
+
+def test_ui_updates_analysis_flow_during_finalize_and_auto_transcription(
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    session = _create_recorded_session(tmp_path)
+    recording = _UiController(microphone_id=None, system_id=None)
+    recording.meetings_directory = tmp_path
+    recording.auto_transcribe_after_recording = True
+    transcription = _UiTranscriptionController()
+    window = MainWindow(  # type: ignore[arg-type]
+        recording,
+        transcription,  # type: ignore[arg-type]
+        FileSessionCatalog(tmp_path),
+    )
+
+    window._on_session_started(str(session))  # noqa: SLF001
+    assert window._save_stage.state == AnalysisStageState.WAITING  # noqa: SLF001
+    assert window._recording_save_status.text() == "会議中"  # noqa: SLF001
+
+    window._on_finalize_progress(42, "音声ファイルを結合しています")  # noqa: SLF001
+    assert window._save_stage.state == AnalysisStageState.RUNNING  # noqa: SLF001
+    assert window._recording_save_status.text() == "保存中"  # noqa: SLF001
+    assert "結合" in window._save_stage.detail_label.text()  # noqa: SLF001
+
+    window._on_session_finished(str(session))  # noqa: SLF001
+    assert window._save_stage.state == AnalysisStageState.COMPLETED  # noqa: SLF001
+    assert transcription.started_paths == [session.resolve()]
+
+    transcription.job_started.emit(str(session.resolve()))
+    transcription.job_progress.emit(35, "音声を認識しています")
+    assert window._transcription_stage.state == AnalysisStageState.RUNNING  # noqa: SLF001
+    assert window._transcription_progress.value() == 35  # noqa: SLF001
+    assert "認識" in window._transcription_stage.detail_label.text()  # noqa: SLF001
+
+    (session / "analysis" / "transcription.json").write_text(
+        '{"status":"SUCCEEDED"}', encoding="utf-8"
+    )
+    (session / "output" / "transcript.md").write_text("# Transcript\n", encoding="utf-8")
+    transcription.job_finished.emit(
+        str(session.resolve()), str(session / "output" / "transcript.md")
+    )
+    assert window._transcription_stage.state == AnalysisStageState.COMPLETED  # noqa: SLF001
     window.close()
 
 
@@ -639,8 +783,12 @@ def test_ui_requires_title_and_audio_before_start(qapp: QApplication) -> None:
 def test_ui_uses_scrollable_content_with_persistent_action_bar(qapp: QApplication) -> None:
     controller = _UiController(microphone_id=None, system_id=None)
     window = MainWindow(controller)  # type: ignore[arg-type]
+    window.resize(720, 1000)
+    window.show()
+    qapp.processEvents()
 
     assert window._scroll.widgetResizable()  # noqa: SLF001
+    assert window._scroll.horizontalScrollBar().maximum() == 0  # noqa: SLF001
     assert window._start.parentWidget() is not window._scroll.widget()  # noqa: SLF001
     assert window._open_minutes.text() == "要約を開く"  # noqa: SLF001
     assert window._generate_minutes.text() == "要約を生成"  # noqa: SLF001
