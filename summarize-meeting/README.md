@@ -20,6 +20,8 @@ uv run summarize-meeting
 
 UbuntuではPython 3.11を`uv`に管理させることができます。
 
+別のUbuntu環境へプロジェクトをコピーして導入する場合は、[Ubuntu 22.04へのコピー導入手順](docs/ubuntu-install.md)を使用してください。OSパッケージの確認後、`bash scripts/setup_ubuntu.sh --models all`でPython、依存関係、モデル、診断まで実行できます。
+
 WSL2 + WSLgでは、GUI、マイク、Linux側の再生音声に次のOSパッケージが必要です。`libasound2`は`libportaudio2`の依存として導入されます。
 
 ```bash
