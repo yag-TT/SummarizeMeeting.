@@ -166,7 +166,9 @@ class _UiScreenAnalysisController(QObject):
 
 
 class _UiMinutesController(_UiScreenAnalysisController):
-    pass
+    def __init__(self, *, configured: bool = True) -> None:
+        super().__init__()
+        self.is_configured = configured
 
 
 def _create_recorded_session(root: Path, name: str = "session") -> Path:
@@ -469,6 +471,35 @@ def test_ui_shows_optional_branches_that_can_enrich_minutes(
     detail = window._minutes_stage.detail_label.text()  # noqa: SLF001
     assert "話者分離" in detail
     assert "画面解析" in detail
+    window.close()
+
+
+def test_ui_disables_minutes_when_llm_endpoint_is_unconfigured(
+    qapp: QApplication,
+    tmp_path: Path,
+) -> None:
+    session = _create_recorded_session(tmp_path)
+    (session / "analysis" / "transcription.json").write_text(
+        '{"status":"SUCCEEDED"}', encoding="utf-8"
+    )
+    (session / "output" / "transcript.md").write_text("# Transcript\n", encoding="utf-8")
+    recording = _UiController(microphone_id=None, system_id=None)
+    recording.meetings_directory = tmp_path
+    window = MainWindow(  # type: ignore[arg-type]
+        recording,
+        _UiTranscriptionController(),  # type: ignore[arg-type]
+        FileSessionCatalog(tmp_path),
+        _UiDiarizationController(),  # type: ignore[arg-type]
+        _UiScreenAnalysisController(),  # type: ignore[arg-type]
+        _UiMinutesController(configured=False),  # type: ignore[arg-type]
+    )
+
+    window.refresh_analysis_sessions(session)
+
+    assert window._minutes_stage.state == AnalysisStageState.UNAVAILABLE  # noqa: SLF001
+    assert window._minutes_status.text() == "対象なし"  # noqa: SLF001
+    assert "llm.base_url" in window._minutes_stage.detail_label.text()  # noqa: SLF001
+    assert not window._generate_minutes.isEnabled()  # noqa: SLF001
     window.close()
 
 

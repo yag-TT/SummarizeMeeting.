@@ -93,7 +93,10 @@ def main() -> int:
     transcription_controller = TranscriptionController(paths)
     diarization_controller = DiarizationController(paths)
     screen_analysis_controller = ScreenAnalysisController(paths)
-    minutes_controller = MinutesController(paths)
+    minutes_controller = MinutesController(
+        paths,
+        base_url=settings_result.settings.llm.base_url,
+    )
     window = MainWindow(
         controller,
         transcription_controller,

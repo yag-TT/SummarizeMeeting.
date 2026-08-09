@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from summarize_meeting.application.minutes_controller import MinutesController
 from summarize_meeting.infrastructure.paths import PortableAppPaths
 
@@ -49,29 +51,52 @@ def _setup(tmp_path: Path) -> tuple[PortableAppPaths, Path]:
     return paths, session
 
 
-def test_controller_uses_llama_cpp_default_endpoint(tmp_path: Path, monkeypatch) -> None:
-    paths, _session = _setup(tmp_path)
+def test_controller_disables_minutes_when_endpoint_is_unconfigured(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths, session = _setup(tmp_path)
     monkeypatch.delenv("SUMMARIZE_MEETING_LLM_URL", raising=False)
 
     controller = MinutesController(paths)
 
-    assert controller._base_url == "http://192.168.1.158:8081/v1"
+    assert not controller.is_configured
+    with pytest.raises(RuntimeError, match="settings.json"):
+        controller.start(session)
+    assert not (session / "analysis" / "jobs.json").exists()
+    assert not controller.is_running
 
 
 def test_controller_prefers_new_llm_url_environment_variable(
     tmp_path: Path, monkeypatch
 ) -> None:
     paths, _session = _setup(tmp_path)
-    monkeypatch.setenv("SUMMARIZE_MEETING_LLM_URL", "http://192.168.1.10:9000/v1")
+    monkeypatch.setenv("SUMMARIZE_MEETING_LLM_URL", "http://env.example.test:9000/v1")
 
-    controller = MinutesController(paths)
+    controller = MinutesController(paths, base_url="https://settings.example.test/v1")
 
-    assert controller._base_url == "http://192.168.1.10:9000/v1"
+    assert controller._base_url == "http://env.example.test:9000/v1"
+    assert controller.is_configured
+
+
+def test_controller_uses_settings_endpoint_without_environment_override(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths, _session = _setup(tmp_path)
+    monkeypatch.delenv("SUMMARIZE_MEETING_LLM_URL", raising=False)
+
+    controller = MinutesController(
+        paths,
+        base_url="https://settings.example.test/v1/",
+    )
+
+    assert controller._base_url == "https://settings.example.test/v1"
+    assert controller.is_configured
 
 
 def test_controller_persists_success(tmp_path: Path, monkeypatch) -> None:
     paths, session = _setup(tmp_path)
     output = session / "output" / "minutes.md"
+    monkeypatch.delenv("SUMMARIZE_MEETING_LLM_URL", raising=False)
     monkeypatch.setattr(
         "summarize_meeting.application.minutes_controller.threading.Thread",
         _ImmediateThread,

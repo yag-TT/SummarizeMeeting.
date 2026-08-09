@@ -9,6 +9,7 @@ from summarize_meeting.infrastructure import settings as settings_module
 from summarize_meeting.infrastructure.settings import (
     AppSettings,
     FileSettingsRepository,
+    LlmSettings,
     RetentionSettings,
     ScreenChangeSettings,
 )
@@ -37,6 +38,7 @@ def test_settings_round_trip(tmp_path: Path) -> None:
             timeout_ms=7_500,
         ),
         retention=RetentionSettings(keep_audio=True, keep_screenshots=True),
+        llm=LlmSettings(base_url="https://llm.example.test:8081/v1/"),
         auto_transcribe_after_recording=True,
         log_level="DEBUG",
     )
@@ -46,6 +48,7 @@ def test_settings_round_trip(tmp_path: Path) -> None:
 
     assert result.settings == expected
     assert json.loads(path.read_text(encoding="utf-8"))["schema_version"] == 1
+    assert result.settings.llm.base_url == "https://llm.example.test:8081/v1"
     assert result.settings.auto_transcribe_after_recording
 
 
@@ -56,6 +59,27 @@ def test_old_settings_default_auto_transcription_to_disabled(tmp_path: Path) -> 
     result = FileSettingsRepository(path).load()
 
     assert not result.settings.auto_transcribe_after_recording
+    assert result.settings.llm.base_url is None
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    ["", "ftp://llm.example.test/v1", "http:///v1", "not-a-url"],
+)
+def test_invalid_llm_endpoint_is_treated_as_corrupt(
+    tmp_path: Path,
+    base_url: str,
+) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text(
+        json.dumps({"schema_version": 1, "llm": {"base_url": base_url}}),
+        encoding="utf-8",
+    )
+
+    result = FileSettingsRepository(path).load()
+
+    assert result.settings.llm.base_url is None
+    assert result.backup_path is not None
 
 
 def test_corrupt_settings_are_backed_up_without_overwrite(tmp_path: Path) -> None:

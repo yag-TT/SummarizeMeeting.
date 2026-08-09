@@ -1197,7 +1197,10 @@ class MainWindow(QMainWindow):
         self._generate_minutes.setEnabled(
             minutes is not None
             and summary is not None
-            and (minutes.is_running or summary.can_generate_minutes)
+            and (
+                minutes.is_running
+                or (minutes.is_configured and summary.can_generate_minutes)
+            )
             and not other_running(minutes)
         )
         self._open_session.setEnabled(summary is not None and summary.path.exists())
@@ -1370,7 +1373,24 @@ class MainWindow(QMainWindow):
             completed_detail="画面解析結果を保存済みです。",
         )
 
-        minutes_available = self._minutes_controller is not None
+        minutes = self._minutes_controller
+        minutes_available = minutes is not None
+        minutes_configured = minutes is not None and minutes.is_configured
+        if summary.minutes_status != "SUCCEEDED" and not minutes_available:
+            self._minutes_stage.set_state(
+                AnalysisStageState.UNAVAILABLE,
+                detail="会話要約機能を初期化できませんでした。",
+            )
+            return
+        if summary.minutes_status != "SUCCEEDED" and not minutes_configured:
+            self._minutes_stage.set_state(
+                AnalysisStageState.UNAVAILABLE,
+                detail=(
+                    "data/settings.jsonのllm.base_urlを設定し、"
+                    "アプリを再起動してください。"
+                ),
+            )
+            return
         optional_pending: list[str] = []
         if summary.can_diarize and summary.diarization_status != "SUCCEEDED":
             optional_pending.append("話者分離")
@@ -1384,16 +1404,15 @@ class MainWindow(QMainWindow):
         if not transcription_completed:
             minutes_blocked_state = AnalysisStageState.WAITING
             minutes_blocked_detail = "文字起こしの完了後に実行できます。"
-        elif not minutes_available:
-            minutes_blocked_state = AnalysisStageState.UNAVAILABLE
-            minutes_blocked_detail = "会話要約機能を初期化できませんでした。"
         else:
             minutes_blocked_state = AnalysisStageState.UNAVAILABLE
             minutes_blocked_detail = "会話要約に必要な文字起こし結果がありません。"
         self._set_persisted_job_stage(
             self._minutes_stage,
             status=summary.minutes_status,
-            can_start=summary.can_generate_minutes and minutes_available,
+            can_start=(
+                summary.can_generate_minutes and minutes_available and minutes_configured
+            ),
             ready_detail=ready_detail,
             blocked_state=minutes_blocked_state,
             blocked_detail=minutes_blocked_detail,

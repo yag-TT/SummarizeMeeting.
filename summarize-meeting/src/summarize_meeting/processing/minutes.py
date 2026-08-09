@@ -19,9 +19,6 @@ from summarize_meeting.domain.session import SESSION_SCHEMA_VERSION
 
 ProgressCallback = Callable[[int, str], None]
 
-DEFAULT_LLM_BASE_URL = "http://192.168.1.158:8081/v1"
-
-
 class MinutesError(RuntimeError):
     pass
 
@@ -40,7 +37,7 @@ class LlamaCppMinutesBackend:
     def __init__(
         self,
         *,
-        base_url: str = DEFAULT_LLM_BASE_URL,
+        base_url: str,
         model: str | None = None,
         max_output_tokens: int = 2_048,
         timeout_seconds: float = 600,

@@ -240,12 +240,15 @@ def test_llama_cpp_backend_uses_configured_structured_output(monkeypatch) -> Non
         )
 
     monkeypatch.setattr("summarize_meeting.processing.minutes.urlopen", request)
-    backend = LlamaCppMinutesBackend(model="existing-model")
+    backend = LlamaCppMinutesBackend(
+        base_url="http://llm.example.test:8081/v1",
+        model="existing-model",
+    )
 
     result = backend.generate("会議資料", {"type": "object"})
 
     payload = json.loads(requests[0].data.decode("utf-8"))
-    assert requests[0].full_url == "http://192.168.1.158:8081/v1/chat/completions"
+    assert requests[0].full_url == "http://llm.example.test:8081/v1/chat/completions"
     assert payload["model"] == "existing-model"
     assert payload["response_format"]["type"] == "json_schema"
     assert payload["response_format"]["json_schema"]["name"] == "conversation_summary"
@@ -264,12 +267,14 @@ def test_llama_cpp_backend_requires_model_selection_when_multiple_are_visible(
     )
 
     with pytest.raises(MinutesError, match="SUMMARIZE_MEETING_LLM_MODEL"):
-        LlamaCppMinutesBackend().generate("会議資料", {"type": "object"})
+        LlamaCppMinutesBackend(base_url="https://llm.example.test/v1").generate(
+            "会議資料", {"type": "object"}
+        )
 
 
 def test_llama_cpp_backend_accepts_lan_http_endpoint() -> None:
     backend = LlamaCppMinutesBackend(
-        base_url="http://192.168.1.158:8081/v1", model="model"
+        base_url="http://llm.example.test:8081/v1", model="model"
     )
 
     assert backend.model_name == "model"

@@ -17,7 +17,6 @@ from summarize_meeting.application.worker_process import (
 from summarize_meeting.domain.analysis_job import AnalysisJobState, AnalysisJobStatus
 from summarize_meeting.infrastructure.analysis_job_repository import FileAnalysisJobRepository
 from summarize_meeting.infrastructure.paths import PortableAppPaths
-from summarize_meeting.processing.minutes import DEFAULT_LLM_BASE_URL
 
 
 class MinutesController(QObject):
@@ -38,11 +37,9 @@ class MinutesController(QObject):
         super().__init__()
         self._app_paths = app_paths
         self._job_repository = job_repository or FileAnalysisJobRepository()
-        self._base_url = (
-            base_url
-            or os.environ.get("SUMMARIZE_MEETING_LLM_URL")
-            or DEFAULT_LLM_BASE_URL
-        )
+        configured_url = os.environ.get("SUMMARIZE_MEETING_LLM_URL") or base_url
+        normalized_url = configured_url.strip().rstrip("/") if configured_url else None
+        self._base_url = normalized_url or None
         configured_model = model or os.environ.get("SUMMARIZE_MEETING_LLM_MODEL")
         self._model = configured_model.strip() if configured_model else None
         self._lock = threading.RLock()
@@ -55,7 +52,16 @@ class MinutesController(QObject):
         with self._lock:
             return self._running
 
+    @property
+    def is_configured(self) -> bool:
+        return self._base_url is not None
+
     def start(self, session_directory: Path) -> None:
+        if self._base_url is None:
+            raise RuntimeError(
+                "LLMエンドポイントが未設定です。data/settings.jsonのllm.base_urlを設定し、"
+                "アプリを再起動してください"
+            )
         session_directory = session_directory.resolve()
         try:
             session_directory.relative_to(self._app_paths.meetings_dir.resolve())
@@ -104,6 +110,7 @@ class MinutesController(QObject):
 
     def _run_worker(self, session_directory: Path, state: AnalysisJobState) -> None:
         self.job_started.emit(str(session_directory))
+        assert self._base_url is not None
         command = [
             sys.executable,
             "-m",

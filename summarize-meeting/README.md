@@ -114,14 +114,23 @@ uv run python scripts/doctor.py
 
 文字起こし完了後は「会話要約」を実行できます。会議、雑談、相談、インタビューなどの種類を問わず、話者付き文字起こしを優先して、全体要約・主な話題・会話の要点を生成します。明示的な合意、今後の対応、未解決事項は存在する場合だけ出力します。画面解析結果も任意で統合し、`analysis/timeline.json`、`analysis/minutes.json`、`output/minutes.md`へ保存します。LAN内のllama.cpp serverとサーバーへ導入済みのモデルを使用し、アプリからLLMをダウンロードしません。
 
-llama.cpp serverでモデルをロードし、OpenAI互換APIをLANへ公開します。現在の既定接続先は`http://192.168.1.158:8081/v1`です。
+llama.cpp serverでモデルをロードし、OpenAI互換APIをLANへ公開します。LLM接続先に既定値はありません。`data/settings.json`の`llm.base_url`へHTTPまたはHTTPSのOpenAI互換API URLを設定し、アプリを再起動してください。
+
+```json
+{
+  "schema_version": 1,
+  "llm": {
+    "base_url": "http://llm-host:8081/v1"
+  }
+}
+```
 
 ```console
 llama-server --host 0.0.0.0 --port 8081 --model <model.gguf> --ctx-size 16384
 uv run summarize-meeting
 ```
 
-接続先を変更する場合は、起動環境へ`SUMMARIZE_MEETING_LLM_URL`を設定します。HTTPとHTTPSを使用でき、HTTPの場合は文字起こし内容が暗号化されず送信されます。`GET /v1/models`でモデルが1つだけ見える場合は自動選択します。複数モデルが見える場合は`SUMMARIZE_MEETING_LLM_MODEL`で使用するモデルIDを指定します。
+起動環境へ`SUMMARIZE_MEETING_LLM_URL`を設定した場合は、`data/settings.json`より環境変数を優先します。HTTPの場合は文字起こし内容が暗号化されず送信されます。`GET /v1/models`でモデルが1つだけ見える場合は自動選択します。複数モデルが見える場合は`SUMMARIZE_MEETING_LLM_MODEL`で使用するモデルIDを指定します。エンドポイントが未設定の場合も録音や各解析は使用できますが、会話要約は「対象なし」と表示され、設定と再起動の案内が表示されます。
 
 初回は固定URLとSHA-256検証付きスクリプトで、CPU/GPU話者分離モデルを`models/sherpa-onnx/diarization/`へ配置します。
 
@@ -200,7 +209,7 @@ uv run python -m summarize_meeting.processing.screen_analysis_worker --session "
 会話要約workerだけを実行する場合:
 
 ```console
-uv run python -m summarize_meeting.processing.minutes_worker --session "<data/meetings/セッション>" --base-url http://192.168.1.158:8081/v1
+uv run python -m summarize_meeting.processing.minutes_worker --session "<data/meetings/セッション>" --base-url http://llm-host:8081/v1
 ```
 
 アプリ起動時に正常終了していないセッションを検出すると、復旧確認を表示します。復旧時は元の `.work` segmentを変更せず、`audio/microphone.recovered.wav` や `audio/system.recovered.wav` を新しく生成します。
@@ -211,7 +220,7 @@ PC音声loopbackにはSoundCardを使用します。WindowsではWASAPI loopback
 
 会議開始前に保存先の空き容量を確認し、5 GiB未満では録音を開始しません。録音中は60秒ごとに確認し、5 GiB未満になった場合は新しい画面保存を停止して音声録音を優先します。データを自動削除して容量を確保することはありません。
 
-前回使用したマイクとPC音声のdevice ID、画面変更検知設定、保持方針、自動文字起こし、ログレベルは `data/settings.json` に保存します。壊れた設定は `data/settings.corrupt-<timestamp>.json` へ退避し、既定値で起動します。保存済みdevice IDが見つからない場合、別デバイスへ自動切替はしません。
+前回使用したマイクとPC音声のdevice ID、画面変更検知設定、保持方針、LLMエンドポイント、自動文字起こし、ログレベルは `data/settings.json` に保存します。壊れた設定は `data/settings.corrupt-<timestamp>.json` へ退避し、既定値で起動します。保存済みdevice IDが見つからない場合、別デバイスへ自動切替はしません。
 
 `audio/manifest.json` には2track共通のmonotonic origin、各trackの推定開始offset、WAV時間、再接続gapを除く稼働時間、duration drift、queue最大使用率、pressure回数、overflow回数を保存します。診断値に基づく音声の自動伸縮や無音挿入は行いません。
 

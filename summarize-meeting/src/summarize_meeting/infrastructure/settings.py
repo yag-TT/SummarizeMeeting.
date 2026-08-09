@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 _LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR"}
 
@@ -27,6 +28,18 @@ class RetentionSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class LlmSettings:
+    base_url: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "base_url",
+            _optional_http_url(self.base_url, "llm.base_url"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class AppSettings:
     schema_version: int = 1
     last_microphone_device_id: str | None = None
@@ -34,6 +47,7 @@ class AppSettings:
     screen_evaluation_fps: float = 2.0
     screen_change_thresholds: ScreenChangeSettings = field(default_factory=ScreenChangeSettings)
     retention: RetentionSettings = field(default_factory=RetentionSettings)
+    llm: LlmSettings = field(default_factory=LlmSettings)
     auto_transcribe_after_recording: bool = False
     log_level: str = "INFO"
 
@@ -47,10 +61,13 @@ class AppSettings:
         schema_version = _integer(value.get("schema_version", 1), "schema_version", 1, 1)
         screen = value.get("screen_change_thresholds", {})
         retention = value.get("retention", {})
+        llm = value.get("llm", {})
         if not isinstance(screen, dict):
             raise ValueError("screen_change_thresholds must be an object")
         if not isinstance(retention, dict):
             raise ValueError("retention must be an object")
+        if not isinstance(llm, dict):
+            raise ValueError("llm must be an object")
         log_level = value.get("log_level", "INFO")
         if not isinstance(log_level, str) or log_level.upper() not in _LOG_LEVELS:
             raise ValueError("log_level is invalid")
@@ -115,6 +132,7 @@ class AppSettings:
                     "keep_screenshots",
                 ),
             ),
+            llm=LlmSettings(base_url=llm.get("base_url")),
             auto_transcribe_after_recording=_boolean(
                 value.get("auto_transcribe_after_recording", False),
                 "auto_transcribe_after_recording",
@@ -177,6 +195,22 @@ def _optional_string(value: object, name: str) -> str | None:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{name} must be a non-empty string or null")
     return value
+
+
+def _optional_http_url(value: object, name: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{name} must be a non-empty HTTP(S) URL or null")
+    normalized = value.strip().rstrip("/")
+    try:
+        parsed = urlparse(normalized)
+        hostname = parsed.hostname
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a valid HTTP(S) URL") from exc
+    if parsed.scheme not in {"http", "https"} or not hostname:
+        raise ValueError(f"{name} must be a valid HTTP(S) URL")
+    return normalized
 
 
 def _number(value: object, name: str, minimum: float, maximum: float) -> float:
