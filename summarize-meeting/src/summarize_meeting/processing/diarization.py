@@ -19,6 +19,7 @@ from summarize_meeting.domain.session import (
     AUDIO_MANIFEST_SCHEMA_VERSION,
     SESSION_SCHEMA_VERSION,
 )
+from summarize_meeting.processing.sherpa_runtime import sherpa_cuda_status
 
 ProgressCallback = Callable[[int, str], None]
 BackendProgressCallback = Callable[[float], None]
@@ -39,6 +40,12 @@ class DiarizationBackend(Protocol):
     @property
     def embedding_model_name(self) -> str: ...
 
+    @property
+    def provider(self) -> str: ...
+
+    @property
+    def warnings(self) -> Sequence[str]: ...
+
     def diarize(
         self,
         audio_path: Path,
@@ -54,14 +61,23 @@ class SherpaOnnxDiarizationBackend:
         self,
         *,
         segmentation_model: Path,
+        cuda_segmentation_model: Path | None = None,
         embedding_model: Path,
         num_threads: int = 4,
     ) -> None:
         if num_threads <= 0:
             raise ValueError("num_threads must be positive")
         self._segmentation_model = segmentation_model.resolve()
+        self._cuda_segmentation_model = (
+            cuda_segmentation_model.resolve()
+            if cuda_segmentation_model is not None
+            else self._segmentation_model.with_name("model.onnx")
+        )
+        self._used_segmentation_model = self._segmentation_model
         self._embedding_model = embedding_model.resolve()
         self._num_threads = num_threads
+        self._provider = "cpu"
+        self._warnings: tuple[str, ...] = ()
 
     @property
     def runtime_name(self) -> str:
@@ -69,11 +85,19 @@ class SherpaOnnxDiarizationBackend:
 
     @property
     def segmentation_model_name(self) -> str:
-        return self._segmentation_model.name
+        return self._used_segmentation_model.name
 
     @property
     def embedding_model_name(self) -> str:
         return self._embedding_model.name
+
+    @property
+    def provider(self) -> str:
+        return self._provider
+
+    @property
+    def warnings(self) -> tuple[str, ...]:
+        return self._warnings
 
     def diarize(
         self,
@@ -83,30 +107,136 @@ class SherpaOnnxDiarizationBackend:
         cluster_threshold: float,
         progress_callback: BackendProgressCallback | None = None,
     ) -> Sequence[BackendSpeakerTurn]:
-        if not self._segmentation_model.is_file():
-            raise DiarizationError(
-                f"話者分離segmentation modelがありません: {self._segmentation_model}"
-            )
-        if not self._embedding_model.is_file():
-            raise DiarizationError(f"話者分離embedding modelがありません: {self._embedding_model}")
+        self._validate_model_files()
         try:
             sherpa_onnx = _load_sherpa_onnx()
         except ImportError as exc:  # pragma: no cover - dependency is required at runtime
             raise DiarizationError("sherpa-onnxを読み込めません") from exc
 
         samples = _decode_mono_16k(audio_path)
+        provider = self._preferred_provider()
+        try:
+            turns = self._run_with_provider(
+                sherpa_onnx,
+                samples,
+                provider=provider,
+                speaker_count=speaker_count,
+                cluster_threshold=cluster_threshold,
+                progress_callback=progress_callback,
+            )
+        except Exception as exc:
+            if provider != "cuda" or not _is_cuda_runtime_error(exc):
+                if isinstance(exc, DiarizationError):
+                    raise
+                raise DiarizationError(f"話者分離推論に失敗しました: {exc}") from exc
+            self._warnings = (
+                "CUDA話者分離に失敗したためCPUへフォールバックしました: " + str(exc),
+            )
+            try:
+                turns = self._run_with_provider(
+                    sherpa_onnx,
+                    samples,
+                    provider="cpu",
+                    speaker_count=speaker_count,
+                    cluster_threshold=cluster_threshold,
+                    progress_callback=progress_callback,
+                )
+            except Exception as cpu_exc:
+                raise DiarizationError(
+                    "CUDA話者分離後のCPUフォールバックにも失敗しました: " + str(cpu_exc)
+                ) from cpu_exc
+            provider = "cpu"
+        self._provider = provider
+        return turns
+
+    def probe_runtime(self) -> str:
+        """Initialize the preferred provider without processing audio."""
+        self._validate_model_files()
+        try:
+            sherpa_onnx = _load_sherpa_onnx()
+        except ImportError as exc:  # pragma: no cover - dependency is required at runtime
+            raise DiarizationError("sherpa-onnxを読み込めません") from exc
+        provider = self._preferred_provider()
+        try:
+            self._create_diarizer(
+                sherpa_onnx,
+                provider=provider,
+                speaker_count=None,
+                cluster_threshold=0.75,
+            )
+        except Exception as exc:
+            if provider != "cuda" or not _is_cuda_runtime_error(exc):
+                if isinstance(exc, DiarizationError):
+                    raise
+                raise DiarizationError(f"話者分離モデルを初期化できません: {exc}") from exc
+            self._warnings = (
+                "CUDA話者分離に失敗したためCPUへフォールバックしました: " + str(exc),
+            )
+            try:
+                self._create_diarizer(
+                    sherpa_onnx,
+                    provider="cpu",
+                    speaker_count=None,
+                    cluster_threshold=0.75,
+                )
+            except Exception as cpu_exc:
+                raise DiarizationError(
+                    "CUDA初期化後のCPUフォールバックにも失敗しました: " + str(cpu_exc)
+                ) from cpu_exc
+            provider = "cpu"
+        self._provider = provider
+        return provider
+
+    def _validate_model_files(self) -> None:
+        if not self._segmentation_model.is_file():
+            raise DiarizationError(
+                f"話者分離segmentation modelがありません: {self._segmentation_model}"
+            )
+        if not self._embedding_model.is_file():
+            raise DiarizationError(f"話者分離embedding modelがありません: {self._embedding_model}")
+
+    def _preferred_provider(self) -> str:
+        status = sherpa_cuda_status()
+        if status.available:
+            if not self._cuda_segmentation_model.is_file():
+                self._warnings = (
+                    "CUDA用話者分離モデルがないためCPUへフォールバックしました: "
+                    + str(self._cuda_segmentation_model),
+                )
+                return "cpu"
+            self._warnings = ()
+            return "cuda"
+        self._warnings = (
+            ("CUDAを利用できないためCPUへフォールバックしました: " + status.reason,)
+            if status.targeted
+            else ()
+        )
+        return "cpu"
+
+    def _create_diarizer(
+        self,
+        sherpa_onnx,
+        *,
+        provider: str,
+        speaker_count: int | None,
+        cluster_threshold: float,
+    ):
+        segmentation_model = (
+            self._cuda_segmentation_model if provider == "cuda" else self._segmentation_model
+        )
+        self._used_segmentation_model = segmentation_model
         config = sherpa_onnx.OfflineSpeakerDiarizationConfig(
             segmentation=sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
                 pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(
-                    model=str(self._segmentation_model)
+                    model=str(segmentation_model)
                 ),
                 num_threads=self._num_threads,
-                provider="cpu",
+                provider=provider,
             ),
             embedding=sherpa_onnx.SpeakerEmbeddingExtractorConfig(
                 model=str(self._embedding_model),
                 num_threads=self._num_threads,
-                provider="cpu",
+                provider=provider,
             ),
             clustering=sherpa_onnx.FastClusteringConfig(
                 num_clusters=speaker_count if speaker_count is not None else -1,
@@ -117,17 +247,31 @@ class SherpaOnnxDiarizationBackend:
         )
         if not config.validate():
             raise DiarizationError("話者分離モデル設定が不正です")
-        diarizer = sherpa_onnx.OfflineSpeakerDiarization(config)
+        return sherpa_onnx.OfflineSpeakerDiarization(config)
+
+    def _run_with_provider(
+        self,
+        sherpa_onnx,
+        samples: np.ndarray,
+        *,
+        provider: str,
+        speaker_count: int | None,
+        cluster_threshold: float,
+        progress_callback: BackendProgressCallback | None,
+    ) -> tuple[BackendSpeakerTurn, ...]:
+        diarizer = self._create_diarizer(
+            sherpa_onnx,
+            provider=provider,
+            speaker_count=speaker_count,
+            cluster_threshold=cluster_threshold,
+        )
 
         def on_progress(processed: int, total: int) -> int:
             if progress_callback is not None and total > 0:
                 progress_callback(min(1.0, max(0.0, processed / total)))
             return 0
 
-        try:
-            result = diarizer.process(samples, callback=on_progress).sort_by_start_time()
-        except Exception as exc:
-            raise DiarizationError(f"話者分離推論に失敗しました: {exc}") from exc
+        result = diarizer.process(samples, callback=on_progress).sort_by_start_time()
         return tuple(
             BackendSpeakerTurn(
                 start=float(turn.start),
@@ -213,7 +357,7 @@ class DiarizationService:
             raise DiarizationError("話者を検出できませんでした")
         turns = _normalize_turns(raw_turns, start_offset_ms=start_offset_ms)
         speaker_ids = tuple(dict.fromkeys(turn.speaker_id for turn in turns))
-        warnings = []
+        warnings = list(getattr(self._backend, "warnings", ()))
         if speaker_count is not None and len(speaker_ids) != speaker_count:
             warnings.append(
                 f"指定話者数は{speaker_count}人ですが、{len(speaker_ids)}人を検出しました"
@@ -234,7 +378,7 @@ class DiarizationService:
             "runtime": self._backend.runtime_name,
             "segmentation_model": self._backend.segmentation_model_name,
             "embedding_model": self._backend.embedding_model_name,
-            "provider": "cpu",
+            "provider": getattr(self._backend, "provider", "cpu"),
             "source": {
                 "file": audio_path.name,
                 "start_offset_ms": start_offset_ms,
@@ -529,6 +673,29 @@ def _load_sherpa_onnx():
     import sherpa_onnx
 
     return sherpa_onnx
+
+
+def _is_cuda_runtime_error(error: BaseException) -> bool:
+    cuda_markers = (
+        "cuda",
+        "cudnn",
+        "cublas",
+        "cufft",
+        "curand",
+        "cudart",
+        "gpu",
+        "out of memory",
+        "onnxruntime_providers_cuda",
+    )
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        message = str(current).casefold()
+        if any(marker in message for marker in cuda_markers):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def _system_track(manifest: dict[str, object]) -> dict[str, object]:

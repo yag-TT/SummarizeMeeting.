@@ -3,17 +3,21 @@ from __future__ import annotations
 import json
 import wave
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
 from summarize_meeting.domain.diarization import BackendSpeakerTurn, SpeakerTurn
+from summarize_meeting.processing import diarization as diarization_module
 from summarize_meeting.processing.diarization import (
     DiarizationError,
     DiarizationService,
+    SherpaOnnxDiarizationBackend,
     _decode_mono_16k,
     merge_transcript_segments,
 )
+from summarize_meeting.processing.sherpa_runtime import SherpaCudaStatus
 
 
 class _Backend:
@@ -21,8 +25,16 @@ class _Backend:
     segmentation_model_name = "segmentation.onnx"
     embedding_model_name = "embedding.onnx"
 
-    def __init__(self, turns: tuple[BackendSpeakerTurn, ...]) -> None:
+    def __init__(
+        self,
+        turns: tuple[BackendSpeakerTurn, ...],
+        *,
+        provider: str = "cpu",
+        warnings: tuple[str, ...] = (),
+    ) -> None:
         self.turns = turns
+        self.provider = provider
+        self.warnings = warnings
         self.calls: list[tuple[Path, int | None, float]] = []
 
     def diarize(
@@ -137,6 +149,8 @@ def test_service_generates_diarization_and_merged_transcript(tmp_path: Path) -> 
         "audio_end": 0.9,
         "speaker_id": "speaker_01",
     }
+    assert diarization["provider"] == "cpu"
+    assert diarization["warnings"] == []
     merged = json.loads((session / "analysis" / "diarized_transcription.json").read_text("utf-8"))[
         "segments"
     ]
@@ -149,6 +163,23 @@ def test_service_generates_diarization_and_merged_transcript(tmp_path: Path) -> 
     assert "**Speaker 2**" in output.read_text("utf-8")
     assert backend.calls == [(session / "audio" / "system.wav", 2, 0.75)]
     assert progress[-1] == 100
+
+
+def test_service_saves_actual_provider_and_fallback_warning(tmp_path: Path) -> None:
+    session = _create_session(tmp_path)
+    backend = _Backend(
+        (BackendSpeakerTurn(0.0, 2.0, 0),),
+        provider="cpu",
+        warnings=("CUDAを利用できないためCPUへフォールバックしました: libcudnn.so.9",),
+    )
+
+    DiarizationService(backend).run(session, speaker_count=1)
+
+    result = json.loads((session / "analysis" / "diarization.json").read_text("utf-8"))
+    assert result["provider"] == "cpu"
+    assert result["warnings"] == [
+        "CUDAを利用できないためCPUへフォールバックしました: libcudnn.so.9"
+    ]
 
 
 def test_service_updates_speaker_names_without_backend_run(tmp_path: Path) -> None:
@@ -217,3 +248,159 @@ def test_decode_mono_16k_resamples_stereo_wave(tmp_path: Path) -> None:
     assert samples.ndim == 1
     assert len(samples) == pytest.approx(16_000, abs=32)
     assert float(np.max(np.abs(samples))) > 0.05
+
+
+def _sherpa_backend(tmp_path: Path) -> SherpaOnnxDiarizationBackend:
+    segmentation = tmp_path / "model.int8.onnx"
+    cuda_segmentation = tmp_path / "model.onnx"
+    embedding = tmp_path / "embedding.onnx"
+    segmentation.write_bytes(b"model")
+    cuda_segmentation.write_bytes(b"model")
+    embedding.write_bytes(b"model")
+    return SherpaOnnxDiarizationBackend(
+        segmentation_model=segmentation,
+        embedding_model=embedding,
+    )
+
+
+def _fake_sherpa(*, cuda_error: str | None = None, cpu_error: str | None = None):
+    provider_calls: list[tuple[str, str]] = []
+
+    class Config(SimpleNamespace):
+        def validate(self) -> bool:
+            return True
+
+    def create_diarizer(config):
+        providers = (config.segmentation.provider, config.embedding.provider)
+        provider_calls.append(providers)
+        error = cuda_error if providers[0] == "cuda" else cpu_error
+
+        class Diarizer:
+            def process(self, _samples, callback):
+                if error:
+                    raise RuntimeError(error)
+                callback(1, 1)
+                turn = SimpleNamespace(start=0.0, end=1.0, speaker=0)
+                return SimpleNamespace(sort_by_start_time=lambda: [turn])
+
+        return Diarizer()
+
+    config_factory = lambda **kwargs: SimpleNamespace(**kwargs)  # noqa: E731
+    sherpa = SimpleNamespace(
+        OfflineSpeakerSegmentationPyannoteModelConfig=config_factory,
+        OfflineSpeakerSegmentationModelConfig=config_factory,
+        SpeakerEmbeddingExtractorConfig=config_factory,
+        FastClusteringConfig=config_factory,
+        OfflineSpeakerDiarizationConfig=lambda **kwargs: Config(**kwargs),
+        OfflineSpeakerDiarization=create_diarizer,
+    )
+    return sherpa, provider_calls
+
+
+def _mock_backend_runtime(monkeypatch, sherpa, status: SherpaCudaStatus) -> None:
+    monkeypatch.setattr(diarization_module, "_load_sherpa_onnx", lambda: sherpa)
+    monkeypatch.setattr(
+        diarization_module,
+        "_decode_mono_16k",
+        lambda _path: np.ones(16_000, dtype=np.float32),
+    )
+    monkeypatch.setattr(diarization_module, "sherpa_cuda_status", lambda: status)
+
+
+def test_sherpa_backend_uses_cuda_for_both_models(tmp_path: Path, monkeypatch) -> None:
+    sherpa, provider_calls = _fake_sherpa()
+    _mock_backend_runtime(
+        monkeypatch,
+        sherpa,
+        SherpaCudaStatus(True, True, "1.13.4+cuda12.cudnn9"),
+    )
+    backend = _sherpa_backend(tmp_path)
+
+    turns = backend.diarize(
+        tmp_path / "audio.wav",
+        speaker_count=2,
+        cluster_threshold=0.75,
+    )
+
+    assert turns == (BackendSpeakerTurn(0.0, 1.0, 0),)
+    assert provider_calls == [("cuda", "cuda")]
+    assert backend.provider == "cuda"
+    assert backend.segmentation_model_name == "model.onnx"
+    assert backend.warnings == ()
+
+
+def test_sherpa_backend_selects_cpu_when_cuda_dependency_is_missing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sherpa, provider_calls = _fake_sherpa()
+    _mock_backend_runtime(
+        monkeypatch,
+        sherpa,
+        SherpaCudaStatus(
+            False,
+            True,
+            "1.13.4+cuda12.cudnn9",
+            ("libcudnn.so.9",),
+            "CUDA共有ライブラリがありません: libcudnn.so.9",
+        ),
+    )
+    backend = _sherpa_backend(tmp_path)
+
+    backend.diarize(tmp_path / "audio.wav", speaker_count=None, cluster_threshold=0.75)
+
+    assert provider_calls == [("cpu", "cpu")]
+    assert backend.provider == "cpu"
+    assert backend.segmentation_model_name == "model.int8.onnx"
+    assert "libcudnn.so.9" in backend.warnings[0]
+
+
+def test_sherpa_backend_selects_cpu_when_cuda_model_is_missing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sherpa, provider_calls = _fake_sherpa()
+    _mock_backend_runtime(
+        monkeypatch,
+        sherpa,
+        SherpaCudaStatus(True, True, "1.13.4+cuda12.cudnn9"),
+    )
+    backend = _sherpa_backend(tmp_path)
+    (tmp_path / "model.onnx").unlink()
+
+    backend.diarize(tmp_path / "audio.wav", speaker_count=None, cluster_threshold=0.75)
+
+    assert provider_calls == [("cpu", "cpu")]
+    assert backend.provider == "cpu"
+    assert "CUDA用話者分離モデルがない" in backend.warnings[0]
+
+
+def test_sherpa_backend_retries_cpu_once_after_cuda_error(tmp_path: Path, monkeypatch) -> None:
+    sherpa, provider_calls = _fake_sherpa(cuda_error="CUDA out of memory")
+    _mock_backend_runtime(
+        monkeypatch,
+        sherpa,
+        SherpaCudaStatus(True, True, "1.13.4+cuda12.cudnn9"),
+    )
+    backend = _sherpa_backend(tmp_path)
+
+    backend.diarize(tmp_path / "audio.wav", speaker_count=None, cluster_threshold=0.75)
+
+    assert provider_calls == [("cuda", "cuda"), ("cpu", "cpu")]
+    assert backend.provider == "cpu"
+    assert "CUDA out of memory" in backend.warnings[0]
+
+
+def test_sherpa_backend_does_not_retry_non_cuda_error(tmp_path: Path, monkeypatch) -> None:
+    sherpa, provider_calls = _fake_sherpa(cuda_error="invalid model shape")
+    _mock_backend_runtime(
+        monkeypatch,
+        sherpa,
+        SherpaCudaStatus(True, True, "1.13.4+cuda12.cudnn9"),
+    )
+    backend = _sherpa_backend(tmp_path)
+
+    with pytest.raises(DiarizationError, match="invalid model shape"):
+        backend.diarize(tmp_path / "audio.wav", speaker_count=None, cluster_threshold=0.75)
+
+    assert provider_calls == [("cuda", "cuda")]

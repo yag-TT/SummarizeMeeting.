@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import platform
 import sys
 from pathlib import Path
@@ -55,7 +56,10 @@ def test_native_wayland_package_check_excludes_unused_tools(monkeypatch) -> None
     ]
 
 
-def test_speaker_diarization_runtime_uses_prepared_environment(monkeypatch) -> None:
+def test_speaker_diarization_runtime_uses_prepared_environment(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     prepared = {"LD_LIBRARY_PATH": "/runtime"}
     captured: dict[str, object] = {}
     monkeypatch.setattr(
@@ -67,14 +71,82 @@ def test_speaker_diarization_runtime_uses_prepared_environment(monkeypatch) -> N
     class _Result:
         returncode = 0
         stderr = ""
+        stdout = json.dumps(
+            {
+                "provider": "cuda",
+                "wheel_version": "1.13.4+cuda12.cudnn9",
+                "warnings": [],
+            }
+        )
 
-    def run(*_args, **kwargs):
+    def run(command, **kwargs):
+        captured["command"] = command
         captured.update(kwargs)
         return _Result()
 
     monkeypatch.setattr(doctor.subprocess, "run", run)
 
-    check = doctor._check_speaker_diarization_runtime()
+    paths = doctor.PortableAppPaths(tmp_path)
+    check = doctor._check_speaker_diarization_runtime(paths)
 
     assert check.level == "OK"
+    assert "provider=cuda" in check.detail
     assert captured["env"] is prepared
+    assert "summarize_meeting.processing.diarization_probe" in captured["command"]
+    assert str(paths.models_dir / "sherpa-onnx" / "diarization") in " ".join(
+        captured["command"]
+    )
+
+
+def test_speaker_diarization_runtime_warns_for_cpu_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(platform, "system", lambda: "Linux")
+    monkeypatch.setattr(
+        doctor,
+        "prepare_sherpa_onnx_environment",
+        lambda environment: environment,
+    )
+
+    class _Result:
+        returncode = 0
+        stderr = ""
+        stdout = json.dumps(
+            {
+                "provider": "cpu",
+                "wheel_version": "1.13.4+cuda12.cudnn9",
+                "warnings": ["CUDA共有ライブラリがありません: libcudnn.so.9"],
+            }
+        )
+
+    monkeypatch.setattr(doctor.subprocess, "run", lambda *_args, **_kwargs: _Result())
+
+    check = doctor._check_speaker_diarization_runtime(doctor.PortableAppPaths(tmp_path))
+
+    assert check.level == "WARN"
+    assert "provider=cpu" in check.detail
+    assert "libcudnn.so.9" in check.detail
+
+
+def test_speaker_diarization_runtime_errors_when_probe_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        doctor,
+        "prepare_sherpa_onnx_environment",
+        lambda environment: environment,
+    )
+
+    class _Result:
+        returncode = 1
+        stderr = ""
+        stdout = json.dumps({"status": "ERROR", "error": "CPU initialization failed"})
+
+    monkeypatch.setattr(doctor.subprocess, "run", lambda *_args, **_kwargs: _Result())
+
+    check = doctor._check_speaker_diarization_runtime(doctor.PortableAppPaths(tmp_path))
+
+    assert check.level == "ERROR"
+    assert check.detail == "CPU initialization failed"

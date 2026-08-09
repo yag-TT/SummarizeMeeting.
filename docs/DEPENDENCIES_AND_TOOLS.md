@@ -45,6 +45,8 @@ uv run summarize-meeting
 
 Windows用`.venv`とLinux用仮想環境は互換性がありません。また、Windowsドライブをマウントした`/mnt/c`や`/mnt/d`上の仮想環境は小ファイルI/Oが遅いため、WSLではLinux側ファイルシステムの専用環境を使用します。`libasound2`は`libportaudio2`の依存として導入されます。WSLgはWayland/X11とPulseAudioのserverを提供するため、Linux GUIと音声だけを利用する場合に`pipewire`やデスクトップPortalをUbuntu側へ追加する必要はありません。WindowsデスクトップやWindowsアプリの画面取得はWSLgの対象外です。
 
+話者分離をGPU実行する場合は、READMEの手順でドライバーを含まない`cuda-toolkit-12-8`と`cudnn9-cuda-12`を追加します。WSL内へLinux NVIDIAドライバーは導入しません。
+
 ### Ubuntu 22.04 GNOME Wayland
 
 ネイティブUbuntuのGNOME Waylandで画面取得も使用する場合は次を追加します。
@@ -99,7 +101,7 @@ uv export --frozen --no-hashes --format requirements-txt
 | huggingface-hub | `>=0.34` | 1.27.0 | Whisper・PaddleOCRモデルの取得とローカル配置 |
 | ONNX Runtime | `==1.24.4` | 1.24.4 | OCRなどのONNX推論。通常版なのでCPU実行 |
 | PaddleOCR | `==3.7.0` | 3.7.0 | PP-OCRv6 mediumによる日本語・英語OCR |
-| sherpa-onnx | `==1.13.2` | 1.13.2 | 話者分離推論 |
+| sherpa-onnx | platform別固定 | Windows等は1.13.2、Linux x86_64は1.13.4+cuda12.cudnn9 | 話者分離推論。Linux GPU wheelは公式find-linksから取得 |
 | sherpa-onnx-core | `==1.13.2` | 1.13.2 | Windows AMD64だけに追加するsherpa-onnx native runtime |
 | psutil | `>=7.0` | 7.2.2 | workerと子孫プロセスの共通終了処理 |
 
@@ -173,7 +175,7 @@ Tesseract、MSS、WinRT Python package、独自CUDA DLL archive、`taskkill`は�
 | 機能 | モデル | 配置先 | 取得方法 |
 |---|---|---|---|
 | 文字起こし | faster-whisper `large-v3-turbo` | `models/faster-whisper/` | 初回文字起こし時に取得 |
-| 話者分離 | pyannote segmentation 3.0 int8、NeMo TitaNet small | `models/sherpa-onnx/diarization/` | `setup_models.py diarization` |
+| 話者分離 | pyannote segmentation 3.0 float/int8、NeMo TitaNet small | `models/sherpa-onnx/diarization/` | `setup_models.py diarization` |
 | OCR検出 | `PP-OCRv6_medium_det` ONNX | `models/paddleocr/PP-OCRv6_medium_det/` | `setup_models.py ocr` |
 | OCR認識 | `PP-OCRv6_medium_rec` ONNX | `models/paddleocr/PP-OCRv6_medium_rec/` | `setup_models.py ocr` |
 
@@ -208,12 +210,13 @@ HTTP接続も許可していますが、文字起こし内容は暗号化され�
 
 ## 任意のNVIDIA GPU
 
-CPUだけで全機能を実行できます。GPUを使用するのはfaster-whisper/CTranslate2による文字起こしだけです。
+CPUだけで全機能を実行できます。GPUはfaster-whisper/CTranslate2による文字起こしと、Ubuntu/WSL2 x86_64のsherpa-onnx話者分離で使用します。
 
 - OSへ公式NVIDIA driver、CUDA 12、cuDNN 9を導入する。
 - `ctranslate2.get_cuda_device_count()`が1台以上を返した場合だけCUDAを選択する。
 - GPUでは`float16`、CPUでは`int8`を使用する。
 - CUDA初期化や推論に失敗した場合はCPUへ自動フォールバックする。
+- 話者分離はGPUで`model.onnx`、CPUで`model.int8.onnx`を使用し、segmentationとembeddingへ同じproviderを渡す。
 - OCRは通常の`onnxruntime`を使うためCPU実行である。
 - CUDA runtimeや非公式DLL archiveをアプリへ同梱しない。
 
@@ -247,6 +250,7 @@ uv run python scripts/doctor.py
 - PulseAudio互換サーバー名（`pactl`がある場合）
 - PaddleOCRモデルのSHA-256
 - CTranslate2から見えるCUDA device数
+- sherpa-onnx GPU wheel、CUDA共有ライブラリ、話者分離モデル初期化と実provider
 
 依存環境を更新した後は、次の順番で確認します。
 

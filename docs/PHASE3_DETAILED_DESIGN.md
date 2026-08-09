@@ -47,12 +47,12 @@ Phase 3では、Phase 2で文字起こししたPC音声へ話者情報を付与�
 
 | 項目 | 採用案 |
 |---|---|
-| Runtime | sherpa-onnx 1.12.39、ONNX Runtime 1.24.4 |
+| Runtime | Windows等: sherpa-onnx 1.13.2、Linux x86_64: 1.13.4+cuda12.cudnn9 |
 | 方式 | offline speaker diarization |
-| segmentation | `sherpa-onnx-pyannote-segmentation-3-0/model.int8.onnx` |
+| segmentation | GPU: `model.onnx`、CPU: `model.int8.onnx` |
 | embedding第一候補 | `nemo_en_titanet_small.onnx` |
 | embedding比較候補 | `3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx` |
-| provider | CPU |
+| provider | Ubuntu/WSL2 x86_64はCUDA優先、Windows等はCPU |
 | 入力 | 16 kHz、mono、float32 |
 | 話者数 | 既定は自動、必要時1〜10人を指定 |
 | 自動クラスタ閾値 | PoC初期値0.75 |
@@ -64,7 +64,7 @@ pyannote.audio `community-1`は精度面の比較候補だが、初回モデル�
 
 公式例ではNeMo TitaNetを使った構成が3D-Speaker構成より短い処理時間を示しているため第一候補とする。ただし例は日本語会議音声ではないため、同一の評価音声で両embedding modelを比較して最終決定する。
 
-GPUはPhase 2のSTTへ優先し、Phase 3はCPUで動かす。これによりCUDA runtimeの追加調整を避け、Job終了後のVRAM解放をPhase 2と独立して扱う。
+Ubuntu/WSL2 x86_64ではsegmentationとembeddingをCUDAで実行する。CUDA共有ライブラリ不足やCUDA初期化・推論エラーではCPUへ1回だけフォールバックし、実providerと理由を結果へ保存する。音声decodeとclusteringなど一部工程はCPUで実行する。Windows等は従来どおりCPUを使用する。
 
 ## 5. モデル配置
 
@@ -73,6 +73,7 @@ models/
 └─ sherpa-onnx/
    └─ diarization/
       ├─ segmentation/
+      │  ├─ model.onnx
       │  ├─ model.int8.onnx
       │  ├─ LICENSE
       │  └─ README.md

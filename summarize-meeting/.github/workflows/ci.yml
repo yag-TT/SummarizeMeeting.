@@ -26,5 +26,7 @@ jobs:
             fontconfig fonts-noto-cjk \
             libasound2 libegl1 libgl1 libportaudio2 libpulse0
       - run: uv sync --frozen
+      - name: Verify sherpa-onnx platform dependency
+        run: uv run --frozen python -c "import importlib.metadata, sys; import sherpa_onnx; from summarize_meeting.processing.sherpa_runtime import sherpa_cuda_status; version = importlib.metadata.version('sherpa-onnx'); linux = sys.platform.startswith('linux'); assert ('+cuda12.cudnn9' in version) if linux else (version == '1.13.2'); assert not sherpa_cuda_status().available if linux else True; print(version)"
       - run: uv run --frozen ruff check .
       - run: uv run --frozen pytest -q

@@ -40,6 +40,7 @@ def setup_diarization(*, force: bool) -> None:
     segmentation = model_root / "segmentation"
     embedding = model_root / "embedding"
     required = (
+        segmentation / "model.onnx",
         segmentation / "model.int8.onnx",
         segmentation / "LICENSE",
         segmentation / "README.md",
@@ -63,6 +64,7 @@ def setup_diarization(*, force: bool) -> None:
         source = extract_root / "sherpa-onnx-pyannote-segmentation-3-0"
         segmentation.mkdir(parents=True, exist_ok=True)
         embedding.mkdir(parents=True, exist_ok=True)
+        _copy_atomic(source / "model.onnx", segmentation / "model.onnx")
         _copy_atomic(source / "model.int8.onnx", segmentation / "model.int8.onnx")
         _copy_atomic(source / "LICENSE", segmentation / "LICENSE")
         _copy_atomic(source / "README.md", segmentation / "README.md")

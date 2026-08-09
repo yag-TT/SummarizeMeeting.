@@ -1,11 +1,35 @@
 from __future__ import annotations
 
+import ctypes
+import importlib.metadata
 import importlib.util
 import os
+import platform
 import re
 import sys
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+
+_CUDA_LIBRARIES = (
+    "libcuda.so.1",
+    "libcudart.so.12",
+    "libcublas.so.12",
+    "libcublasLt.so.12",
+    "libcufft.so.11",
+    "libcurand.so.10",
+    "libcudnn.so.9",
+)
+_GPU_WHEEL_MARKERS = ("+cuda12", ".cudnn9")
+
+
+@dataclass(frozen=True, slots=True)
+class SherpaCudaStatus:
+    available: bool
+    targeted: bool
+    wheel_version: str
+    missing_libraries: tuple[str, ...] = ()
+    reason: str = ""
 
 
 def prepare_sherpa_onnx_environment(
@@ -16,6 +40,10 @@ def prepare_sherpa_onnx_environment(
     if not sys.platform.startswith("linux"):
         return prepared
 
+    sherpa_library_directory = _sherpa_onnx_library_directory()
+    if sherpa_library_directory is not None:
+        return _prepend_library_paths(prepared, sherpa_library_directory)
+
     capi_directory = _onnxruntime_capi_directory()
     runtime_library = _onnxruntime_library(capi_directory)
     alias_directory = _native_library_cache_directory(prepared)
@@ -23,11 +51,78 @@ def prepare_sherpa_onnx_environment(
     alias = alias_directory / "libonnxruntime.so"
     _ensure_library_alias(alias, runtime_library)
 
-    existing = prepared.get("LD_LIBRARY_PATH", "")
-    search_paths = [str(alias_directory), str(capi_directory)]
+    return _prepend_library_paths(prepared, alias_directory, capi_directory)
+
+
+def sherpa_cuda_status() -> SherpaCudaStatus:
+    """Return whether the Linux x86_64 sherpa CUDA runtime is ready."""
+    try:
+        wheel_version = importlib.metadata.version("sherpa-onnx")
+    except importlib.metadata.PackageNotFoundError:
+        return SherpaCudaStatus(
+            available=False,
+            targeted=sys.platform.startswith("linux"),
+            wheel_version="not installed",
+            reason="sherpa-onnxがありません",
+        )
+
+    targeted = sys.platform.startswith("linux") and platform.machine().casefold() in {
+        "x86_64",
+        "amd64",
+    }
+    if not targeted:
+        return SherpaCudaStatus(
+            available=False,
+            targeted=False,
+            wheel_version=wheel_version,
+            reason="CUDA話者分離の対象はLinux x86_64だけです",
+        )
+    if not all(marker in wheel_version.casefold() for marker in _GPU_WHEEL_MARKERS):
+        return SherpaCudaStatus(
+            available=False,
+            targeted=True,
+            wheel_version=wheel_version,
+            reason=f"GPU版sherpa-onnxではありません: {wheel_version}",
+        )
+
+    missing = tuple(name for name in _CUDA_LIBRARIES if not _can_load_library(name))
+    if missing:
+        return SherpaCudaStatus(
+            available=False,
+            targeted=True,
+            wheel_version=wheel_version,
+            missing_libraries=missing,
+            reason="CUDA共有ライブラリがありません: " + ", ".join(missing),
+        )
+    return SherpaCudaStatus(available=True, targeted=True, wheel_version=wheel_version)
+
+
+def _sherpa_onnx_library_directory() -> Path | None:
+    spec = importlib.util.find_spec("sherpa_onnx")
+    if spec is None or spec.origin is None:
+        return None
+    library_directory = Path(spec.origin).resolve().parent / "lib"
+    required = (
+        library_directory / "libonnxruntime.so",
+        library_directory / "libonnxruntime_providers_cuda.so",
+    )
+    return library_directory if all(path.is_file() for path in required) else None
+
+
+def _prepend_library_paths(environment: dict[str, str], *paths: Path) -> dict[str, str]:
+    existing = environment.get("LD_LIBRARY_PATH", "")
+    search_paths = [str(path) for path in paths]
     search_paths.extend(value for value in existing.split(os.pathsep) if value)
-    prepared["LD_LIBRARY_PATH"] = os.pathsep.join(dict.fromkeys(search_paths))
-    return prepared
+    environment["LD_LIBRARY_PATH"] = os.pathsep.join(dict.fromkeys(search_paths))
+    return environment
+
+
+def _can_load_library(name: str) -> bool:
+    try:
+        ctypes.CDLL(name)
+    except OSError:
+        return False
+    return True
 
 
 def _onnxruntime_capi_directory() -> Path:

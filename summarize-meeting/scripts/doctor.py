@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import platform
 import shutil
@@ -39,7 +40,7 @@ def main() -> int:
         *_check_desktop_session(),
         _check_japanese_font(),
         _check_audio(),
-        _check_speaker_diarization_runtime(),
+        _check_speaker_diarization_runtime(paths),
         _check_ocr_models(paths),
         _check_cuda(),
     ]
@@ -228,15 +229,19 @@ def _check_audio() -> Check:
     )
 
 
-def _check_speaker_diarization_runtime() -> Check:
+def _check_speaker_diarization_runtime(paths: PortableAppPaths) -> Check:
+    model_root = paths.models_dir / "sherpa-onnx" / "diarization"
     try:
         environment = prepare_sherpa_onnx_environment(os.environ)
         result = subprocess.run(
             [
                 sys.executable,
-                "-c",
-                "from summarize_meeting.processing.diarization import "
-                "_load_sherpa_onnx; _load_sherpa_onnx()",
+                "-m",
+                "summarize_meeting.processing.diarization_probe",
+                "--segmentation-model",
+                str(model_root / "segmentation" / "model.int8.onnx"),
+                "--embedding-model",
+                str(model_root / "embedding" / "nemo_en_titanet_small.onnx"),
             ],
             capture_output=True,
             text=True,
@@ -246,14 +251,35 @@ def _check_speaker_diarization_runtime() -> Check:
         )
     except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
         return Check("ERROR", "speaker-diarization", str(exc))
+    try:
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError):
+        payload = {}
     if result.returncode != 0:
-        detail = result.stderr.strip().splitlines()
+        detail = payload.get("error")
+        stderr = result.stderr.strip().splitlines()
         return Check(
             "ERROR",
             "speaker-diarization",
-            detail[-1] if detail else f"終了コード {result.returncode}",
+            str(detail or (stderr[-1] if stderr else f"終了コード {result.returncode}")),
         )
-    return Check("OK", "speaker-diarization", "sherpa-onnx runtime available")
+    provider = payload.get("provider")
+    version = payload.get("wheel_version", "unknown")
+    warnings = payload.get("warnings")
+    warning = warnings[0] if isinstance(warnings, list) and warnings else ""
+    if provider == "cuda":
+        return Check(
+            "OK",
+            "speaker-diarization",
+            f"sherpa-onnx {version}, provider=cuda, model initialization succeeded",
+        )
+    if provider == "cpu":
+        level = "WARN" if platform.system() == "Linux" else "OK"
+        detail = f"sherpa-onnx {version}, provider=cpu"
+        if warning:
+            detail += f" ({warning})"
+        return Check(level, "speaker-diarization", detail)
+    return Check("ERROR", "speaker-diarization", "providerを判定できません")
 
 
 def _audio_server_name() -> str:

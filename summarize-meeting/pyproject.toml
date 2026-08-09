@@ -13,7 +13,8 @@ dependencies = [
     "paddleocr==3.7.0",
     "psutil>=7.0",
     "pyside6>=6.11.1",
-    "sherpa-onnx==1.13.2",
+    "sherpa-onnx==1.13.4+cuda12.cudnn9; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sherpa-onnx==1.13.2; sys_platform != 'linux' or platform_machine != 'x86_64'",
     "sherpa-onnx-core==1.13.2; sys_platform == 'win32' and platform_machine == 'AMD64'",
     "soundcard>=0.4.6",
     "sounddevice>=0.5.5",
@@ -28,6 +29,9 @@ build-backend = "uv_build"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.uv]
+find-links = ["https://k2-fsa.github.io/sherpa/onnx/cuda.html"]
 
 [tool.ruff]
 target-version = "py311"

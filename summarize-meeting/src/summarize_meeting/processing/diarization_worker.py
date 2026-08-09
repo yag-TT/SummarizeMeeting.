@@ -10,6 +10,8 @@ from summarize_meeting.processing.sherpa_runtime import (
     prepare_sherpa_onnx_environment,
 )
 
+_RUNTIME_PREPARED_ENV = "SUMMARIZE_MEETING_SHERPA_RUNTIME_PREPARED"
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run a local speaker diarization job")
@@ -54,9 +56,12 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _ensure_native_runtime_environment() -> None:
+    if os.environ.get(_RUNTIME_PREPARED_ENV) == "1":
+        return
     prepared = prepare_sherpa_onnx_environment(os.environ)
     if prepared.get("LD_LIBRARY_PATH") == os.environ.get("LD_LIBRARY_PATH"):
         return
+    prepared[_RUNTIME_PREPARED_ENV] = "1"
     os.execve(
         sys.executable,
         [

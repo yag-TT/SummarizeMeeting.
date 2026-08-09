@@ -51,6 +51,49 @@ sudo apt install -y libxcb-cursor0
 
 WSLgはWayland/X11とPulseAudioの接続を提供しますが、完全なUbuntuデスクトップセッションではありません。Windows側のデスクトップやWindowsアプリの画面取得は対象外です。ネイティブWayland向けPortalパッケージをWSLへ追加しても、この制限は解消しません。
 
+#### Ubuntu/WSL2で話者分離をGPU実行する
+
+Ubuntu 22.04 / WSL2 x86_64では、公式の`sherpa-onnx 1.13.4+cuda12.cudnn9` wheelを使用し、segmentationとembeddingをCUDAで実行します。segmentationはCUDA向け`model.onnx`、CPUフォールバック時は`model.int8.onnx`を使用します。CUDAを利用できない場合やCUDA初期化・推論に失敗した場合は、同じ処理をCPUで1回だけ実行します。Windows版はCPU実行です。
+
+WSL2ではWindows側のNVIDIAドライバーを使用します。WSL内へ`cuda-drivers`、`cuda`、`cuda-12-8`、`nvidia-driver-*`をインストールしないでください。WSL用リポジトリから、ドライバーを含まない`cuda-toolkit-12-8`だけを導入します。
+
+```bash
+cd /tmp
+sudo apt update
+sudo apt install -y curl ca-certificates zlib1g
+curl -fsSLO \
+  https://developer.download.nvidia.com/compute/cuda/repos/wsl-ubuntu/x86_64/cuda-keyring_1.1-1_all.deb
+sudo dpkg -i cuda-keyring_1.1-1_all.deb
+
+echo \
+  'deb [signed-by=/usr/share/keyrings/cuda-archive-keyring.gpg] https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/ /' \
+  | sudo tee /etc/apt/sources.list.d/cudnn-ubuntu2204-x86_64.list
+
+sudo apt update
+sudo apt install -y cuda-toolkit-12-8 cudnn9-cuda-12 zlib1g
+
+echo 'export PATH=/usr/local/cuda-12.8/bin${PATH:+:${PATH}}' \
+  | sudo tee /etc/profile.d/cuda-12-8.sh
+echo '/usr/local/cuda-12.8/lib64' \
+  | sudo tee /etc/ld.so.conf.d/cuda-12-8.conf
+sudo ldconfig
+source /etc/profile.d/cuda-12-8.sh
+```
+
+依存同期と話者分離モデルの準備後、GPU、Toolkit、必要な共有ライブラリ、sherpa-onnxのモデル初期化を確認します。
+
+```bash
+uv sync --frozen
+uv run python scripts/setup_models.py diarization
+nvidia-smi
+nvcc --version
+ldconfig -p | grep -E \
+  'libcudart.so.12|libcublas.so.12|libcublasLt.so.12|libcurand.so.10|libcufft.so.11|libcudnn.so.9'
+uv run python scripts/doctor.py
+```
+
+`doctor.py`の`speaker-diarization`が`OK`かつ`provider=cuda`ならGPU話者分離を使用できます。CUDA ToolkitまたはcuDNNがない環境でもアプリは起動し、`WARN`と理由を表示してCPU話者分離を使用します。実行結果の`analysis/diarization.json`には、実際に使用した`provider`（`cuda`または`cpu`）とフォールバック理由を保存します。
+
 画面取得は両OSともQt Multimediaを使用します。WindowsとX11では画面またはウィンドウを選択できます。Ubuntu 22.04 Waylandでは「開始時にOSダイアログで共有画面を選択」を選び、会議開始後にXDG Desktop Portalの共有対象選択へ応答します。許可は録音ごとに必要です。Portalを拒否した場合や共有対象が終了した場合は画面取得だけが停止し、音声録音は継続します。ヘッドレス、SSHのみ、ロック画面での取得は対象外です。
 
 初回の依存取得後、アプリ画面で会議名、マイク、PC音声、取得画面を選択して「会議開始」を押します。PC音声は選択した出力デバイスから再生される全音声が対象です。
@@ -80,7 +123,7 @@ uv run summarize-meeting
 
 接続先を変更する場合は、起動環境へ`SUMMARIZE_MEETING_LLM_URL`を設定します。HTTPとHTTPSを使用でき、HTTPの場合は文字起こし内容が暗号化されず送信されます。`GET /v1/models`でモデルが1つだけ見える場合は自動選択します。複数モデルが見える場合は`SUMMARIZE_MEETING_LLM_MODEL`で使用するモデルIDを指定します。
 
-初回は固定URLとSHA-256検証付きスクリプトで、CPU話者分離モデルを`models/sherpa-onnx/diarization/`へ配置します。
+初回は固定URLとSHA-256検証付きスクリプトで、CPU/GPU話者分離モデルを`models/sherpa-onnx/diarization/`へ配置します。
 
 ```console
 uv run python scripts/setup_models.py diarization
@@ -94,7 +137,7 @@ uv run python scripts/setup_models.py ocr
 
 全モデルをまとめて準備する場合は`uv run python scripts/setup_models.py all`を実行します。モデル不足のままオフラインで解析した場合も、同じコマンドを案内します。
 
-CPUだけで全機能を実行できます。GPUはOSへ公式のNVIDIA CUDA 12とcuDNN 9が導入され、CTranslate2から利用可能と判定された場合だけ文字起こしに使用します。GPU初期化に失敗した場合はCPUへ自動フォールバックします。CUDA DLLや非公式runtime archiveはアプリへ同梱しません。
+CPUだけで全機能を実行できます。文字起こしはCTranslate2、Ubuntu/WSL2 x86_64の話者分離は公式sherpa-onnx GPU wheelからCUDAを利用し、それぞれGPU初期化に失敗した場合はCPUへ自動フォールバックします。CUDA DLLや非公式runtime archiveはアプリへ同梱しません。
 
 環境の非破壊診断は次のコマンドで実行できます。
 
@@ -102,7 +145,7 @@ CPUだけで全機能を実行できます。GPUはOSへ公式のNVIDIA CUDA 12�
 uv run python scripts/doctor.py
 ```
 
-OS、デスクトップセッション、Portal、PipeWire/PulseAudio、音声デバイス、OCRモデル、CUDA、保存先の書込権限を表示します。
+OS、デスクトップセッション、Portal、PipeWire/PulseAudio、音声デバイス、OCRモデル、文字起こし用CUDA、話者分離用GPU wheel・CUDA共有ライブラリ・モデル初期化、保存先の書込権限を表示します。
 
 記録データは次へ保存されます。
 

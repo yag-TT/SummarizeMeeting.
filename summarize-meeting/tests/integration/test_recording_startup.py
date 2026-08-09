@@ -163,9 +163,7 @@ def test_session_starts_when_one_of_two_audio_sources_is_ready(tmp_path: Path) -
     assert session.components[ComponentKind.MICROPHONE.value].error_code == "MIC_OPEN_FAILED"
 
     controller.stop_session()
-    _wait_for(
-        lambda: not controller.is_recording and controller._session_log is None  # noqa: SLF001
-    )
+    _wait_for(lambda: controller._session_terminal.is_set())  # noqa: SLF001
 
     metadata = json.loads((session_path / "session.json").read_text(encoding="utf-8"))
     assert metadata["status"] == SessionStatus.RECORDED
@@ -220,9 +218,7 @@ def test_portal_rejection_does_not_stop_audio_or_session_finalize(tmp_path: Path
     )
 
     controller.stop_session()
-    _wait_for(
-        lambda: not controller.is_recording and controller._session_log is None  # noqa: SLF001
-    )
+    _wait_for(lambda: controller._session_terminal.is_set())  # noqa: SLF001
 
     metadata = json.loads((session_path / "session.json").read_text(encoding="utf-8"))
     assert metadata["status"] == SessionStatus.RECORDED
@@ -248,9 +244,7 @@ def test_session_is_failed_to_start_when_all_audio_sources_fail(
         system_audio=AudioDevice("system", "Broken output", 1),
         screen_target=None,
     )
-    _wait_for(
-        lambda: not controller.is_recording and controller._session_log is None  # noqa: SLF001
-    )
+    _wait_for(lambda: controller._session_terminal.is_set())  # noqa: SLF001
 
     meeting_dirs = list((tmp_path / "data" / "meetings").iterdir())
     assert len(meeting_dirs) == 1
@@ -277,7 +271,7 @@ def test_session_is_failed_to_start_when_all_audio_sources_fail(
     _wait_for(lambda: bool(start_failures))
     assert start_failures and "どちらも開始できません" in start_failures[0][1]
     assert not controller.is_recording
-    assert controller._session_terminal.is_set()  # noqa: SLF001
+    assert controller._session_log is None  # noqa: SLF001
 
 
 def test_start_session_returns_while_audio_device_is_still_opening(
@@ -309,9 +303,7 @@ def test_start_session_returns_while_audio_device_is_still_opening(
         )  # noqa: SLF001
     )
     controller.stop_session()
-    _wait_for(
-        lambda: not controller.is_recording and controller._session_log is None  # noqa: SLF001
-    )
+    _wait_for(lambda: controller._session_terminal.is_set())  # noqa: SLF001
     assert (session_path / "audio" / "microphone.wav").is_file()
 
 
@@ -337,9 +329,7 @@ def test_stop_during_preparing_cancels_start_without_beginning_recording(
 
     controller.stop_session()
     backend.release_open.set()
-    _wait_for(
-        lambda: not controller.is_recording and controller._session_log is None  # noqa: SLF001
-    )
+    _wait_for(lambda: controller._session_terminal.is_set())  # noqa: SLF001
 
     metadata = json.loads((session_path / "session.json").read_text(encoding="utf-8"))
     assert metadata["status"] == SessionStatus.FAILED_TO_START
@@ -409,9 +399,7 @@ def test_start_cleanup_manifest_failure_still_reaches_terminal_state(
         system_audio=None,
         screen_target=None,
     )
-    _wait_for(
-        lambda: not controller.is_recording and controller._session_log is None  # noqa: SLF001
-    )
+    _wait_for(lambda: controller._session_terminal.is_set())  # noqa: SLF001
 
     metadata = json.loads((session_path / "session.json").read_text(encoding="utf-8"))
     assert metadata["status"] == SessionStatus.FAILED_TO_START
