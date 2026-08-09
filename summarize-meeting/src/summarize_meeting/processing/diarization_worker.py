@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
-from summarize_meeting.processing.diarization import (
-    DiarizationService,
-    SherpaOnnxDiarizationBackend,
+from summarize_meeting.processing.sherpa_runtime import (
+    prepare_sherpa_onnx_environment,
 )
 
 
@@ -18,6 +18,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--speaker-count", type=int)
     parser.add_argument("--cluster-threshold", default=0.75, type=float)
     args = parser.parse_args(argv)
+    _ensure_native_runtime_environment()
+    from summarize_meeting.processing.diarization import (
+        DiarizationService,
+        SherpaOnnxDiarizationBackend,
+    )
+
     root = args.models_dir / "sherpa-onnx" / "diarization"
     backend = SherpaOnnxDiarizationBackend(
         segmentation_model=root / "segmentation" / "model.int8.onnx",
@@ -45,6 +51,22 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print(json.dumps({"type": "result", "path": str(output)}, ensure_ascii=False), flush=True)
     return 0
+
+
+def _ensure_native_runtime_environment() -> None:
+    prepared = prepare_sherpa_onnx_environment(os.environ)
+    if prepared.get("LD_LIBRARY_PATH") == os.environ.get("LD_LIBRARY_PATH"):
+        return
+    os.execve(
+        sys.executable,
+        [
+            sys.executable,
+            "-m",
+            "summarize_meeting.processing.diarization_worker",
+            *sys.argv[1:],
+        ],
+        prepared,
+    )
 
 
 if __name__ == "__main__":

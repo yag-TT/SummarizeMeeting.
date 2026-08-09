@@ -12,6 +12,9 @@ from pathlib import Path
 
 from summarize_meeting.infrastructure.paths import PortableAppPaths
 from summarize_meeting.processing.screen_analysis import paddle_models_status
+from summarize_meeting.processing.sherpa_runtime import (
+    prepare_sherpa_onnx_environment,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +39,7 @@ def main() -> int:
         *_check_desktop_session(),
         _check_japanese_font(),
         _check_audio(),
+        _check_speaker_diarization_runtime(),
         _check_ocr_models(paths),
         _check_cuda(),
     ]
@@ -222,6 +226,34 @@ def _check_audio() -> Check:
         "audio",
         f"server={server}, microphones={len(microphones)}, loopbacks={len(loopbacks)}",
     )
+
+
+def _check_speaker_diarization_runtime() -> Check:
+    try:
+        environment = prepare_sherpa_onnx_environment(os.environ)
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from summarize_meeting.processing.diarization import "
+                "_load_sherpa_onnx; _load_sherpa_onnx()",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env=environment,
+        )
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+        return Check("ERROR", "speaker-diarization", str(exc))
+    if result.returncode != 0:
+        detail = result.stderr.strip().splitlines()
+        return Check(
+            "ERROR",
+            "speaker-diarization",
+            detail[-1] if detail else f"終了コード {result.returncode}",
+        )
+    return Check("OK", "speaker-diarization", "sherpa-onnx runtime available")
 
 
 def _audio_server_name() -> str:

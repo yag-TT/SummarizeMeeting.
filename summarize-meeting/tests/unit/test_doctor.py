@@ -53,3 +53,28 @@ def test_native_wayland_package_check_excludes_unused_tools(monkeypatch) -> None
     assert checked_packages == [
         ("pipewire", "xdg-desktop-portal", "xdg-desktop-portal-gnome")
     ]
+
+
+def test_speaker_diarization_runtime_uses_prepared_environment(monkeypatch) -> None:
+    prepared = {"LD_LIBRARY_PATH": "/runtime"}
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        doctor,
+        "prepare_sherpa_onnx_environment",
+        lambda _environment: prepared,
+    )
+
+    class _Result:
+        returncode = 0
+        stderr = ""
+
+    def run(*_args, **kwargs):
+        captured.update(kwargs)
+        return _Result()
+
+    monkeypatch.setattr(doctor.subprocess, "run", run)
+
+    check = doctor._check_speaker_diarization_runtime()
+
+    assert check.level == "OK"
+    assert captured["env"] is prepared

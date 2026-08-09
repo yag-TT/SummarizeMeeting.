@@ -24,6 +24,9 @@ from summarize_meeting.processing.diarization import (
     DiarizationService,
     SherpaOnnxDiarizationBackend,
 )
+from summarize_meeting.processing.sherpa_runtime import (
+    prepare_sherpa_onnx_environment,
+)
 
 
 class DiarizationController(QObject):
@@ -149,6 +152,7 @@ class DiarizationController(QObject):
         environment = os.environ.copy()
         environment["PYTHONUTF8"] = "1"
         try:
+            environment = prepare_sherpa_onnx_environment(environment)
             process = subprocess.Popen(
                 command,
                 stdout=subprocess.PIPE,
@@ -159,7 +163,7 @@ class DiarizationController(QObject):
                 env=environment,
                 **platform_popen_options(),
             )
-        except OSError as exc:
+        except (OSError, RuntimeError) as exc:
             message = f"話者分離を開始できません: {exc}"
             persistence_error = self._persist_terminal(
                 session_directory,
