@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from collections.abc import Sequence
 from typing import Any
 
@@ -37,12 +38,14 @@ class SoundCardAudioStream:
         block_frames: int,
     ) -> None:
         self._format = AudioFormat(sample_rate, int(microphone.channels))
-        self._context = microphone.recorder(
-            samplerate=sample_rate,
-            channels=None,
-            blocksize=max(block_frames * 2, block_frames),
-            exclusive_mode=False,
-        )
+        recorder_options = {
+            "samplerate": sample_rate,
+            "channels": None,
+            "blocksize": max(block_frames * 2, block_frames),
+        }
+        if sys.platform == "win32":
+            recorder_options["exclusive_mode"] = False
+        self._context = microphone.recorder(**recorder_options)
         self._recorder = self._context.__enter__()
         self._closed = False
 
@@ -142,6 +145,28 @@ class SoundCardAudioBackend:
         microphone = sc.get_microphone(device_id, include_loopback=True)
         if microphone is None:
             raise RuntimeError(f"Audio device not found: {device_id}")
+        if sys.platform == "win32" and not microphone.isloopback:
+            try:
+                return SoundDeviceInputStream(
+                    str(microphone.name),
+                    sample_rate=sample_rate,
+                    block_frames=block_frames,
+                    channels=int(microphone.channels),
+                )
+            except Exception as sounddevice_error:
+                try:
+                    return SoundCardAudioStream(
+                        microphone,
+                        sample_rate=sample_rate,
+                        block_frames=block_frames,
+                    )
+                except Exception as soundcard_error:
+                    raise RuntimeError(
+                        "マイクをsounddeviceまたはSoundCardで開始できません: "
+                        f"sounddevice={type(sounddevice_error).__name__}: "
+                        f"{sounddevice_error}; "
+                        f"SoundCard={type(soundcard_error).__name__}: {soundcard_error}"
+                    ) from soundcard_error
         try:
             return SoundCardAudioStream(
                 microphone,
@@ -169,11 +194,10 @@ class SoundCardAudioBackend:
 def _find_sounddevice_input(device_name: str) -> tuple[int, int]:
     host_apis = sd.query_hostapis()
     default_host_index = getattr(sd.default, "hostapi", None)
-    preferred_host_indexes = {
-        index
+    host_names = {
+        index: value.get("name")
         for index, value in enumerate(host_apis)
-        if isinstance(value, dict)
-        and value.get("name") in {"Windows WASAPI", "ALSA", "PulseAudio"}
+        if isinstance(value, dict) and isinstance(value.get("name"), str)
     }
     matches: list[tuple[int, int, int]] = []
     for index, value in enumerate(sd.query_devices()):
@@ -188,12 +212,11 @@ def _find_sounddevice_input(device_name: str) -> tuple[int, int]:
             and max_channels > 0
         ):
             host_index = value.get("hostapi")
-            if host_index == default_host_index:
-                priority = 0
-            elif host_index in preferred_host_indexes:
-                priority = 1
-            else:
-                priority = 2
+            host_name = host_names.get(host_index) if isinstance(host_index, int) else None
+            priority = _host_api_priority(
+                host_name,
+                is_default=host_index == default_host_index,
+            )
             matches.append((priority, index, int(max_channels)))
     matches.sort()
     if len(matches) != 1:
@@ -205,3 +228,20 @@ def _find_sounddevice_input(device_name: str) -> tuple[int, int]:
             f"{device_name} (matches={len(matches)})"
         )
     return matches[0][1], matches[0][2]
+
+
+def _host_api_priority(host_name: str | None, *, is_default: bool) -> int:
+    if sys.platform == "win32":
+        return {
+            "Windows WASAPI": 0,
+            "Windows DirectSound": 2,
+            "MME": 3,
+            "Windows WDM-KS": 4,
+        }.get(host_name, 5)
+    if host_name == "PulseAudio":
+        return 0
+    if is_default:
+        return 1
+    if host_name == "ALSA":
+        return 2
+    return 3

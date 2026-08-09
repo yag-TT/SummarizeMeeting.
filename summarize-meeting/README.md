@@ -207,7 +207,7 @@ uv run python -m summarize_meeting.processing.minutes_worker --session "<data/me
 
 録音中に音声デバイスが切断された場合は、別デバイスへ切り替えず、同じdevice IDへ最大5回、約10秒間再接続を試します。切断区間は `audio/manifest.json` の `gaps` に記録されます。
 
-PC音声loopbackにはSoundCardを使用します。WindowsではWASAPI loopback、UbuntuではPulseAudio互換のmonitor sourceを列挙します。物理マイクの音声形式をSoundCardで開始できない場合は、同名のsounddevice入力へ自動的にフォールバックします。
+PC音声loopbackにはSoundCardを使用します。WindowsではWASAPI loopback、UbuntuではPulseAudio互換のmonitor sourceを列挙します。物理マイクはWindowsではsounddeviceのWASAPI入力を優先し、開始できない場合だけSoundCardへフォールバックします。UbuntuではSoundCardのPulseAudio入力を優先し、開始できない場合は同名のsounddevice入力を試します。
 
 会議開始前に保存先の空き容量を確認し、5 GiB未満では録音を開始しません。録音中は60秒ごとに確認し、5 GiB未満になった場合は新しい画面保存を停止して音声録音を優先します。データを自動削除して容量を確保することはありません。
 
