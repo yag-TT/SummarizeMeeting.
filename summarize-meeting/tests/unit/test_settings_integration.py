@@ -4,6 +4,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QApplication
@@ -30,6 +31,9 @@ class _UiController(QObject):
     meter_changed = Signal(str, float)
     screenshot_count_changed = Signal(int)
     sources_refreshed = Signal(int, object)
+    screen_preview_ready = Signal(int, object)
+    screen_preview_failed = Signal(int, str)
+    screen_preview_cancelled = Signal(int)
     session_preparing = Signal(str)
     session_started = Signal(str)
     session_start_failed = Signal(str, str)
@@ -48,6 +52,8 @@ class _UiController(QObject):
         self.stop_count = 0
         self.started_sessions: list[dict[str, object]] = []
         self.replaced_screen_targets: list[ScreenTarget] = []
+        self.screen_preview_requests: list[tuple[int, ScreenTarget]] = []
+        self.screen_preview_cancel_count = 0
         self.auto_transcription_updates: list[bool] = []
 
     def list_input_devices(self):
@@ -77,6 +83,12 @@ class _UiController(QObject):
 
     def stop_session(self) -> None:
         self.stop_count += 1
+
+    def preview_screen_target_async(self, request_id: int, target: ScreenTarget) -> None:
+        self.screen_preview_requests.append((request_id, target))
+
+    def cancel_screen_preview(self) -> None:
+        self.screen_preview_cancel_count += 1
 
     def start_session(
         self,
@@ -214,6 +226,50 @@ def test_ui_restores_devices_by_saved_id(qapp: QApplication) -> None:
 
     assert window._microphone.currentData().id == "mic-2"  # noqa: SLF001
     assert window._system_audio.currentData().id == "system-1"  # noqa: SLF001
+    window.close()
+
+
+def test_ui_previews_selected_screen_before_meeting(qapp: QApplication) -> None:
+    controller = _UiController(microphone_id=None, system_id=None)
+    window = MainWindow(controller)  # type: ignore[arg-type]
+    window.refresh_sources()
+    window._title.setText("プレビュー確認")  # noqa: SLF001
+    window._microphone.setCurrentIndex(1)  # noqa: SLF001
+    window._screen_target.setCurrentIndex(1)  # noqa: SLF001
+
+    assert window._preview_screen.isEnabled()  # noqa: SLF001
+    window._toggle_screen_preview()  # noqa: SLF001
+
+    request_id, target = controller.screen_preview_requests[-1]
+    assert target.title == "Planning deck"
+    assert not window._start.isEnabled()  # noqa: SLF001
+    assert not window._screen_target.isEnabled()  # noqa: SLF001
+    assert window._preview_screen.text() == "プレビューを中止"  # noqa: SLF001
+
+    frame = np.full((24, 32, 3), (10, 20, 30), dtype=np.uint8)
+    controller.screen_preview_ready.emit(request_id, frame)
+
+    assert window._screen_preview.pixmap() is not None  # noqa: SLF001
+    assert window._screen_target.isEnabled()  # noqa: SLF001
+    assert window._start.isEnabled()  # noqa: SLF001
+    window.close()
+
+
+def test_ui_can_cancel_pending_screen_preview(qapp: QApplication) -> None:
+    controller = _UiController(microphone_id=None, system_id=None)
+    window = MainWindow(controller)  # type: ignore[arg-type]
+    window.refresh_sources()
+    window._screen_target.setCurrentIndex(1)  # noqa: SLF001
+    window._toggle_screen_preview()  # noqa: SLF001
+    request_id, _target = controller.screen_preview_requests[-1]
+
+    window._toggle_screen_preview()  # noqa: SLF001
+
+    assert controller.screen_preview_cancel_count == 1
+    assert not window._preview_screen.isEnabled()  # noqa: SLF001
+    controller.screen_preview_cancelled.emit(request_id)
+    assert not window._screen_preview_pending  # noqa: SLF001
+    assert window._preview_screen.isEnabled()  # noqa: SLF001
     window.close()
 
 

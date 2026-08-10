@@ -54,6 +54,9 @@ class RecordingController(QObject):
     meter_changed = Signal(str, float)
     screenshot_count_changed = Signal(int)
     sources_refreshed = Signal(int, object)
+    screen_preview_ready = Signal(int, object)
+    screen_preview_failed = Signal(int, str)
+    screen_preview_cancelled = Signal(int)
     session_preparing = Signal(str)
     session_started = Signal(str)
     session_start_failed = Signal(str, str)
@@ -100,6 +103,9 @@ class RecordingController(QObject):
         self._audio_unavailable_notified = False
         self._metadata_write_failed_notified = False
         self._screen_disabled_by_storage = False
+        self._screen_preview_active = threading.Event()
+        self._screen_preview_cancel = threading.Event()
+        self._screen_preview_state_lock = threading.Lock()
         self._screenshot_count = 0
         self._finalize_progress_percent = -1
         self._finalize_progress_message = ""
@@ -149,6 +155,78 @@ class RecordingController(QObject):
 
     def list_screen_targets(self) -> list[ScreenTarget]:
         return list(self._screen_backend.list_targets())
+
+    @property
+    def is_screen_previewing(self) -> bool:
+        return self._screen_preview_active.is_set()
+
+    def preview_screen_target_async(self, request_id: int, target: ScreenTarget) -> None:
+        if not isinstance(target, ScreenTarget):
+            raise TypeError("プレビューする画面を選択してください")
+        with self._screen_preview_state_lock:
+            if self.is_recording:
+                raise RuntimeError("録音中は画面をプレビューできません")
+            if self._screen_preview_active.is_set():
+                raise RuntimeError("画面プレビューを取得中です")
+            cancel = threading.Event()
+            self._screen_preview_cancel = cancel
+            self._screen_preview_active.set()
+        thread = threading.Thread(
+            target=self._screen_preview_worker,
+            args=(request_id, target, cancel),
+            name=f"screen-preview-{request_id}",
+            daemon=True,
+        )
+        thread.start()
+
+    def cancel_screen_preview(self) -> None:
+        with self._screen_preview_state_lock:
+            if not self._screen_preview_active.is_set():
+                return
+            self._screen_preview_cancel.set()
+        try:
+            self._screen_backend.stop()
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "Stopping screen preview failed",
+                exc_info=exc,
+            )
+
+    def _screen_preview_worker(
+        self,
+        request_id: int,
+        target: ScreenTarget,
+        cancel: threading.Event,
+    ) -> None:
+        frame: object | None = None
+        error: Exception | None = None
+        try:
+            self._screen_backend.start(target)
+            if not cancel.is_set():
+                frame = self._screen_backend.read_latest_frame(120.0)
+        except Exception as exc:
+            error = exc
+        finally:
+            try:
+                self._screen_backend.stop()
+            except Exception as exc:
+                if error is None:
+                    error = exc
+            with self._screen_preview_state_lock:
+                self._screen_preview_active.clear()
+
+        if cancel.is_set():
+            self.screen_preview_cancelled.emit(request_id)
+        elif error is not None:
+            logging.getLogger(__name__).warning(
+                "Screen preview failed",
+                exc_info=error,
+            )
+            self.screen_preview_failed.emit(request_id, str(error))
+        elif frame is not None:
+            self.screen_preview_ready.emit(request_id, frame)
+        else:
+            self.screen_preview_failed.emit(request_id, "画面プレビューを取得できませんでした")
 
     def refresh_sources_async(self, request_id: int) -> None:
         thread = threading.Thread(
@@ -206,6 +284,8 @@ class RecordingController(QObject):
         system_audio: AudioDevice | None,
         screen_target: ScreenTarget | None,
     ) -> Path:
+        if self._screen_preview_active.is_set():
+            raise RuntimeError("画面プレビューの終了後に会議を開始してください")
         if self.is_recording:
             raise RuntimeError("既に録音中です")
         if self._start_thread is not None and self._start_thread.is_alive():

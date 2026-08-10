@@ -5,8 +5,9 @@ from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QCloseEvent, QDesktopServices
+from PySide6.QtGui import QCloseEvent, QDesktopServices, QImage, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -44,6 +45,59 @@ from summarize_meeting.ui.analysis_stage import AnalysisStageCard, AnalysisStage
 from summarize_meeting.ui.status_row import CaptureStatusRow
 
 
+class _ScreenPreviewLabel(QLabel):
+    def __init__(self) -> None:
+        super().__init__("画面を選択してプレビューしてください。")
+        self._source_pixmap: QPixmap | None = None
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setMinimumSize(320, 180)
+        self.setMaximumHeight(360)
+        self.setWordWrap(True)
+        self.setAccessibleName("選択画面のプレビュー")
+        self.setStyleSheet(
+            "background: #111418; color: #aeb4bd; "
+            "border: 1px solid #46515c; border-radius: 4px; padding: 4px;"
+        )
+
+    def show_message(self, message: str) -> None:
+        self._source_pixmap = None
+        self.clear()
+        self.setText(message)
+
+    def show_frame(self, frame: np.ndarray) -> None:
+        if frame.ndim != 3 or frame.shape[2] != 3 or frame.dtype != np.uint8:
+            raise ValueError("プレビュー画像の形式が不正です")
+        pixels = np.ascontiguousarray(frame)
+        height, width, _channels = pixels.shape
+        image = QImage(
+            pixels.data,
+            width,
+            height,
+            int(pixels.strides[0]),
+            QImage.Format.Format_BGR888,
+        ).copy()
+        if image.isNull():
+            raise ValueError("プレビュー画像を表示用に変換できません")
+        self._source_pixmap = QPixmap.fromImage(image)
+        self.setText("")
+        self._render_pixmap()
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._render_pixmap()
+
+    def _render_pixmap(self) -> None:
+        if self._source_pixmap is None or self.width() <= 0 or self.height() <= 0:
+            return
+        self.setPixmap(
+            self._source_pixmap.scaled(
+                self.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+
+
 class MainWindow(QMainWindow):
     _SOURCE_REFRESH_TIMEOUT_MS = 10_000
 
@@ -68,6 +122,9 @@ class MainWindow(QMainWindow):
         self._sources_loaded = False
         self._source_refresh_request_id = 0
         self._source_refresh_pending = False
+        self._screen_preview_request_id = 0
+        self._screen_preview_pending = False
+        self._screen_preview_cancelling = False
         self._close_requested = False
         self._os_shutdown_requested = False
         self._session_error_message: str | None = None
@@ -125,11 +182,17 @@ class MainWindow(QMainWindow):
         form.addRow("保存先", save_path_row)
         recording_layout.addLayout(form)
 
+        self._screen_preview = _ScreenPreviewLabel()
+        recording_layout.addWidget(self._screen_preview)
+
         selector_buttons = QHBoxLayout()
         self._refresh = QPushButton("デバイス・ウィンドウを更新")
+        self._preview_screen = QPushButton("選択画面をプレビュー")
+        self._preview_screen.setEnabled(False)
         self._reselect = QPushButton("録音中に画面を再選択")
         self._reselect.setEnabled(False)
         selector_buttons.addWidget(self._refresh)
+        selector_buttons.addWidget(self._preview_screen)
         selector_buttons.addWidget(self._reselect)
         selector_buttons.addStretch(1)
         recording_layout.addLayout(selector_buttons)
@@ -355,6 +418,7 @@ class MainWindow(QMainWindow):
         self._source_refresh_timeout_timer.setSingleShot(True)
         self._source_refresh_timeout_timer.timeout.connect(self._on_source_refresh_timeout)
         self._refresh.clicked.connect(self.refresh_sources)
+        self._preview_screen.clicked.connect(self._toggle_screen_preview)
         self._start.clicked.connect(self._start_recording)
         self._stop.clicked.connect(self._stop_recording)
         self._reselect.clicked.connect(self._replace_screen)
@@ -374,13 +438,16 @@ class MainWindow(QMainWindow):
         self._title.textChanged.connect(self._on_title_changed)
         self._microphone.currentIndexChanged.connect(self._update_idle_source_names)
         self._system_audio.currentIndexChanged.connect(self._update_idle_source_names)
-        self._screen_target.currentIndexChanged.connect(self._update_idle_source_names)
+        self._screen_target.currentIndexChanged.connect(self._on_screen_target_changed)
         controller.component_changed.connect(self._on_component_changed)
         controller.meter_changed.connect(self._on_meter_changed)
         controller.screenshot_count_changed.connect(
             lambda count: self._screenshots.setText(f"保存画像 {count}")
         )
         controller.sources_refreshed.connect(self._on_sources_refreshed)
+        controller.screen_preview_ready.connect(self._on_screen_preview_ready)
+        controller.screen_preview_failed.connect(self._on_screen_preview_failed)
+        controller.screen_preview_cancelled.connect(self._on_screen_preview_cancelled)
         controller.session_preparing.connect(self._on_session_preparing)
         controller.session_started.connect(self._on_session_started)
         controller.session_start_failed.connect(self._on_session_start_failed)
@@ -454,6 +521,7 @@ class MainWindow(QMainWindow):
         idle = (
             not self._controller.is_recording
             and not self._source_refresh_pending
+            and not self._screen_preview_pending
             and not self._any_analysis_running()
             and self._title.isEnabled()
         )
@@ -462,6 +530,8 @@ class MainWindow(QMainWindow):
             self._action_hint.setText("録音中です。終了後に新しい会議を開始できます。")
         elif self._source_refresh_pending:
             self._action_hint.setText("録音デバイスを確認しています。")
+        elif self._screen_preview_pending:
+            self._action_hint.setText("画面プレビューの終了後に会議を開始できます。")
         elif self._any_analysis_running():
             self._action_hint.setText("解析処理の完了後に録音を開始できます。")
         elif not has_title:
@@ -509,6 +579,9 @@ class MainWindow(QMainWindow):
             self.show_error(f"開けませんでした: {path}")
 
     def refresh_sources(self) -> None:
+        if self._screen_preview_pending:
+            self.show_warning("画面プレビューの終了後に一覧を更新してください。")
+            return
         self._source_refresh_request_id += 1
         request_id = self._source_refresh_request_id
         self._source_refresh_pending = True
@@ -561,6 +634,8 @@ class MainWindow(QMainWindow):
             self._screen_target.addItem(target.title, target)
             if target.id == selected_screen_id:
                 self._screen_target.setCurrentIndex(self._screen_target.count() - 1)
+        self._screen_preview.show_message("画面を選択してプレビューしてください。")
+        self._update_screen_preview_control()
         if not value.errors:
             self._sources_loaded = True
         self._update_idle_source_names()
@@ -582,6 +657,108 @@ class MainWindow(QMainWindow):
         self._refresh.setEnabled(can_edit or actively_recording)
         if can_edit:
             self._update_start_enabled()
+        self._update_screen_preview_control()
+
+    def _on_screen_target_changed(self, index: int) -> None:
+        self._update_idle_source_names(index)
+        if not self._screen_preview_pending:
+            self._screen_preview.show_message("画面を選択してプレビューしてください。")
+        self._update_screen_preview_control()
+
+    def _update_screen_preview_control(self) -> None:
+        if self._screen_preview_pending:
+            self._preview_screen.setText(
+                "プレビューを中止" if not self._screen_preview_cancelling else "中止しています"
+            )
+            self._preview_screen.setEnabled(not self._screen_preview_cancelling)
+            return
+        self._preview_screen.setText("選択画面をプレビュー")
+        target_selected = isinstance(self._screen_target.currentData(), ScreenTarget)
+        can_preview = (
+            target_selected
+            and not self._controller.is_recording
+            and not self._source_refresh_pending
+            and self._title.isEnabled()
+        )
+        self._preview_screen.setEnabled(can_preview)
+
+    def _toggle_screen_preview(self) -> None:
+        if self._screen_preview_pending:
+            self._cancel_screen_preview()
+            return
+        target = self._screen_target.currentData()
+        if not isinstance(target, ScreenTarget):
+            self.show_error("プレビューする画面を選択してください。")
+            return
+        self._screen_preview_request_id += 1
+        request_id = self._screen_preview_request_id
+        self._screen_preview_pending = True
+        self._screen_preview_cancelling = False
+        self._screen_target.setEnabled(False)
+        self._refresh.setEnabled(False)
+        self._screen_preview.show_message(
+            "画面プレビューを取得しています。WaylandではOSの選択画面に応答してください。"
+        )
+        self._update_screen_preview_control()
+        self._update_start_enabled()
+        try:
+            self._controller.preview_screen_target_async(request_id, target)
+        except Exception as exc:
+            self._finish_screen_preview()
+            self._screen_preview.show_message("画面プレビューを表示できませんでした。")
+            self.show_error(f"画面プレビューを開始できません: {exc}")
+
+    def _cancel_screen_preview(self) -> None:
+        self._screen_preview_cancelling = True
+        self._screen_preview.show_message("画面プレビューを中止しています。")
+        self._update_screen_preview_control()
+        try:
+            self._controller.cancel_screen_preview()
+        except Exception as exc:
+            self._finish_screen_preview()
+            self.show_error(f"画面プレビューを中止できません: {exc}")
+
+    def _on_screen_preview_ready(self, request_id: int, value: object) -> None:
+        if request_id != self._screen_preview_request_id:
+            return
+        self._finish_screen_preview()
+        if not isinstance(value, np.ndarray):
+            self._screen_preview.show_message("画面プレビューを表示できませんでした。")
+            self.show_error("画面プレビューの画像形式を読み取れませんでした。")
+            return
+        try:
+            self._screen_preview.show_frame(value)
+        except ValueError as exc:
+            self._screen_preview.show_message("画面プレビューを表示できませんでした。")
+            self.show_error(str(exc))
+            return
+        target = self._screen_target.currentData()
+        title = target.title if isinstance(target, ScreenTarget) else "選択画面"
+        self.show_information(f"プレビューを表示しました: {title}")
+
+    def _on_screen_preview_failed(self, request_id: int, message: str) -> None:
+        if request_id != self._screen_preview_request_id:
+            return
+        self._finish_screen_preview()
+        self._screen_preview.show_message("画面プレビューを表示できませんでした。")
+        detail = message.strip() or "共有対象を確認して再試行してください。"
+        self.show_error(f"画面プレビューを取得できません: {detail}")
+
+    def _on_screen_preview_cancelled(self, request_id: int) -> None:
+        if request_id != self._screen_preview_request_id:
+            return
+        self._finish_screen_preview()
+        self._screen_preview.show_message("画面を選択してプレビューしてください。")
+        self.show_information("画面プレビューを中止しました。")
+
+    def _finish_screen_preview(self) -> None:
+        self._screen_preview_pending = False
+        self._screen_preview_cancelling = False
+        can_edit = not self._controller.is_recording and self._title.isEnabled()
+        self._screen_target.setEnabled(can_edit)
+        self._refresh.setEnabled(can_edit)
+        self._update_screen_preview_control()
+        self._update_start_enabled()
 
     def _on_source_refresh_timeout(self, request_id: int | None = None) -> None:
         request_id = self._source_refresh_request_id if request_id is None else request_id
@@ -1553,14 +1730,15 @@ class MainWindow(QMainWindow):
         self._title.setEnabled(enabled)
         self._microphone.setEnabled(enabled)
         self._system_audio.setEnabled(enabled)
-        self._refresh.setEnabled(enabled)
-        self._screen_target.setEnabled(enabled)
+        self._refresh.setEnabled(enabled and not self._screen_preview_pending)
+        self._screen_target.setEnabled(enabled and not self._screen_preview_pending)
         self._analysis_session.setEnabled(enabled)
         self._refresh_sessions.setEnabled(enabled)
         self._auto_transcribe.setEnabled(enabled)
         self._speaker_count.setEnabled(enabled)
         self._speaker_names_widget.setEnabled(enabled)
         self._save_speaker_names.setEnabled(enabled)
+        self._update_screen_preview_control()
 
     def show_information(self, message: str) -> None:
         self._message.setText(message)
@@ -1623,6 +1801,8 @@ class MainWindow(QMainWindow):
 
     def prepare_for_os_shutdown(self) -> None:
         self._os_shutdown_requested = True
+        if self._screen_preview_pending:
+            self._controller.cancel_screen_preview()
         self._set_inputs_enabled(False)
         self._start.setEnabled(False)
         self._stop.setEnabled(False)
@@ -1639,6 +1819,8 @@ class MainWindow(QMainWindow):
             self._minutes_controller.cancel()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        if self._screen_preview_pending:
+            self._controller.cancel_screen_preview()
         if self._controller.is_recording:
             if self._os_shutdown_requested:
                 self._controller.stop_session()
