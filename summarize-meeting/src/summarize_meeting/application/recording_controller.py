@@ -16,6 +16,7 @@ from summarize_meeting.application.storage_monitor import (
     StorageMonitor,
     format_gib,
 )
+from summarize_meeting.capture.audio.meter import normalized_rms
 from summarize_meeting.capture.audio.recorder import AudioTrackRecorder
 from summarize_meeting.capture.audio.soundcard_backend import SoundCardAudioBackend
 from summarize_meeting.capture.screen.change_detector import ScreenChangeDetector
@@ -57,6 +58,7 @@ class RecordingController(QObject):
     screen_preview_ready = Signal(int, object)
     screen_preview_failed = Signal(int, str)
     screen_preview_cancelled = Signal(int)
+    audio_preview_finished = Signal(int, object)
     session_preparing = Signal(str)
     session_started = Signal(str)
     session_start_failed = Signal(str, str)
@@ -105,7 +107,9 @@ class RecordingController(QObject):
         self._screen_disabled_by_storage = False
         self._screen_preview_active = threading.Event()
         self._screen_preview_cancel = threading.Event()
-        self._screen_preview_state_lock = threading.Lock()
+        self._audio_preview_active = threading.Event()
+        self._audio_preview_cancel = threading.Event()
+        self._preview_state_lock = threading.Lock()
         self._screenshot_count = 0
         self._finalize_progress_percent = -1
         self._finalize_progress_message = ""
@@ -160,12 +164,18 @@ class RecordingController(QObject):
     def is_screen_previewing(self) -> bool:
         return self._screen_preview_active.is_set()
 
+    @property
+    def is_audio_previewing(self) -> bool:
+        return self._audio_preview_active.is_set()
+
     def preview_screen_target_async(self, request_id: int, target: ScreenTarget) -> None:
         if not isinstance(target, ScreenTarget):
             raise TypeError("プレビューする画面を選択してください")
-        with self._screen_preview_state_lock:
+        with self._preview_state_lock:
             if self.is_recording:
                 raise RuntimeError("録音中は画面をプレビューできません")
+            if self._audio_preview_active.is_set():
+                raise RuntimeError("音声入力のテスト中は画面をプレビューできません")
             if self._screen_preview_active.is_set():
                 raise RuntimeError("画面プレビューを取得中です")
             cancel = threading.Event()
@@ -180,7 +190,7 @@ class RecordingController(QObject):
         thread.start()
 
     def cancel_screen_preview(self) -> None:
-        with self._screen_preview_state_lock:
+        with self._preview_state_lock:
             if not self._screen_preview_active.is_set():
                 return
             self._screen_preview_cancel.set()
@@ -212,7 +222,7 @@ class RecordingController(QObject):
             except Exception as exc:
                 if error is None:
                     error = exc
-            with self._screen_preview_state_lock:
+            with self._preview_state_lock:
                 self._screen_preview_active.clear()
 
         if cancel.is_set():
@@ -227,6 +237,112 @@ class RecordingController(QObject):
             self.screen_preview_ready.emit(request_id, frame)
         else:
             self.screen_preview_failed.emit(request_id, "画面プレビューを取得できませんでした")
+
+    def preview_audio_sources_async(
+        self,
+        request_id: int,
+        microphone: AudioDevice | None,
+        system_audio: AudioDevice | None,
+    ) -> None:
+        sources = tuple(
+            (kind, device)
+            for kind, device in (
+                (ComponentKind.MICROPHONE, microphone),
+                (ComponentKind.SYSTEM_AUDIO, system_audio),
+            )
+            if device is not None
+        )
+        if not sources:
+            raise ValueError("テストするマイクまたはPC音源を選択してください")
+        with self._preview_state_lock:
+            if self.is_recording:
+                raise RuntimeError("録音中は音声入力をテストできません")
+            if self._screen_preview_active.is_set():
+                raise RuntimeError("画面プレビュー中は音声入力をテストできません")
+            if self._audio_preview_active.is_set():
+                raise RuntimeError("音声入力をテスト中です")
+            cancel = threading.Event()
+            self._audio_preview_cancel = cancel
+            self._audio_preview_active.set()
+        thread = threading.Thread(
+            target=self._audio_preview_worker,
+            args=(request_id, sources, cancel),
+            name=f"audio-preview-{request_id}",
+            daemon=True,
+        )
+        thread.start()
+
+    def cancel_audio_preview(self) -> None:
+        with self._preview_state_lock:
+            if not self._audio_preview_active.is_set():
+                return
+            self._audio_preview_cancel.set()
+
+    def _audio_preview_worker(
+        self,
+        request_id: int,
+        sources: tuple[tuple[ComponentKind, AudioDevice], ...],
+        cancel: threading.Event,
+    ) -> None:
+        errors: list[str] = []
+        errors_lock = threading.Lock()
+        workers = [
+            threading.Thread(
+                target=self._audio_preview_source_worker,
+                args=(kind, device, cancel, errors, errors_lock),
+                name=f"{kind.value}-preview",
+                daemon=True,
+            )
+            for kind, device in sources
+        ]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+        with self._preview_state_lock:
+            self._audio_preview_active.clear()
+        self.audio_preview_finished.emit(request_id, tuple(errors))
+
+    def _audio_preview_source_worker(
+        self,
+        kind: ComponentKind,
+        device: AudioDevice,
+        cancel: threading.Event,
+        errors: list[str],
+        errors_lock: threading.Lock,
+    ) -> None:
+        label = "マイク" if kind == ComponentKind.MICROPHONE else "PC音源"
+        stream = None
+        failure: Exception | None = None
+        self.component_changed.emit(kind.value, ComponentStatus.STARTING.value, "テスト接続中")
+        try:
+            stream = self._audio_backend.open_stream(
+                device.id,
+                sample_rate=48_000,
+                block_frames=4_800,
+            )
+            self.component_changed.emit(kind.value, ComponentStatus.RUNNING.value, "入力テスト中")
+            while not cancel.is_set():
+                samples = stream.read(4_800)
+                if samples.size:
+                    self.meter_changed.emit(kind.value, normalized_rms(samples))
+        except Exception as exc:
+            failure = exc
+        finally:
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception as exc:
+                    if failure is None:
+                        failure = exc
+            self.meter_changed.emit(kind.value, 0.0)
+        if failure is None:
+            self.component_changed.emit(kind.value, ComponentStatus.STOPPED.value, "")
+            return
+        message = f"{label}をテストできません: {failure}"
+        with errors_lock:
+            errors.append(message)
+        self.component_changed.emit(kind.value, ComponentStatus.FAILED.value, str(failure))
 
     def refresh_sources_async(self, request_id: int) -> None:
         thread = threading.Thread(
@@ -284,8 +400,8 @@ class RecordingController(QObject):
         system_audio: AudioDevice | None,
         screen_target: ScreenTarget | None,
     ) -> Path:
-        if self._screen_preview_active.is_set():
-            raise RuntimeError("画面プレビューの終了後に会議を開始してください")
+        if self._screen_preview_active.is_set() or self._audio_preview_active.is_set():
+            raise RuntimeError("プレビューの終了後に会議を開始してください")
         if self.is_recording:
             raise RuntimeError("既に録音中です")
         if self._start_thread is not None and self._start_thread.is_alive():
@@ -544,6 +660,8 @@ class RecordingController(QObject):
     def stop_for_shutdown(self, timeout_seconds: float = 4.0) -> bool:
         if timeout_seconds < 0:
             raise ValueError("shutdown timeout must not be negative")
+        self.cancel_audio_preview()
+        self.cancel_screen_preview()
         with self._lock:
             active = self._session is not None and self._session.status in {
                 SessionStatus.PREPARING,

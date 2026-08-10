@@ -125,6 +125,9 @@ class MainWindow(QMainWindow):
         self._screen_preview_request_id = 0
         self._screen_preview_pending = False
         self._screen_preview_cancelling = False
+        self._audio_preview_request_id = 0
+        self._audio_preview_pending = False
+        self._audio_preview_cancelling = False
         self._close_requested = False
         self._os_shutdown_requested = False
         self._session_error_message: str | None = None
@@ -187,15 +190,21 @@ class MainWindow(QMainWindow):
 
         selector_buttons = QHBoxLayout()
         self._refresh = QPushButton("デバイス・ウィンドウを更新")
+        self._preview_audio = QPushButton("マイク・PC音源をテスト")
+        self._preview_audio.setEnabled(False)
         self._preview_screen = QPushButton("選択画面をプレビュー")
         self._preview_screen.setEnabled(False)
         self._reselect = QPushButton("録音中に画面を再選択")
         self._reselect.setEnabled(False)
         selector_buttons.addWidget(self._refresh)
-        selector_buttons.addWidget(self._preview_screen)
         selector_buttons.addWidget(self._reselect)
         selector_buttons.addStretch(1)
         recording_layout.addLayout(selector_buttons)
+        preview_buttons = QHBoxLayout()
+        preview_buttons.addWidget(self._preview_audio)
+        preview_buttons.addWidget(self._preview_screen)
+        preview_buttons.addStretch(1)
+        recording_layout.addLayout(preview_buttons)
         root.addWidget(recording_group)
 
         status_group = QGroupBox("録音状態")
@@ -418,6 +427,7 @@ class MainWindow(QMainWindow):
         self._source_refresh_timeout_timer.setSingleShot(True)
         self._source_refresh_timeout_timer.timeout.connect(self._on_source_refresh_timeout)
         self._refresh.clicked.connect(self.refresh_sources)
+        self._preview_audio.clicked.connect(self._toggle_audio_preview)
         self._preview_screen.clicked.connect(self._toggle_screen_preview)
         self._start.clicked.connect(self._start_recording)
         self._stop.clicked.connect(self._stop_recording)
@@ -436,8 +446,8 @@ class MainWindow(QMainWindow):
         self._analysis_session.currentIndexChanged.connect(self._on_analysis_session_changed)
         self._auto_transcribe.toggled.connect(self._on_auto_transcription_toggled)
         self._title.textChanged.connect(self._on_title_changed)
-        self._microphone.currentIndexChanged.connect(self._update_idle_source_names)
-        self._system_audio.currentIndexChanged.connect(self._update_idle_source_names)
+        self._microphone.currentIndexChanged.connect(self._on_audio_source_changed)
+        self._system_audio.currentIndexChanged.connect(self._on_audio_source_changed)
         self._screen_target.currentIndexChanged.connect(self._on_screen_target_changed)
         controller.component_changed.connect(self._on_component_changed)
         controller.meter_changed.connect(self._on_meter_changed)
@@ -448,6 +458,7 @@ class MainWindow(QMainWindow):
         controller.screen_preview_ready.connect(self._on_screen_preview_ready)
         controller.screen_preview_failed.connect(self._on_screen_preview_failed)
         controller.screen_preview_cancelled.connect(self._on_screen_preview_cancelled)
+        controller.audio_preview_finished.connect(self._on_audio_preview_finished)
         controller.session_preparing.connect(self._on_session_preparing)
         controller.session_started.connect(self._on_session_started)
         controller.session_start_failed.connect(self._on_session_start_failed)
@@ -522,6 +533,7 @@ class MainWindow(QMainWindow):
             not self._controller.is_recording
             and not self._source_refresh_pending
             and not self._screen_preview_pending
+            and not self._audio_preview_pending
             and not self._any_analysis_running()
             and self._title.isEnabled()
         )
@@ -532,6 +544,8 @@ class MainWindow(QMainWindow):
             self._action_hint.setText("録音デバイスを確認しています。")
         elif self._screen_preview_pending:
             self._action_hint.setText("画面プレビューの終了後に会議を開始できます。")
+        elif self._audio_preview_pending:
+            self._action_hint.setText("音声入力テストの終了後に会議を開始できます。")
         elif self._any_analysis_running():
             self._action_hint.setText("解析処理の完了後に録音を開始できます。")
         elif not has_title:
@@ -579,8 +593,8 @@ class MainWindow(QMainWindow):
             self.show_error(f"開けませんでした: {path}")
 
     def refresh_sources(self) -> None:
-        if self._screen_preview_pending:
-            self.show_warning("画面プレビューの終了後に一覧を更新してください。")
+        if self._screen_preview_pending or self._audio_preview_pending:
+            self.show_warning("プレビューの終了後に一覧を更新してください。")
             return
         self._source_refresh_request_id += 1
         request_id = self._source_refresh_request_id
@@ -658,6 +672,7 @@ class MainWindow(QMainWindow):
         if can_edit:
             self._update_start_enabled()
         self._update_screen_preview_control()
+        self._update_audio_preview_control()
 
     def _on_screen_target_changed(self, index: int) -> None:
         self._update_idle_source_names(index)
@@ -678,11 +693,15 @@ class MainWindow(QMainWindow):
             target_selected
             and not self._controller.is_recording
             and not self._source_refresh_pending
+            and not self._audio_preview_pending
             and self._title.isEnabled()
         )
         self._preview_screen.setEnabled(can_preview)
 
     def _toggle_screen_preview(self) -> None:
+        if self._audio_preview_pending:
+            self.show_warning("音声入力テストの終了後に画面をプレビューしてください。")
+            return
         if self._screen_preview_pending:
             self._cancel_screen_preview()
             return
@@ -700,6 +719,7 @@ class MainWindow(QMainWindow):
             "画面プレビューを取得しています。WaylandではOSの選択画面に応答してください。"
         )
         self._update_screen_preview_control()
+        self._update_audio_preview_control()
         self._update_start_enabled()
         try:
             self._controller.preview_screen_target_async(request_id, target)
@@ -707,6 +727,101 @@ class MainWindow(QMainWindow):
             self._finish_screen_preview()
             self._screen_preview.show_message("画面プレビューを表示できませんでした。")
             self.show_error(f"画面プレビューを開始できません: {exc}")
+
+    def _on_audio_source_changed(self, index: int) -> None:
+        self._update_idle_source_names(index)
+        self._update_audio_preview_control()
+
+    def _update_audio_preview_control(self) -> None:
+        if self._audio_preview_pending:
+            self._preview_audio.setText(
+                "音声テストを停止" if not self._audio_preview_cancelling else "停止しています"
+            )
+            self._preview_audio.setEnabled(not self._audio_preview_cancelling)
+            return
+        self._preview_audio.setText("マイク・PC音源をテスト")
+        source_selected = isinstance(
+            self._microphone.currentData(), AudioDevice
+        ) or isinstance(self._system_audio.currentData(), AudioDevice)
+        can_preview = (
+            source_selected
+            and not self._controller.is_recording
+            and not self._source_refresh_pending
+            and not self._screen_preview_pending
+            and self._title.isEnabled()
+        )
+        self._preview_audio.setEnabled(can_preview)
+
+    def _toggle_audio_preview(self) -> None:
+        if self._audio_preview_pending:
+            self._cancel_audio_preview()
+            return
+        microphone = self._microphone.currentData()
+        system_audio = self._system_audio.currentData()
+        if not isinstance(microphone, AudioDevice):
+            microphone = None
+        if not isinstance(system_audio, AudioDevice):
+            system_audio = None
+        if microphone is None and system_audio is None:
+            self.show_error("テストするマイクまたはPC音源を選択してください。")
+            return
+        self._audio_preview_request_id += 1
+        request_id = self._audio_preview_request_id
+        self._audio_preview_pending = True
+        self._audio_preview_cancelling = False
+        self._microphone.setEnabled(False)
+        self._system_audio.setEnabled(False)
+        self._screen_target.setEnabled(False)
+        self._refresh.setEnabled(False)
+        self._update_audio_preview_control()
+        self._update_screen_preview_control()
+        self._update_start_enabled()
+        self.show_information(
+            "音声入力をテストしています。マイクへ話しかけ、PC音源を再生してメーターを確認してください。"
+        )
+        try:
+            self._controller.preview_audio_sources_async(
+                request_id,
+                microphone,
+                system_audio,
+            )
+        except Exception as exc:
+            self._finish_audio_preview()
+            self.show_error(f"音声入力テストを開始できません: {exc}")
+
+    def _cancel_audio_preview(self) -> None:
+        self._audio_preview_cancelling = True
+        self._update_audio_preview_control()
+        self.show_information("音声入力テストを停止しています。")
+        try:
+            self._controller.cancel_audio_preview()
+        except Exception as exc:
+            self._finish_audio_preview()
+            self.show_error(f"音声入力テストを停止できません: {exc}")
+
+    def _on_audio_preview_finished(self, request_id: int, value: object) -> None:
+        if request_id != self._audio_preview_request_id:
+            return
+        errors = tuple(str(item) for item in value) if isinstance(value, tuple | list) else ()
+        self._finish_audio_preview(reset_states=not errors)
+        if errors:
+            self.show_error(" / ".join(errors))
+        else:
+            self.show_information("音声入力テストを終了しました。")
+
+    def _finish_audio_preview(self, *, reset_states: bool = True) -> None:
+        self._audio_preview_pending = False
+        self._audio_preview_cancelling = False
+        can_edit = not self._controller.is_recording and self._title.isEnabled()
+        self._microphone.setEnabled(can_edit)
+        self._system_audio.setEnabled(can_edit)
+        self._screen_target.setEnabled(can_edit)
+        self._refresh.setEnabled(can_edit)
+        if reset_states:
+            self._set_idle_audio_states()
+        self._update_audio_preview_control()
+        self._update_screen_preview_control()
+        self._update_start_enabled()
 
     def _cancel_screen_preview(self) -> None:
         self._screen_preview_cancelling = True
@@ -758,6 +873,7 @@ class MainWindow(QMainWindow):
         self._screen_target.setEnabled(can_edit)
         self._refresh.setEnabled(can_edit)
         self._update_screen_preview_control()
+        self._update_audio_preview_control()
         self._update_start_enabled()
 
     def _on_source_refresh_timeout(self, request_id: int | None = None) -> None:
@@ -1728,10 +1844,11 @@ class MainWindow(QMainWindow):
 
     def _set_inputs_enabled(self, enabled: bool) -> None:
         self._title.setEnabled(enabled)
-        self._microphone.setEnabled(enabled)
-        self._system_audio.setEnabled(enabled)
-        self._refresh.setEnabled(enabled and not self._screen_preview_pending)
-        self._screen_target.setEnabled(enabled and not self._screen_preview_pending)
+        self._microphone.setEnabled(enabled and not self._audio_preview_pending)
+        self._system_audio.setEnabled(enabled and not self._audio_preview_pending)
+        preview_pending = self._screen_preview_pending or self._audio_preview_pending
+        self._refresh.setEnabled(enabled and not preview_pending)
+        self._screen_target.setEnabled(enabled and not preview_pending)
         self._analysis_session.setEnabled(enabled)
         self._refresh_sessions.setEnabled(enabled)
         self._auto_transcribe.setEnabled(enabled)
@@ -1739,6 +1856,7 @@ class MainWindow(QMainWindow):
         self._speaker_names_widget.setEnabled(enabled)
         self._save_speaker_names.setEnabled(enabled)
         self._update_screen_preview_control()
+        self._update_audio_preview_control()
 
     def show_information(self, message: str) -> None:
         self._message.setText(message)
@@ -1783,7 +1901,20 @@ class MainWindow(QMainWindow):
         if self._controller.is_recording:
             return
         self._show_active_source_names()
+        if not self._audio_preview_pending:
+            self._set_idle_audio_states()
+        self._update_audio_preview_control()
         self._update_start_enabled()
+
+    def _set_idle_audio_states(self) -> None:
+        microphone = self._microphone.currentData()
+        system_audio = self._system_audio.currentData()
+        self._mic_status.set_state(
+            "READY" if isinstance(microphone, AudioDevice) else "NOT_CONFIGURED"
+        )
+        self._system_status.set_state(
+            "READY" if isinstance(system_audio, AudioDevice) else "NOT_CONFIGURED"
+        )
 
     def _show_active_source_names(self) -> None:
         microphone = self._microphone.currentData()
@@ -1801,6 +1932,8 @@ class MainWindow(QMainWindow):
 
     def prepare_for_os_shutdown(self) -> None:
         self._os_shutdown_requested = True
+        if self._audio_preview_pending:
+            self._controller.cancel_audio_preview()
         if self._screen_preview_pending:
             self._controller.cancel_screen_preview()
         self._set_inputs_enabled(False)
@@ -1819,6 +1952,8 @@ class MainWindow(QMainWindow):
             self._minutes_controller.cancel()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
+        if self._audio_preview_pending:
+            self._controller.cancel_audio_preview()
         if self._screen_preview_pending:
             self._controller.cancel_screen_preview()
         if self._controller.is_recording:

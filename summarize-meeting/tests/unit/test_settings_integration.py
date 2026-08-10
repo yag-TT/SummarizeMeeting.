@@ -34,6 +34,7 @@ class _UiController(QObject):
     screen_preview_ready = Signal(int, object)
     screen_preview_failed = Signal(int, str)
     screen_preview_cancelled = Signal(int)
+    audio_preview_finished = Signal(int, object)
     session_preparing = Signal(str)
     session_started = Signal(str)
     session_start_failed = Signal(str, str)
@@ -54,6 +55,10 @@ class _UiController(QObject):
         self.replaced_screen_targets: list[ScreenTarget] = []
         self.screen_preview_requests: list[tuple[int, ScreenTarget]] = []
         self.screen_preview_cancel_count = 0
+        self.audio_preview_requests: list[
+            tuple[int, AudioDevice | None, AudioDevice | None]
+        ] = []
+        self.audio_preview_cancel_count = 0
         self.auto_transcription_updates: list[bool] = []
 
     def list_input_devices(self):
@@ -89,6 +94,17 @@ class _UiController(QObject):
 
     def cancel_screen_preview(self) -> None:
         self.screen_preview_cancel_count += 1
+
+    def preview_audio_sources_async(
+        self,
+        request_id: int,
+        microphone: AudioDevice | None,
+        system_audio: AudioDevice | None,
+    ) -> None:
+        self.audio_preview_requests.append((request_id, microphone, system_audio))
+
+    def cancel_audio_preview(self) -> None:
+        self.audio_preview_cancel_count += 1
 
     def start_session(
         self,
@@ -270,6 +286,56 @@ def test_ui_can_cancel_pending_screen_preview(qapp: QApplication) -> None:
     controller.screen_preview_cancelled.emit(request_id)
     assert not window._screen_preview_pending  # noqa: SLF001
     assert window._preview_screen.isEnabled()  # noqa: SLF001
+    window.close()
+
+
+def test_ui_tests_selected_microphone_and_system_audio(qapp: QApplication) -> None:
+    controller = _UiController(microphone_id=None, system_id=None)
+    window = MainWindow(controller)  # type: ignore[arg-type]
+    window.refresh_sources()
+    window._title.setText("音声テスト")  # noqa: SLF001
+    window._microphone.setCurrentIndex(1)  # noqa: SLF001
+    window._system_audio.setCurrentIndex(1)  # noqa: SLF001
+
+    window._toggle_audio_preview()  # noqa: SLF001
+
+    request_id, microphone, system_audio = controller.audio_preview_requests[-1]
+    assert microphone is not None and microphone.name == "Mic one"
+    assert system_audio is not None and system_audio.name == "Speakers"
+    assert not window._start.isEnabled()  # noqa: SLF001
+    assert not window._microphone.isEnabled()  # noqa: SLF001
+    assert not window._system_audio.isEnabled()  # noqa: SLF001
+    assert window._preview_audio.text() == "音声テストを停止"  # noqa: SLF001
+
+    controller.component_changed.emit("microphone", "RUNNING", "入力テスト中")
+    controller.meter_changed.emit("microphone", 0.75)
+    assert window._mic_status._status.text() == "取得中"  # noqa: SLF001
+    assert window._mic_status._meter.value() == 750  # noqa: SLF001
+
+    controller.audio_preview_finished.emit(request_id, ())
+    assert window._microphone.isEnabled()  # noqa: SLF001
+    assert window._system_audio.isEnabled()  # noqa: SLF001
+    assert window._mic_status._status.text() == "待機"  # noqa: SLF001
+    assert window._system_status._status.text() == "待機"  # noqa: SLF001
+    assert window._start.isEnabled()  # noqa: SLF001
+    window.close()
+
+
+def test_ui_can_stop_audio_preview(qapp: QApplication) -> None:
+    controller = _UiController(microphone_id=None, system_id=None)
+    window = MainWindow(controller)  # type: ignore[arg-type]
+    window.refresh_sources()
+    window._microphone.setCurrentIndex(1)  # noqa: SLF001
+    window._toggle_audio_preview()  # noqa: SLF001
+    request_id, _microphone, _system_audio = controller.audio_preview_requests[-1]
+
+    window._toggle_audio_preview()  # noqa: SLF001
+
+    assert controller.audio_preview_cancel_count == 1
+    assert not window._preview_audio.isEnabled()  # noqa: SLF001
+    controller.audio_preview_finished.emit(request_id, ())
+    assert not window._audio_preview_pending  # noqa: SLF001
+    assert window._preview_audio.isEnabled()  # noqa: SLF001
     window.close()
 
 

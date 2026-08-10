@@ -59,6 +59,32 @@ class _PartiallyFailingAudioBackend:
         return [AudioDevice("speaker", "Speakers", 2, is_loopback=True)]
 
 
+class _PreviewAudioStream:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def read(self, frames: int):
+        time.sleep(0.005)
+        return np.full((frames, 1), 0.1, dtype=np.float32)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _PreviewAudioBackend:
+    def __init__(self) -> None:
+        self.opened: list[str] = []
+        self.streams: list[_PreviewAudioStream] = []
+
+    def open_stream(self, device_id: str, *, sample_rate: int, block_frames: int):
+        assert sample_rate == 48_000
+        assert block_frames == 4_800
+        self.opened.append(device_id)
+        stream = _PreviewAudioStream()
+        self.streams.append(stream)
+        return stream
+
+
 def _controller(tmp_path: Path) -> RecordingController:
     paths = PortableAppPaths(tmp_path)
     paths.ensure_writable()
@@ -152,3 +178,40 @@ def test_screen_preview_captures_one_frame_without_blocking_ui_thread(
     assert backend.started == [target]
     assert backend.stops == 1
     assert not controller.is_screen_previewing
+
+
+def test_audio_preview_monitors_both_sources_until_cancelled(
+    tmp_path: Path,
+    qapp: QApplication,
+) -> None:
+    controller = _controller(tmp_path)
+    backend = _PreviewAudioBackend()
+    controller._audio_backend = backend  # type: ignore[assignment]  # noqa: SLF001
+    meters: list[tuple[str, float]] = []
+    results: list[tuple[int, tuple[str, ...]]] = []
+    controller.meter_changed.connect(
+        lambda component, level: meters.append((component, level))
+    )
+    controller.audio_preview_finished.connect(
+        lambda request_id, errors: results.append((request_id, errors))
+    )
+
+    controller.preview_audio_sources_async(
+        12,
+        AudioDevice("mic", "Conference mic", 1),
+        AudioDevice("speaker", "Speakers", 2, is_loopback=True),
+    )
+
+    _wait_for(lambda: {component for component, level in meters if level > 0} == {
+        "microphone",
+        "system_audio",
+    })
+    assert controller.is_audio_previewing
+    assert sorted(backend.opened) == ["mic", "speaker"]
+
+    controller.cancel_audio_preview()
+    _wait_for(lambda: bool(results))
+
+    assert results == [(12, ())]
+    assert all(stream.closed for stream in backend.streams)
+    assert not controller.is_audio_previewing
