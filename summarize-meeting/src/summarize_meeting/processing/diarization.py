@@ -1,3 +1,5 @@
+"""PC音声から話者区間を推定し、文字起こしへ話者名を割り当てる。"""
+
 from __future__ import annotations
 
 import json
@@ -283,6 +285,8 @@ class SherpaOnnxDiarizationBackend:
 
 
 class DiarizationService:
+    """話者区間の推論、時刻補正、文字起こし統合、結果保存を行う。"""
+
     def __init__(
         self,
         backend: DiarizationBackend,
@@ -356,6 +360,7 @@ class DiarizationService:
         )
         if not raw_turns:
             raise DiarizationError("話者を検出できませんでした")
+        # 音声トラック開始offsetを加え、文字起こしと同じ会議時刻へ合わせる。
         turns = _normalize_turns(raw_turns, start_offset_ms=start_offset_ms)
         speaker_ids = tuple(dict.fromkeys(turn.speaker_id for turn in turns))
         warnings = list(getattr(self._backend, "warnings", ()))
@@ -365,6 +370,7 @@ class DiarizationService:
             )
         names = {speaker_id: f"Speaker {index}" for index, speaker_id in enumerate(speaker_ids, 1)}
         _notify(progress_callback, 88, "話者と文字起こしを統合しています")
+        # 区間が重なる話者を優先し、重なりがなければ許容範囲内の最近傍を割り当てる。
         merged = merge_transcript_segments(
             raw_segments,
             turns,
@@ -495,6 +501,8 @@ def merge_transcript_segments(
     *,
     nearest_tolerance_seconds: float,
 ) -> list[dict[str, object]]:
+    """文字起こしsegmentへ話者を付与し、マイク発話は「自分」として保持する。"""
+
     merged: list[dict[str, object]] = []
     for index, value in enumerate(raw_segments):
         if not isinstance(value, dict):

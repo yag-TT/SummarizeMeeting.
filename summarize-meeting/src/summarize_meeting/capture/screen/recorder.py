@@ -1,3 +1,5 @@
+"""取得画面の変化を監視し、意味のあるフレームだけを保存する。"""
+
 from __future__ import annotations
 
 import threading
@@ -24,6 +26,8 @@ ExceptionCallback = Callable[[str, Exception], None]
 
 
 class ScreenRecorder:
+    """画面フレームを定期評価し、変化検出時だけScreenshotStoreへ渡す。"""
+
     def __init__(
         self,
         *,
@@ -61,6 +65,7 @@ class ScreenRecorder:
     def replace_target(self, target: ScreenTarget) -> None:
         with self._target_lock:
             self._target = target
+            # 新しい対象の最初のフレームは旧対象との差分として扱わない。
             self._detector.reset()
             self._awaiting_first_frame.set()
         thread_is_alive = self._thread is not None and self._thread.is_alive()
@@ -121,6 +126,7 @@ class ScreenRecorder:
                     decision = self._detector.evaluate(frame, int(timestamp_ms))
                     if decision is None:
                         continue
+                    # 保存に成功した場合だけ基準画像を更新し、失敗時は次回に再試行する。
                     try:
                         self._store.save(
                             frame,

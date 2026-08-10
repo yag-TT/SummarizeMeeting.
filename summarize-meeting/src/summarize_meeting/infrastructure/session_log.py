@@ -1,3 +1,5 @@
+"""機密値を伏せながら、会議単位の構造化JSONログを追記する。"""
+
 from __future__ import annotations
 
 import json
@@ -25,6 +27,8 @@ _REDACTED = "[REDACTED]"
 
 
 class SessionLogWriter:
+    """デバイス名やパスを再帰的にマスクしてJSON Linesへ保存する。"""
+
     def __init__(
         self,
         path: Path,

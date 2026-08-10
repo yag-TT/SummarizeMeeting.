@@ -1,3 +1,5 @@
+"""アプリ設定の型、入力検証、ファイル永続化を提供する。"""
+
 from __future__ import annotations
 
 import json
@@ -41,6 +43,8 @@ class LlmSettings:
 
 @dataclass(frozen=True, slots=True)
 class AppSettings:
+    """UI選択、画面変化閾値、保存方針、LLM設定をまとめた不変設定。"""
+
     schema_version: int = 1
     last_microphone_device_id: str | None = None
     last_system_device_id: str | None = None

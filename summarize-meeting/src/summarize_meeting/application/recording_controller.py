@@ -1,3 +1,5 @@
+"""録音セッション全体の状態遷移と、UI向け非同期操作を調停する。"""
+
 from __future__ import annotations
 
 import json
@@ -44,6 +46,8 @@ from summarize_meeting.infrastructure.storage_probe import SystemStorageProbe
 
 @dataclass(frozen=True, slots=True)
 class CaptureSourcesSnapshot:
+    """バックグラウンドで列挙した音声・画面入力の一括結果。"""
+
     microphones: tuple[AudioDevice, ...]
     system_audio: tuple[AudioDevice, ...]
     screens: tuple[ScreenTarget, ...]
@@ -51,6 +55,12 @@ class CaptureSourcesSnapshot:
 
 
 class RecordingController(QObject):
+    """入力プレビューから録音確定までを統括するアプリケーション層の窓口。
+
+    UIスレッドを止めないよう、デバイス列挙、プレビュー、録音開始・終了は
+    ワーカースレッドで実行し、結果だけをQt SignalでUIへ通知する。
+    """
+
     component_changed = Signal(str, str, str)
     meter_changed = Signal(str, float)
     screenshot_count_changed = Signal(int)
@@ -171,6 +181,7 @@ class RecordingController(QObject):
     def preview_screen_target_async(self, request_id: int, target: ScreenTarget) -> None:
         if not isinstance(target, ScreenTarget):
             raise TypeError("プレビューする画面を選択してください")
+        # 画面・音声プレビューは実録音と同じデバイスを使うため同時実行しない。
         with self._preview_state_lock:
             if self.is_recording:
                 raise RuntimeError("録音中は画面をプレビューできません")
@@ -213,6 +224,7 @@ class RecordingController(QObject):
         try:
             self._screen_backend.start(target)
             if not cancel.is_set():
+                # WaylandではPortalの選択操作を待つため、初回だけ長い猶予を設ける。
                 frame = self._screen_backend.read_latest_frame(120.0)
         except Exception as exc:
             error = exc
@@ -286,6 +298,7 @@ class RecordingController(QObject):
     ) -> None:
         errors: list[str] = []
         errors_lock = threading.Lock()
+        # マイクとPC音声を並行して開き、両方のメーターを同時に確認できるようにする。
         workers = [
             threading.Thread(
                 target=self._audio_preview_source_worker,
@@ -413,6 +426,7 @@ class RecordingController(QObject):
             raise ValueError("会議名を入力してください")
         self._storage_monitor.check_start_allowed()
 
+        # デバイスを開く前にPREPARING状態を永続化し、途中終了しても復旧対象にする。
         session = RecordingSession(title=title, status=SessionStatus.PREPARING)
         session.retention = asdict(self._settings.retention)
         self._origin_ns = time.perf_counter_ns()
@@ -489,6 +503,7 @@ class RecordingController(QObject):
         screen_target: ScreenTarget | None,
         paths: SessionPaths,
     ) -> None:
+        # 全音声トラックの初期化結果が揃うまで、実データの書き込み開始を同期する。
         audio_start_gate = threading.Event()
         try:
             if self._startup_cancel.is_set():
@@ -944,6 +959,7 @@ class RecordingController(QObject):
         self._append_event("session_stopping")
         self._storage_monitor.request_stop()
 
+        # 先に全取得元へ停止要求を出し、以降は画面→音声→manifestの順で確定する。
         for recorder in self._audio_recorders.values():
             recorder.request_stop()
         if self._screen_recorder is not None:

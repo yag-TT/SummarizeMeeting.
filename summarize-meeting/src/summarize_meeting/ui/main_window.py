@@ -1,3 +1,5 @@
+"""録音設定、入力プレビュー、録音状態、録音後解析を提供するメイン画面。"""
+
 from __future__ import annotations
 
 import json
@@ -46,6 +48,8 @@ from summarize_meeting.ui.status_row import CaptureStatusRow
 
 
 class _ScreenPreviewLabel(QLabel):
+    """元画像を保持し、表示領域に合わせて縦横比を保って再描画する。"""
+
     def __init__(self) -> None:
         super().__init__("画面を選択してプレビューしてください。")
         self._source_pixmap: QPixmap | None = None
@@ -99,6 +103,8 @@ class _ScreenPreviewLabel(QLabel):
 
 
 class MainWindow(QMainWindow):
+    """RecordingControllerのSignalを表示状態へ反映するQtメインウィンドウ。"""
+
     _SOURCE_REFRESH_TIMEOUT_MS = 10_000
 
     def __init__(
@@ -525,6 +531,7 @@ class MainWindow(QMainWindow):
         )
 
     def _update_start_enabled(self) -> None:
+        # 会議開始条件をここへ集約し、各非同期処理の完了時に同じ判定を再利用する。
         has_title = bool(self._title.text().strip())
         has_audio = isinstance(self._microphone.currentData(), AudioDevice) or isinstance(
             self._system_audio.currentData(), AudioDevice
@@ -614,6 +621,7 @@ class MainWindow(QMainWindow):
             self.show_error(f"デバイス一覧の更新を開始できません: {exc}")
 
     def _on_sources_refreshed(self, request_id: int, value: object) -> None:
+        # タイムアウト後などに遅れて届いた古い列挙結果でUIを上書きしない。
         if request_id != self._source_refresh_request_id:
             return
         if not isinstance(value, CaptureSourcesSnapshot):
@@ -711,6 +719,7 @@ class MainWindow(QMainWindow):
             return
         self._screen_preview_request_id += 1
         request_id = self._screen_preview_request_id
+        # 同じバックエンドを録音でも使うため、プレビュー中は対象変更と開始を抑止する。
         self._screen_preview_pending = True
         self._screen_preview_cancelling = False
         self._screen_target.setEnabled(False)
@@ -767,6 +776,7 @@ class MainWindow(QMainWindow):
             return
         self._audio_preview_request_id += 1
         request_id = self._audio_preview_request_id
+        # テスト中の選択変更を防ぎ、終了Signalを受けてから操作可能状態へ戻す。
         self._audio_preview_pending = True
         self._audio_preview_cancelling = False
         self._microphone.setEnabled(False)

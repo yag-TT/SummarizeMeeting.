@@ -1,3 +1,5 @@
+"""会話要約workerのプロセス実行とUI向け進捗通知を管理する。"""
+
 from __future__ import annotations
 
 import json
@@ -20,6 +22,8 @@ from summarize_meeting.infrastructure.paths import PortableAppPaths
 
 
 class MinutesController(QObject):
+    """LLM設定を検証し、会話要約ジョブのライフサイクルを管理する。"""
+
     job_started = Signal(str)
     job_progress = Signal(int, str)
     job_finished = Signal(str, str)

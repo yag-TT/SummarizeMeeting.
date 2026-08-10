@@ -1,3 +1,5 @@
+"""録音開始前と録音中に保存先の空き容量を監視する。"""
+
 from __future__ import annotations
 
 import threading
@@ -43,6 +45,8 @@ CheckFailedCallback = Callable[[StorageCapacityCheckError], None]
 
 
 class StorageMonitor:
+    """定期的な容量確認を行い、低下または確認失敗をcallbackで通知する。"""
+
     def __init__(
         self,
         *,

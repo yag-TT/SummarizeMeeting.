@@ -1,3 +1,5 @@
+"""録音セッションと各取得コンポーネントの永続状態モデル。"""
+
 from __future__ import annotations
 
 import platform
@@ -50,6 +52,8 @@ class ComponentState:
 
 @dataclass(slots=True)
 class RecordingSession:
+    """会議の入力設定、状態遷移、警告をsession.json向けに保持する。"""
+
     title: str
     id: str = field(default_factory=lambda: str(uuid4()))
     schema_version: int = SESSION_SCHEMA_VERSION

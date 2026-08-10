@@ -1,3 +1,5 @@
+"""Qt Multimediaで画面・ウィンドウを列挙し、最新フレームを提供する。"""
+
 from __future__ import annotations
 
 import hashlib
@@ -36,6 +38,8 @@ _PORTAL_TARGET = ScreenTarget(
 
 @dataclass(slots=True)
 class _Request:
+    """別スレッドからQtスレッドへ同期的に処理を依頼するための容器。"""
+
     operation: Callable[..., Any]
     arguments: tuple[Any, ...]
     completed: threading.Event = field(default_factory=threading.Event)
@@ -44,7 +48,11 @@ class _Request:
 
 
 class QtScreenCaptureBackend(QObject):
-    """Qt Multimedia screen capture shared by Windows, X11, and Wayland."""
+    """Windows、X11、Waylandで共有するQt Multimedia画面取得実装。
+
+    Qt Multimediaオブジェクトは生成元スレッドでのみ操作する必要があるため、
+    公開メソッドからの操作は_request_queued経由でQtスレッドへ集約する。
+    """
 
     _request_queued = Signal(object)
 
@@ -80,6 +88,7 @@ class QtScreenCaptureBackend(QObject):
             raise ValueError("timeout must be positive")
         deadline = time.monotonic() + timeout
         with self._condition:
+            # 同じフレームを複数回返さず、Qtから次のフレームが届くまで待機する。
             while self._frame_version <= self._last_read_version:
                 if self._capture_error is not None:
                     raise ScreenTargetClosedError(self._capture_error)
@@ -111,6 +120,7 @@ class QtScreenCaptureBackend(QObject):
     def _invoke(self, operation: Callable[..., Any], *arguments: Any, timeout: float) -> Any:
         if QThread.currentThread() == self.thread():
             return operation(*arguments)
+        # 呼び出し元はworkerでも、Qtオブジェクトの操作だけはQObjectのthreadへ戻す。
         request = _Request(operation, arguments)
         self._request_queued.emit(request)
         if not request.completed.wait(timeout):
@@ -149,6 +159,7 @@ class QtScreenCaptureBackend(QObject):
     def _list_targets_on_qt_thread(self) -> list[ScreenTarget]:
         self._ensure_objects()
         if _is_wayland():
+            # Waylandはアプリから全ウィンドウを列挙できないためPortalへ選択を委ねる。
             self._sources = {_PORTAL_TARGET.id: _PORTAL_TARGET}
             return [_PORTAL_TARGET]
 
@@ -197,6 +208,7 @@ class QtScreenCaptureBackend(QObject):
 
         source = self._sources.get(target.id)
         if source is None:
+            # 一覧更新後に開始された場合を考慮し、開始直前に一度だけ再列挙する。
             self._list_targets_on_qt_thread()
             source = self._sources.get(target.id)
         if source is None:
@@ -230,6 +242,7 @@ class QtScreenCaptureBackend(QObject):
     @Slot(QVideoFrame)
     def _on_video_frame(self, frame: QVideoFrame) -> None:
         now = time.monotonic()
+        # 画面変化判定に必要な頻度へ間引き、変換とメモリコピーの負荷を抑える。
         if now - self._last_frame_time < self._frame_interval_seconds:
             return
         try:

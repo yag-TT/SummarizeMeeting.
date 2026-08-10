@@ -1,3 +1,5 @@
+"""話者分離workerのプロセス実行とUI向け進捗通知を管理する。"""
+
 from __future__ import annotations
 
 import json
@@ -30,6 +32,8 @@ from summarize_meeting.processing.sherpa_runtime import (
 
 
 class DiarizationController(QObject):
+    """モデル前提条件を確認し、話者分離ジョブのライフサイクルを管理する。"""
+
     job_started = Signal(str)
     job_progress = Signal(int, str)
     job_finished = Signal(str, str)

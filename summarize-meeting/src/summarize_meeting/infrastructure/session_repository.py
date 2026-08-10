@@ -1,3 +1,5 @@
+"""会議セッションのディレクトリ作成とメタデータの安全な永続化を行う。"""
+
 from __future__ import annotations
 
 import json
@@ -45,6 +47,8 @@ class SessionPaths:
 
 
 class FileSessionRepository:
+    """session.jsonとevents.jsonlを管理するファイルベースRepository。"""
+
     def __init__(self, meetings_root: Path) -> None:
         self._meetings_root = meetings_root
         self._lock = threading.RLock()
@@ -87,6 +91,7 @@ class FileSessionRepository:
 
     @staticmethod
     def _write_json_atomic(path: Path, value: Any) -> None:
+        # 一時ファイルを同一ディレクトリへ書き、replaceで途中書きのJSONを公開しない。
         temporary = path.with_suffix(path.suffix + ".tmp")
         with temporary.open("w", encoding="utf-8", newline="\n") as stream:
             json.dump(value, stream, ensure_ascii=False, indent=2)

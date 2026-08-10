@@ -1,3 +1,5 @@
+"""録音トラックを文字起こしし、時系列統合済みのJSONとMarkdownを生成する。"""
+
 from __future__ import annotations
 
 import json
@@ -148,6 +150,8 @@ class FasterWhisperBackend:
 
 
 class TranscriptionService:
+    """manifest内の各音声トラックを認識し、会議全体の時間軸へ統合する。"""
+
     _SOURCE_NAMES = {
         "microphone": "microphone",
         "system_audio": "system_audio",
@@ -183,6 +187,7 @@ class TranscriptionService:
         if not inputs:
             raise TranscriptionError("文字起こし可能な音声トラックがありません")
 
+        # トラックごとに認識した後、manifestの開始offsetで会議共通時刻へ補正する。
         self._notify(progress_callback, 0, "文字起こしモデルを準備しています")
         all_segments: list[TranscriptSegment] = []
         tracks: list[TranscribedTrack] = []
@@ -237,6 +242,7 @@ class TranscriptionService:
                 )
             )
 
+        # マイクとPC音声を単一の時系列に並べ、後段の話者分離・要約へ渡す。
         all_segments.sort(key=lambda value: (value.start, value.end, value.source))
         completed_at = datetime.now().astimezone().isoformat(timespec="milliseconds")
         payload = {
@@ -269,6 +275,7 @@ class TranscriptionService:
             if not isinstance(file_value, str) or not file_value:
                 raise TranscriptionError(f"{manifest_name}の音声ファイル名が不正です")
             relative_path = Path(file_value)
+            # manifestからセッション外のファイルを参照できないよう、ファイル名だけを許可する。
             if relative_path.is_absolute():
                 raise TranscriptionError(f"{manifest_name}の音声ファイル名が不正です")
             if relative_path.parts != (relative_path.name,):

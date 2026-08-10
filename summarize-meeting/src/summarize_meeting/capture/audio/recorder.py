@@ -1,3 +1,5 @@
+"""音声デバイスからの連続取得とWAV書き込みを別スレッドで実行する。"""
+
 from __future__ import annotations
 
 import queue
@@ -45,6 +47,12 @@ class AudioQueueFullError(RuntimeError):
 
 
 class AudioTrackRecorder:
+    """1入力デバイスを監視し、欠落・再接続情報とともに音声を保存する。
+
+    取得スレッドはキューへ積むことに専念し、ディスクI/Oは書き込みスレッドへ
+    分離する。これにより保存が一時的に遅くても音声欠落を抑える。
+    """
+
     def __init__(
         self,
         *,
@@ -211,6 +219,7 @@ class AudioTrackRecorder:
             self._writer_thread.start()
             if not self._complete_startup_ready():
                 return
+            # 複数トラックの先頭時刻を揃えるため、Controllerがgateを開くまで待機する。
             while not self._start_gate.wait(timeout=0.1):
                 if self._stop.is_set():
                     return
@@ -225,6 +234,7 @@ class AudioTrackRecorder:
                     stream = self._reconnect(exc)
                     if stream is None:
                         break
+                    # 再接続前後で別WAVに分け、後段で欠落区間を明示して結合する。
                     self._enqueue(_ROTATE_SEGMENT)
                     self._state_callback(ComponentStatus.RUNNING, None, "再接続しました")
                     continue
@@ -398,6 +408,7 @@ class AudioTrackRecorder:
             self._finalize_progress_callback(phase, completed, total)
 
     def _enqueue_sentinel(self) -> None:
+        # writerがキューを排出して終了できるまで、終了マーカーの投入を再試行する。
         while True:
             try:
                 self._queue.put(None, timeout=0.1)
@@ -414,6 +425,7 @@ class AudioTrackRecorder:
             raise AudioQueueFullError("音声書込みqueueが満杯になりました") from exc
         usage_ratio = self._queue.qsize() / self._queue.maxsize
         self._max_queue_usage_ratio = max(self._max_queue_usage_ratio, usage_ratio)
+        # 閾値にヒステリシスを持たせ、境界付近で警告が点滅することを防ぐ。
         if (
             usage_ratio >= self._queue_pressure_ratio
             and not self._queue_pressure_active

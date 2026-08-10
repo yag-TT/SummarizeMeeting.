@@ -1,3 +1,5 @@
+"""文字起こしと画面解析を根拠付きタイムラインへ統合し、会議要約を生成する。"""
+
 from __future__ import annotations
 
 import hashlib
@@ -151,6 +153,8 @@ class LlamaCppMinutesBackend:
 
 
 class MinutesService:
+    """長い会議を分割要約し、根拠ID検証後にJSONとMarkdownを保存する。"""
+
     def __init__(
         self,
         backend: MinutesBackend,
@@ -191,6 +195,7 @@ class MinutesService:
         timeline_path = session_directory / "analysis" / "timeline.json"
         _write_json_atomic(timeline_path, timeline)
 
+        # コンテキスト上限を超える会議は部分要約し、最後に同じschemaで統合する。
         chunks = _timeline_chunks(timeline["items"], self._max_chunk_characters)
         partials: list[Mapping[str, object]] = []
         for index, chunk in enumerate(chunks, 1):
@@ -216,6 +221,7 @@ class MinutesService:
             )
 
         _notify(progress_callback, 90, "生成内容と根拠を検証しています")
+        # LLMの各主張に、実在するtimeline項目の根拠IDが付いているか検証する。
         valid_ids = {
             str(item["id"]): item
             for item in timeline["items"]

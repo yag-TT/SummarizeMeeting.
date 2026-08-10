@@ -1,3 +1,5 @@
+"""スクリーンショットと対応する時系列イベントを検証付きで保存する。"""
+
 from __future__ import annotations
 
 import json
@@ -17,6 +19,8 @@ class ScreenshotSaveError(RuntimeError):
 
 
 class ScreenshotStore:
+    """PNGを原子的に保存した後、events.jsonlへ根拠メタデータを追記する。"""
+
     def __init__(self, screenshots_dir: Path) -> None:
         self._directory = screenshots_dir
         self._events = screenshots_dir / "events.jsonl"

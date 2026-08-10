@@ -1,3 +1,5 @@
+"""保存済みスクリーンショットをOCRし、会議画面の構造化情報を生成する。"""
+
 from __future__ import annotations
 
 import hashlib
@@ -238,6 +240,8 @@ def _paddle_result_payload(value: object) -> dict[str, object]:
 
 
 class ScreenAnalysisService:
+    """画面イベント順にOCRを実行し、部分失敗を警告として集約する。"""
+
     def __init__(self, backend: ScreenAnalysisBackend) -> None:
         self._backend = backend
 
@@ -263,6 +267,7 @@ class ScreenAnalysisService:
         warnings: list[str] = []
         succeeded = 0
         total = len(events)
+        # 1画像のOCR失敗では処理全体を止めず、成功分を残して警告へ集約する。
         for index, event in enumerate(events, 1):
             _notify(
                 progress_callback,
@@ -335,6 +340,8 @@ class ScreenAnalysisService:
 
 
 def derive_screen_understanding(recognition: ScreenRecognition) -> dict[str, object]:
+    """OCR行から画面種別、見出し、要約候補、重要行を決定論的に抽出する。"""
+
     lines = [line.text.strip() for line in recognition.lines if line.text.strip()]
     if not lines and recognition.text.strip():
         lines = [line.strip() for line in recognition.text.splitlines() if line.strip()]
@@ -404,6 +411,7 @@ def _read_events(path: Path) -> tuple[ScreenshotEvent, ...]:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
         raise ScreenAnalysisError(f"画面イベントを読み込めません: {exc}") from exc
+    # 保存順とファイル名の重複を拒否し、解析結果の根拠を一意に保つ。
     events: list[ScreenshotEvent] = []
     sequences: set[int] = set()
     files: set[str] = set()

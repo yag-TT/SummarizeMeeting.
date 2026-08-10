@@ -1,3 +1,5 @@
+"""Qtアプリケーションの依存構築、単一起動制御、終了処理をまとめる起動入口。"""
+
 from __future__ import annotations
 
 import logging

@@ -1,3 +1,5 @@
+"""録音中の分割WAV作成、終了時の結合、整合性検証を担当する。"""
+
 from __future__ import annotations
 
 import json
@@ -151,6 +153,12 @@ def validate_wave_file(
 
 
 class SegmentedWaveWriter:
+    """作業用WAVをセグメント単位で保存し、最後に1トラックへ統合する。
+
+    録音中は作業ファイルを残すため、異常終了してもRecoveryServiceが復旧できる。
+    正常終了時だけ検証済みの統合ファイルを公開し、作業ファイルを削除する。
+    """
+
     def __init__(
         self,
         audio_dir: Path,
@@ -215,6 +223,7 @@ class SegmentedWaveWriter:
         if not self._segments:
             self._open_segment()
             self._close_segment()
+        # 統合→検証が完了するまでは、復旧に使う分割ファイルを残しておく。
         self._consolidate()
         output = self._audio_dir / f"{self._track_name}.wav"
         validate_wave_file(
@@ -313,6 +322,7 @@ class SegmentedWaveWriter:
                         )
         with temporary.open("rb+") as stream:
             os.fsync(stream.fileno())
+        # fsync済みの一時ファイルを置換し、未完成WAVが正規名で見えないようにする。
         os.replace(temporary, output)
         self._report_progress("consolidating", total_frames, total_frames)
 
@@ -326,6 +336,7 @@ class SegmentedWaveWriter:
             work_root.rmdir()
 
     def _write_work_manifest(self) -> None:
+        # セグメントを閉じるたびに更新し、異常終了時の復旧範囲を確定させる。
         path = self._work_dir / "manifest.json"
         temporary = path.with_suffix(".json.tmp")
         value = {

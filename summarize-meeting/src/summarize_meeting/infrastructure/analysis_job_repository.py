@@ -1,3 +1,5 @@
+"""録音後解析ジョブの最新状態をjobs.jsonへ原子的に保存する。"""
+
 from __future__ import annotations
 
 import json
@@ -9,6 +11,8 @@ from summarize_meeting.domain.analysis_job import AnalysisJobState
 
 
 class FileAnalysisJobRepository:
+    """複数種類の解析状態を、既存項目を保ったまま1ファイルへ統合する。"""
+
     def __init__(self) -> None:
         self._lock = threading.RLock()
 

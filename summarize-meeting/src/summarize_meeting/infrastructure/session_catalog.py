@@ -1,3 +1,5 @@
+"""保存済み会議を走査し、UI表示と解析可否に必要な要約を構築する。"""
+
 from __future__ import annotations
 
 import json
@@ -42,6 +44,8 @@ class SessionSummary:
 
 
 class FileSessionCatalog:
+    """破損・未対応セッションを除外し、利用可能な会議だけを返す。"""
+
     def __init__(self, meetings_directory: Path) -> None:
         self._meetings_directory = meetings_directory
 
@@ -82,6 +86,7 @@ class FileSessionCatalog:
                 job="minutes",
                 result_name="minutes.json",
             )
+            # ボタンの活性条件はファイルの存在だけでなく、前段処理の成功も含める。
             can_transcribe = _has_transcribable_audio(directory)
             can_diarize = (
                 recording_status == "RECORDED"
@@ -213,6 +218,7 @@ def _has_screenshots(directory: Path) -> bool:
 
 
 def _read_object(path: Path) -> dict[str, object]:
+    # 一覧表示では1件の破損で全体を失敗させず、その会議だけを利用不可として扱う。
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):

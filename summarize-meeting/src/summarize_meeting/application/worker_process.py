@@ -1,3 +1,5 @@
+"""解析ワーカープロセスのOS別起動オプションとプロセスツリー終了処理。"""
+
 from __future__ import annotations
 
 import subprocess
@@ -14,6 +16,8 @@ def platform_popen_options() -> dict[str, Any]:
 
 
 def terminate_process_tree(process: subprocess.Popen[str], *, timeout: float = 1.0) -> None:
+    """子や孫プロセスを残さず、猶予後も生存するプロセスは強制終了する。"""
+
     pid = getattr(process, "pid", None)
     if not isinstance(pid, int):
         process.terminate()

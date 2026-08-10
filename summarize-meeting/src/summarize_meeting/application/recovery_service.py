@@ -1,3 +1,5 @@
+"""異常終了した録音を検出し、分割WAVと画像から利用可能な記録を復旧する。"""
+
 from __future__ import annotations
 
 import json
@@ -64,6 +66,8 @@ class RecoveryResult:
 
 
 class SessionRecoveryService:
+    """中断状態のセッションを走査し、検証可能なデータだけを再構築する。"""
+
     def __init__(self, meetings_root: Path) -> None:
         self._meetings_root = meetings_root
 

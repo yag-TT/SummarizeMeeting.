@@ -1,3 +1,5 @@
+"""画面差分を縮小画像で評価し、安定した変化だけを保存対象として選ぶ。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -23,6 +25,8 @@ class ChangeDecision:
 
 
 class ScreenChangeDetector:
+    """一時的な描画途中をdebounceし、初回・安定変化・timeoutを判定する。"""
+
     def __init__(
         self,
         *,

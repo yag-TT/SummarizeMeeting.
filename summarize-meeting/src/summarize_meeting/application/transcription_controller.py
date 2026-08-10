@@ -1,3 +1,5 @@
+"""文字起こしを別プロセスで実行し、JSON行の進捗をQt Signalへ変換する。"""
+
 from __future__ import annotations
 
 import json
@@ -22,6 +24,8 @@ from summarize_meeting.infrastructure.paths import PortableAppPaths
 
 
 class TranscriptionController(QObject):
+    """文字起こしworkerの起動、キャンセル、永続ジョブ状態を管理する。"""
+
     job_started = Signal(str)
     job_progress = Signal(int, str)
     job_finished = Signal(str, str)

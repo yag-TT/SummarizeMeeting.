@@ -1,3 +1,5 @@
+"""画面解析workerのプロセス実行とUI向け進捗通知を管理する。"""
+
 from __future__ import annotations
 
 import json
@@ -23,6 +25,8 @@ from summarize_meeting.processing.screen_analysis import default_screen_analysis
 
 
 class ScreenAnalysisController(QObject):
+    """保存済み画面イベントを対象にOCRジョブを開始・停止する。"""
+
     job_started = Signal(str)
     job_progress = Signal(int, str)
     job_finished = Signal(str, str)
