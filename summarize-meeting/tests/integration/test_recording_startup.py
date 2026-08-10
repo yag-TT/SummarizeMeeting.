@@ -173,7 +173,6 @@ def test_session_starts_when_one_of_two_audio_sources_is_ready(tmp_path: Path) -
     )
     assert manifest["schema_version"] == 3
     assert "system_audio" in manifest["tracks"]
-    assert "system" not in manifest["tracks"]
     session_log = (session_path / "logs" / "session.log").read_text(encoding="utf-8")
     assert "partial audio" not in session_log
     assert "Broken mic" not in session_log

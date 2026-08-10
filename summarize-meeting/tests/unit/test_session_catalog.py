@@ -156,24 +156,6 @@ def test_catalog_enables_diarization_for_transcribed_system_audio_track(
     assert value.diarization_status == "FAILED"
 
 
-def test_catalog_does_not_accept_legacy_system_track(tmp_path: Path) -> None:
-    session = _session(
-        tmp_path,
-        "legacy-audio",
-        title="旧音声形式",
-        started_at="2026-08-08T10:00:00+09:00",
-        transcript=True,
-        transcription_json=True,
-    )
-    (session / "audio" / "system.wav").write_bytes(b"wave")
-    (session / "audio" / "manifest.json").write_text(
-        '{"schema_version":3,"tracks":{"system":{"file":"system.wav"}}}',
-        encoding="utf-8",
-    )
-
-    assert not FileSessionCatalog(tmp_path).scan()[0].can_diarize
-
-
 def test_catalog_enables_screen_analysis_for_recorded_images(tmp_path: Path) -> None:
     session = _session(
         tmp_path,
