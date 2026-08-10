@@ -260,7 +260,7 @@ def test_audio_recorder_reconnects_only_the_same_device(tmp_path: Path) -> None:
     recorder = AudioTrackRecorder(
         backend=backend,
         device=AudioDevice("selected-device", "Selected", 2),
-        track_name="system",
+        track_name="system_audio",
         audio_dir=audio_dir,
         state_callback=lambda state, _code, _message: states.append(state),
         meter_callback=lambda _level: None,
@@ -358,8 +358,8 @@ def test_two_tracks_record_estimated_start_offset_from_common_origin(tmp_path: P
     )
     system = AudioTrackRecorder(
         backend=OffsetAudioBackend(0.08),
-        device=AudioDevice("system", "System", 1),
-        track_name="system",
+        device=AudioDevice("system_audio", "System", 1),
+        track_name="system_audio",
         audio_dir=audio_dir,
         state_callback=lambda _state, _code, _message: None,
         meter_callback=lambda _level: None,
@@ -414,7 +414,7 @@ def test_full_queue_fails_track_and_records_overflow(tmp_path: Path) -> None:
     recorder = AudioTrackRecorder(
         backend=BurstAudioBackend(),
         device=AudioDevice("fast", "Fast", 2),
-        track_name="system",
+        track_name="system_audio",
         audio_dir=audio_dir,
         state_callback=lambda state, code, _message: states.append((state, code)),
         meter_callback=lambda _level: None,

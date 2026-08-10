@@ -230,14 +230,14 @@ Windows / Ubuntu差分は主にCapture層へ閉じ込める。
 microphone.wav
   -> 自分のマイク音声
 
-system.wav
+system_audio.wav
   -> Teams / MeetからPCへ再生される他参加者音声
 ```
 
 メリット:
 
 - 自分自身の話者分離がほぼ不要になる
-- Speaker diarization対象をsystem.wavに限定できる
+- Speaker diarization対象をsystem_audio.wavに限定できる
 - 自分と他参加者が重なったときの解析がしやすい
 - 障害調査がしやすい
 
@@ -411,12 +411,12 @@ X11対応は必要になった時点で追加し、最初のPoCを複雑化さ�
 {
   "start": 123.40,
   "end": 128.75,
-  "source": "system",
+  "source": "system_audio",
   "text": "この機能は来週までに対応します"
 }
 ```
 
-マイク側は`source: microphone`、PC側は`source: system`等で区別する。
+マイク側は`source: microphone`、PC側は`source: system_audio`等で区別する。
 
 ## 9.3 話者分離
 
@@ -601,7 +601,7 @@ meetings/
    ├─ session.json
    ├─ audio/
    │  ├─ microphone.wav
-   │  └─ system.wav
+   │  └─ system_audio.wav
    ├─ screenshots/
    │  ├─ 000001.webp
    │  ├─ 000002.webp
@@ -848,14 +848,14 @@ UIは進捗とキャンセル操作のみ担当する。
 ## Phase 2 - STT
 
 - faster-whisper導入
-- microphone.wav / system.wavの文字起こし
+- microphone.wav / system_audio.wavの文字起こし
 - timestamp付きJSON生成
 - transcript.md仮生成
 
 ## Phase 3 - 話者分離
 
 - sherpa-onnx等を比較
-- system.wavのSpeaker分離
+- system_audio.wavのSpeaker分離
 - STTとのtimestamp統合
 - GUIでSpeaker名変更
 
@@ -1078,7 +1078,7 @@ PC音声選択
 [会議開始]
   |
   +-- microphone.wav
-  +-- system.wav
+  +-- system_audio.wav
   +-- 画面変更時だけスクリーンショット
   +-- 音量バー表示
   |

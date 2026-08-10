@@ -33,7 +33,7 @@ TranscriptionError: microphoneの音声ファイル名が不正です
 
 当時のPhase 1録音manifestはセッション起点の`audio/microphone.wav`を保存していた。一方、Phase 2の文字起こしは音声フォルダ起点の`microphone.wav`だけを許可していたため、実録音セッションを入力できなかった。
 
-この試験時点では両形式を受理する暫定対応を行ったが、現行形式では廃止した。現在は`audio/manifest.json` schema version 2と、音声フォルダ基準の単純なファイル名だけを受理する。
+この試験時点では両形式を受理する暫定対応を行ったが、現行形式では廃止した。現在は`audio/manifest.json` schema version 3と、音声フォルダ基準の単純なファイル名だけを受理する。
 
 - `microphone.wav`
 旧形式の`audio/microphone.wav`は移行せず拒否する。長時間ベンチマーク用セッション生成ツールも同じ現行形式だけを扱う。
@@ -66,7 +66,7 @@ TranscriptionError: microphoneの音声ファイル名が不正です
 ```powershell
 cd summarize-meeting
 uv run python -m summarize_meeting.devtools.real_audio_smoke `
-  --source-wave data\meetings\stt-smoke-ja\audio\system.wav `
+  --source-wave data\meetings\stt-smoke-ja\audio\system_audio.wav `
   --microphone "CABLE Output" `
   --loopback "CABLE Input" `
   --speaker "CABLE Input" `
@@ -90,7 +90,7 @@ uv run python -m summarize_meeting.devtools.real_audio_smoke `
 uv run python -m summarize_meeting.devtools.validate_phase2_session `
   --session "data\meetings\<対象セッション>" `
   --expect-microphone "マイクへ話した確認文" `
-  --expect-system "PCで再生した確認文"
+  --expect-system-audio "PCで再生した確認文"
 ```
 
 終了コード0かつ`passed: true`であれば、WAV音量、録音診断、文字起こしJob、timestamp、発話元、JSONとMarkdownの件数が正常である。
@@ -127,6 +127,6 @@ Brio 100を選択した初回試験では、PC音声54.4秒は正常に保存・
 認識結果:
 
 - microphone: `ご視聴ありがとうございました`
-- system: `来週の金曜日までに、テスト結果を共有します。`
+- system_audio: `来週の金曜日までに、テスト結果を共有します。`
 
 マイク側は任意指定した期待文との完全一致評価には使用しない。Phase 2では認識精度の数値閾値を定めておらず、物理マイクの日本語発話が発話元とtimestamp付きで出力される正常経路を受入対象とするため、本試験を合格と判定する。

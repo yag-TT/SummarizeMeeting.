@@ -156,7 +156,7 @@ def _has_system_audio(directory: Path) -> bool:
     tracks = manifest.get("tracks")
     if not isinstance(tracks, dict):
         return False
-    track = tracks.get("system")
+    track = tracks.get("system_audio")
     if not isinstance(track, dict):
         return False
     value = track.get("file")
@@ -178,7 +178,7 @@ def _has_transcribable_audio(directory: Path) -> bool:
     tracks = manifest.get("tracks")
     if not isinstance(tracks, dict):
         return False
-    for name in ("microphone", "system"):
+    for name in ("microphone", "system_audio"):
         track = tracks.get(name)
         if not isinstance(track, dict):
             continue

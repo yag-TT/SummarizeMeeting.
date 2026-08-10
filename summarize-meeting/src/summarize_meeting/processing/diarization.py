@@ -334,7 +334,8 @@ class DiarizationService:
         if not isinstance(raw_segments, list):
             raise DiarizationError("文字起こしsegmentが不正です")
         if not any(
-            isinstance(value, dict) and value.get("source") == "system" for value in raw_segments
+            isinstance(value, dict) and value.get("source") == "system_audio"
+            for value in raw_segments
         ):
             raise DiarizationError("PC音声の文字起こしsegmentがありません")
 
@@ -521,7 +522,7 @@ def merge_transcript_segments(
                 }
             )
             continue
-        if source != "system":
+        if source != "system_audio":
             continue
         assignment = _assign_speaker(
             start,
@@ -702,7 +703,7 @@ def _system_track(manifest: dict[str, object]) -> dict[str, object]:
     tracks = manifest.get("tracks")
     if not isinstance(tracks, dict):
         raise DiarizationError("音声manifestにtracksがありません")
-    value = tracks.get("system")
+    value = tracks.get("system_audio")
     if isinstance(value, dict):
         return value
     raise DiarizationError("PC音声trackがありません")

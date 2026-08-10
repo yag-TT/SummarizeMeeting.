@@ -32,7 +32,7 @@ def test_audio_manifest_includes_origin_and_diagnostics(tmp_path: Path) -> None:
     )
 
     value = json.loads(path.read_text(encoding="utf-8"))
-    assert value["schema_version"] == 2
+    assert value["schema_version"] == 3
     assert value["monotonic_origin_ns"] == 123_456_789
     track = value["tracks"]["microphone"]
     assert track["file"] == "microphone.wav"

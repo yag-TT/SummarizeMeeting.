@@ -15,12 +15,12 @@
 入力文:
 
 - microphone: `今回の会議では、文字起こし機能の動作を確認します。`
-- system: `来週の金曜日までに、テスト結果を共有します。`
+- system_audio: `来週の金曜日までに、テスト結果を共有します。`
 
 開始offset:
 
 - microphone: 250ms
-- system: 1500ms
+- system_audio: 1500ms
 
 ## 2. 初回実行
 

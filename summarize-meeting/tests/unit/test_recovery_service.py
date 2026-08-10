@@ -54,7 +54,7 @@ def _write_audio_manifest(session_root: Path, *, frames: int = 20) -> None:
     (session_root / "audio" / "manifest.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "tracks": {
                     "microphone": {
                         "file": "microphone.wav",

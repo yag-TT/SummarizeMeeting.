@@ -30,7 +30,7 @@ def _create_session(tmp_path: Path) -> Path:
     tracks = {}
     for source, file_name in (
         ("microphone", "microphone.wav"),
-        ("system", "system.wav"),
+        ("system_audio", "system_audio.wav"),
     ):
         _write_wave(session / "audio" / file_name)
         tracks[source] = {
@@ -42,11 +42,11 @@ def _create_session(tmp_path: Path) -> Path:
         }
     _write_json(
         session / "audio" / "manifest.json",
-        {"schema_version": 2, "tracks": tracks},
+        {"schema_version": 3, "tracks": tracks},
     )
     segments = [
         {"start": 0.1, "end": 0.5, "source": "microphone", "text": "確認します"},
-        {"start": 0.2, "end": 0.6, "source": "system", "text": "共有します"},
+        {"start": 0.2, "end": 0.6, "source": "system_audio", "text": "共有します"},
     ]
     _write_json(
         session / "analysis" / "transcription.json",
@@ -54,7 +54,7 @@ def _create_session(tmp_path: Path) -> Path:
             "status": "SUCCEEDED",
             "tracks": [
                 {"source": "microphone", "runtime_device": "cuda"},
-                {"source": "system", "runtime_device": "cuda"},
+                {"source": "system_audio", "runtime_device": "cuda"},
             ],
             "segments": segments,
         },
@@ -75,7 +75,7 @@ def test_validate_phase2_session_accepts_complete_session(tmp_path: Path) -> Non
     report = validate_phase2_session(
         session,
         expected_microphone_text="確認します",
-        expected_system_text="共有します",
+        expected_system_audio_text="共有します",
     )
 
     assert report.passed

@@ -11,7 +11,7 @@ Phase 1の長時間・異常系評価は継続課題として残すが、正常�
 ### 2.1 対象
 
 - `audio/microphone.wav`の文字起こし
-- `audio/system.wav`の文字起こし
+- `audio/system_audio.wav`の文字起こし
 - `audio/manifest.json`の開始offsetを使ったセッション共通時刻への変換
 - 2トラックのtimestamp順統合
 - `analysis/transcription.json`生成
@@ -74,7 +74,7 @@ GUI process
 audio/
 ├─ manifest.json
 ├─ microphone.wav  # 選択・録音された場合
-└─ system.wav      # 選択・録音された場合
+└─ system_audio.wav      # 選択・録音された場合
 ```
 
 少なくとも一方の正常な最終WAVが必要である。`manifest.json`の`tracks`にある`file`と`estimated_start_offset_ms`を使用する。offsetが`null`の場合は0msとして扱う。

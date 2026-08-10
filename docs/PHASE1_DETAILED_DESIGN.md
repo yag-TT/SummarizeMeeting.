@@ -532,7 +532,7 @@ audio/
 │     ├─ 000000.wav
 │     └─ 000001.wav
 ├─ microphone.wav
-├─ system.wav
+├─ system_audio.wav
 └─ manifest.json
 ```
 
@@ -553,7 +553,7 @@ audio/
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "monotonic_origin_ns": 123456789000,
   "tracks": {
     "microphone": {
@@ -576,7 +576,7 @@ audio/
       "work_cleanup_error": null,
       "gaps": []
     },
-    "system": {
+    "system_audio": {
       "sample_rate": 48000,
       "channels": 2,
       "sample_width_bytes": 2,
@@ -829,7 +829,7 @@ Windowsのスリープ／休止状態はPhase 1の利用シナリオとして想
    ├─ audio/
    │  ├─ manifest.json
    │  ├─ microphone.wav
-   │  ├─ system.wav
+   │  ├─ system_audio.wav
    │  └─ .work/
    ├─ screenshots/
    │  ├─ events.jsonl
@@ -868,10 +868,10 @@ Phase 1スキーマ例:
       "device_name": "Realtek Microphone",
       "file": "microphone.wav"
     },
-    "system": {
+    "system_audio": {
       "device_id": "backend-stable-id",
       "device_name": "Speakers",
-      "file": "system.wav",
+      "file": "system_audio.wav",
       "scope": "selected_output_endpoint"
     }
   },

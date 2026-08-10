@@ -25,7 +25,7 @@ def test_create_repeated_audio_session_preserves_track_offset(tmp_path: Path) ->
     (audio / "manifest.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "tracks": {
                     "microphone": {
                         "file": "microphone.wav",
@@ -69,7 +69,7 @@ def test_create_repeated_audio_session_rejects_legacy_track_path(
     (audio / "manifest.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "tracks": {
                     "microphone": {
                         "file": "audio/microphone.wav",

@@ -4,14 +4,14 @@
 
 Phase 3では、Phase 2で文字起こししたPC音声へ話者情報を付与し、`Speaker 1`、`Speaker 2`などの話者単位で読める全文を生成する。
 
-マイク音声は利用者本人の入力として引き続き`自分`と表示する。話者分離の対象は`audio/system.wav`だけとし、会議相手の声をローカルで分離する。
+マイク音声は利用者本人の入力として引き続き`自分`と表示する。話者分離の対象は`audio/system_audio.wav`だけとし、会議相手の声をローカルで分離する。
 
 ## 2. 前提
 
 - 正式対象はWindows 11とUbuntu 22.04
 - 会議音声、話者埋め込み、解析結果を外部サービスへ送信しない
 - Phase 2の`analysis/transcription.json`が`SUCCEEDED`
-- `audio/manifest.json`と`audio/system.wav`が存在する
+- `audio/manifest.json`と`audio/system_audio.wav`が存在する
 - AI JobはGUIプロセスと分離する
 - アプリは第三者へ配布しないため、再配布ライセンス対応は対象外
 - 正常系を優先し、話者分離精度の数値基準は評価データ準備後に定める
@@ -20,7 +20,7 @@ Phase 3では、Phase 2で文字起こししたPC音声へ話者情報を付与�
 
 ### 3.1 対象
 
-- `system.wav`のオフライン話者分離
+- `system_audio.wav`のオフライン話者分離
 - 話者数の自動推定と既知話者数指定
 - 話者turnとSTT segmentのtimestamp統合
 - マイク発話を`自分`として統合
@@ -108,8 +108,8 @@ Job開始前に以下を確認する。
 1. セッションディレクトリが`data/meetings/`配下にある
 2. `session.json`が`RECORDED`
 3. `analysis/transcription.json`が`SUCCEEDED`
-4. `audio/manifest.json`がschema version 2で、`system`trackがある
-5. trackのfileが`system.wav`形式の安全な単純ファイル名である
+4. `audio/manifest.json`がschema version 3で、`system_audio`trackがある
+5. trackのfileが`system_audio.wav`形式の安全な単純ファイル名である
 6. WAVが存在し、PCMとして最後まで読み取れる
 7. WAV時間が0秒より大きい
 8. STT出力に少なくとも1つのsystem segmentがある
@@ -118,7 +118,7 @@ Job開始前に以下を確認する。
 
 ## 8. 音声前処理
 
-sherpa-onnxのモデル入力へ合わせ、`system.wav`を16 kHz、mono、float32へ変換する。
+sherpa-onnxのモデル入力へ合わせ、`system_audio.wav`を16 kHz、mono、float32へ変換する。
 
 1. PyAVでWAVをchunk単位にdecodeする
 2. `AudioResampler`でmono化と16 kHz resampleを行う
@@ -143,7 +143,7 @@ GUIで以下を選択できる。
 
 ## 10. timestamp変換
 
-話者分離結果は`system.wav`先頭を0秒とする。`audio/manifest.json`の`estimated_start_offset_ms`を加算し、セッション共通時刻へ変換する。
+話者分離結果は`system_audio.wav`先頭を0秒とする。`audio/manifest.json`の`estimated_start_offset_ms`を加算し、セッション共通時刻へ変換する。
 
 ```text
 session_start = diarization_start + system_start_offset_ms / 1000
@@ -198,7 +198,7 @@ Phase 3ではSTT segment内の文字列を分割しない。1つのSTT segment�
   "embedding_model": "nemo_en_titanet_small.onnx",
   "provider": "cpu",
   "source": {
-    "file": "system.wav",
+    "file": "system_audio.wav",
     "start_offset_ms": 659,
     "duration_seconds": 313.3
   },
@@ -250,7 +250,7 @@ Phase 3ではSTT segment内の文字列を分割しない。1つのSTT segment�
     {
       "start": 17.539,
       "end": 21.879,
-      "source": "system",
+      "source": "system_audio",
       "speaker_id": "speaker_01",
       "speaker_name": "田中",
       "assignment": "dominant_overlap",
@@ -378,7 +378,7 @@ Phase 3失敗によってPhase 2の`transcript.md`を空にしない。話者分
 
 - GUIから話者分離Jobを開始、キャンセル、再実行できる
 - 推論中もGUIが応答する
-- system.wavから1人以上のspeakerとturnが生成される
+- system_audio.wavから1人以上のspeakerとturnが生成される
 - 全turnで`0 <= start <= end`
 - manifestのstart offsetがturnへ反映される
 - 全マイクsegmentが`自分`

@@ -32,7 +32,7 @@ def _session(
         encoding="utf-8",
     )
     (audio / "manifest.json").write_text(
-        '{"schema_version":2,"tracks":{"microphone":{"file":"microphone.wav"}}}',
+        '{"schema_version":3,"tracks":{"microphone":{"file":"microphone.wav"}}}',
         encoding="utf-8",
     )
     (audio / "microphone.wav").write_bytes(b"wave")
@@ -130,7 +130,9 @@ def test_catalog_reads_persisted_failed_job_state(tmp_path: Path) -> None:
     assert "文字起こし失敗" in value.display_label
 
 
-def test_catalog_enables_diarization_for_transcribed_system_track(tmp_path: Path) -> None:
+def test_catalog_enables_diarization_for_transcribed_system_audio_track(
+    tmp_path: Path,
+) -> None:
     session = _session(
         tmp_path,
         "diarization",
@@ -139,9 +141,9 @@ def test_catalog_enables_diarization_for_transcribed_system_track(tmp_path: Path
         transcript=True,
         transcription_json=True,
     )
-    (session / "audio" / "system.wav").write_bytes(b"wave")
+    (session / "audio" / "system_audio.wav").write_bytes(b"wave")
     (session / "audio" / "manifest.json").write_text(
-        '{"schema_version":2,"tracks":{"system":{"file":"system.wav"}}}',
+        '{"schema_version":3,"tracks":{"system_audio":{"file":"system_audio.wav"}}}',
         encoding="utf-8",
     )
     (session / "analysis" / "jobs.json").write_text(
@@ -154,7 +156,7 @@ def test_catalog_enables_diarization_for_transcribed_system_track(tmp_path: Path
     assert value.diarization_status == "FAILED"
 
 
-def test_catalog_does_not_accept_legacy_system_audio_track(tmp_path: Path) -> None:
+def test_catalog_does_not_accept_legacy_system_track(tmp_path: Path) -> None:
     session = _session(
         tmp_path,
         "legacy-audio",
@@ -165,7 +167,7 @@ def test_catalog_does_not_accept_legacy_system_audio_track(tmp_path: Path) -> No
     )
     (session / "audio" / "system.wav").write_bytes(b"wave")
     (session / "audio" / "manifest.json").write_text(
-        '{"schema_version":2,"tracks":{"system_audio":{"file":"system.wav"}}}',
+        '{"schema_version":3,"tracks":{"system":{"file":"system.wav"}}}',
         encoding="utf-8",
     )
 

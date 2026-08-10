@@ -64,7 +64,7 @@ session.json
 events.jsonl
 logs/session.log
 audio/microphone.wav
-audio/system.wav
+audio/system_audio.wav
 audio/manifest.json
 screenshots/events.jsonl
 screenshots/*.png
@@ -72,9 +72,9 @@ screenshots/*.png
 
 確認項目:
 
-- `microphone.wav` と `system.wav` をそれぞれ再生できる
+- `microphone.wav` と `system_audio.wav` をそれぞれ再生できる
 - マイクの発話は主に `microphone.wav` に入っている
-- PCテスト音声は `system.wav` に入っている
+- PCテスト音声は `system_audio.wav` に入っている
 - WAVの長さが約2分である
 - `audio/manifest.json` に `monotonic_origin_ns` と各trackの `estimated_start_offset_ms` がある
 - 各trackの `audio_duration_ms`、`active_capture_duration_ms`、`duration_drift_ms` が数値である
@@ -296,7 +296,7 @@ uv run pytest -q tests/unit/test_qt_capture.py tests/integration/test_recording_
 | PC音声デバイス名 | |
 | 対象アプリ | |
 | microphone.wav時間 | |
-| system.wav時間 | |
+| system_audio.wav時間 | |
 | session duration | |
 | audio error / overflow | |
 | 保存PNG枚数 | |

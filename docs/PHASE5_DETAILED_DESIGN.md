@@ -108,7 +108,7 @@ llama-server --host 0.0.0.0 --port 8081 --model <model.gguf> --ctx-size 16384
 1. `analysis/diarized_transcription.json`が`SUCCEEDED`
 2. `analysis/transcription.json`が`SUCCEEDED`
 
-通常文字起こしでは`microphone`を`自分`、`system`を`PC音声`とする。話者付き文字起こしでは保存済み`speaker_id`と`speaker_name`を使用する。
+通常文字起こしでは`microphone`を`自分`、`system_audio`を`PC音声`とする。話者付き文字起こしでは保存済み`speaker_id`と`speaker_name`を使用する。
 
 `analysis/screens.json`が`SUCCEEDED`なら、画像単位で`SUCCEEDED`の項目だけを使う。未実行または不正状態なら音声だけで継続しwarningを残す。
 
@@ -135,7 +135,7 @@ llama-server --host 0.0.0.0 --port 8081 --model <model.gguf> --ctx-size 16384
       "timestamp_ms": 17539,
       "start": 17.539,
       "end": 21.879,
-      "source": "system",
+      "source": "system_audio",
       "speaker_id": "speaker_01",
       "speaker_name": "田中",
       "ambiguous": false,

@@ -67,7 +67,7 @@ def _write_wave(path: Path, *, sample_rate: int = 48_000, seconds: float = 3.0) 
 
 def _create_session(tmp_path: Path) -> Path:
     session = tmp_path / "meeting"
-    _write_wave(session / "audio" / "system.wav")
+    _write_wave(session / "audio" / "system_audio.wav")
     (session / "analysis").mkdir()
     (session / "output").mkdir()
     (session / "session.json").write_text(
@@ -77,10 +77,10 @@ def _create_session(tmp_path: Path) -> Path:
     (session / "audio" / "manifest.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "tracks": {
-                    "system": {
-                        "file": "system.wav",
+                    "system_audio": {
+                        "file": "system_audio.wav",
                         "estimated_start_offset_ms": 500,
                     }
                 }
@@ -103,13 +103,13 @@ def _create_session(tmp_path: Path) -> Path:
                     {
                         "start": 0.6,
                         "end": 1.3,
-                        "source": "system",
+                        "source": "system_audio",
                         "text": "最初の発話です",
                     },
                     {
                         "start": 1.5,
                         "end": 2.2,
-                        "source": "system",
+                        "source": "system_audio",
                         "text": "次の発話です",
                     },
                 ],
@@ -161,7 +161,7 @@ def test_service_generates_diarization_and_merged_transcript(tmp_path: Path) -> 
     ]
     assert "**自分**" in output.read_text("utf-8")
     assert "**Speaker 2**" in output.read_text("utf-8")
-    assert backend.calls == [(session / "audio" / "system.wav", 2, 0.75)]
+    assert backend.calls == [(session / "audio" / "system_audio.wav", 2, 0.75)]
     assert progress[-1] == 100
 
 
@@ -199,8 +199,8 @@ def test_service_updates_speaker_names_without_backend_run(tmp_path: Path) -> No
 def test_merge_marks_nearest_and_unknown_segments() -> None:
     turns = (SpeakerTurn(2.0, 3.0, 2.0, 3.0, "speaker_01"),)
     raw = [
-        {"start": 1.5, "end": 1.7, "source": "system", "text": "near"},
-        {"start": 5.0, "end": 5.2, "source": "system", "text": "far"},
+        {"start": 1.5, "end": 1.7, "source": "system_audio", "text": "near"},
+        {"start": 5.0, "end": 5.2, "source": "system_audio", "text": "far"},
     ]
 
     merged = merge_transcript_segments(
@@ -220,7 +220,7 @@ def test_service_rejects_manifest_path_traversal(tmp_path: Path) -> None:
     session = _create_session(tmp_path)
     manifest_path = session / "audio" / "manifest.json"
     manifest = json.loads(manifest_path.read_text("utf-8"))
-    manifest["tracks"]["system"]["file"] = "../outside.wav"
+    manifest["tracks"]["system_audio"]["file"] = "../outside.wav"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     with pytest.raises(DiarizationError, match="ファイル名が不正"):

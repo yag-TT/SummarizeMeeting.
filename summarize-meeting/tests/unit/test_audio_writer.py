@@ -182,7 +182,7 @@ def test_segmented_writer_reports_cleanup_failure_after_successful_validation(
     audio_dir.mkdir()
     writer = _CleanupFailingSegmentedWaveWriter(
         audio_dir,
-        "system",
+        "system_audio",
         AudioFormat(sample_rate=100, channels=1),
     )
     writer.write(np.full((20, 1), 0.1, dtype=np.float32))
@@ -192,5 +192,5 @@ def test_segmented_writer_reports_cleanup_failure_after_successful_validation(
     assert stats.validated
     assert not stats.work_files_removed
     assert stats.work_cleanup_error == "work directory is busy"
-    assert (audio_dir / "system.wav").is_file()
-    assert (audio_dir / ".work" / "system" / "000000.wav").is_file()
+    assert (audio_dir / "system_audio.wav").is_file()
+    assert (audio_dir / ".work" / "system_audio" / "000000.wav").is_file()

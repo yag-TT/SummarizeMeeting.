@@ -160,7 +160,7 @@ OS、デスクトップセッション、Portal、PipeWire/PulseAudio、音声�
 
 記録データは次へ保存されます。
 
-データ形式は現行版だけをサポートします。`session.json`と`audio/manifest.json`はschema version 2です。manifest内のtrack名は`microphone`または`system`、`file`は`microphone.wav`のような`audio/`基準の単純なファイル名です。旧形式からの移行・読み替えは行いません。
+データ形式は現行版だけをサポートします。`session.json`はschema version 2、`audio/manifest.json`はschema version 3です。manifest内のtrack名は`microphone`または`system_audio`、`file`は`microphone.wav`や`system_audio.wav`のような`audio/`基準の単純なファイル名です。旧形式からの移行・読み替えは行いません。
 
 ```text
 data/meetings/<session>/
@@ -168,7 +168,7 @@ data/meetings/<session>/
 ├─ events.jsonl
 ├─ audio/
 │  ├─ microphone.wav
-│  ├─ system.wav
+│  ├─ system_audio.wav
 │  ├─ manifest.json
 │  └─ .work/
 ├─ screenshots/
@@ -246,7 +246,7 @@ uv run python -m summarize_meeting.devtools.benchmark_session --source-session d
 仮想音声デバイスなどの指定デバイスだけを使い、実音声録音から文字起こしまでを試験する場合:
 
 ```console
-uv run python -m summarize_meeting.devtools.real_audio_smoke --source-wave data/meetings/stt-smoke-ja/audio/system.wav --microphone "Virtual microphone" --loopback "Monitor source" --speaker "Virtual speaker"
+uv run python -m summarize_meeting.devtools.real_audio_smoke --source-wave data/meetings/stt-smoke-ja/audio/system_audio.wav --microphone "Virtual microphone" --loopback "Monitor source" --speaker "Virtual speaker"
 ```
 
 指定名は各デバイス一覧で1件に絞れる部分文字列にします。このコマンドは指定した再生先へWAVを流し、録音セッションを`data/meetings/`へ保存します。
@@ -254,7 +254,7 @@ uv run python -m summarize_meeting.devtools.real_audio_smoke --source-wave data/
 録音・文字起こし済みセッションのPhase 2正常系を一括検証する場合:
 
 ```console
-uv run python -m summarize_meeting.devtools.validate_phase2_session --session "data/meetings/<対象セッション>" --expect-microphone "マイクへ話した確認文" --expect-system "PCで再生した確認文"
+uv run python -m summarize_meeting.devtools.validate_phase2_session --session "data/meetings/<対象セッション>" --expect-microphone "マイクへ話した確認文" --expect-system-audio "PCで再生した確認文"
 ```
 
 成功時は終了コード0と`passed: true`を返します。WAVはストリーミング検査するため、長時間セッションでもファイル全体をメモリへ読み込みません。

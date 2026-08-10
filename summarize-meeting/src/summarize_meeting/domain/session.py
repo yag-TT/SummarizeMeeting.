@@ -8,7 +8,7 @@ from typing import Any
 from uuid import uuid4
 
 SESSION_SCHEMA_VERSION = 2
-AUDIO_MANIFEST_SCHEMA_VERSION = 2
+AUDIO_MANIFEST_SCHEMA_VERSION = 3
 
 
 class SessionStatus(StrEnum):

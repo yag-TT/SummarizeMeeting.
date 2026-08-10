@@ -52,7 +52,7 @@ def _session(tmp_path: Path) -> Path:
     (session / "analysis").mkdir()
     (session / "output").mkdir()
     _write_wave(audio / "microphone.wav")
-    _write_wave(audio / "system.wav")
+    _write_wave(audio / "system_audio.wav")
     (session / "session.json").write_text(
         json.dumps({"schema_version": 2, "status": "RECORDED"}),
         encoding="utf-8",
@@ -60,14 +60,14 @@ def _session(tmp_path: Path) -> Path:
     (audio / "manifest.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "tracks": {
                     "microphone": {
                         "file": "microphone.wav",
                         "estimated_start_offset_ms": 100,
                     },
-                    "system": {
-                        "file": "system.wav",
+                    "system_audio": {
+                        "file": "system_audio.wav",
                         "estimated_start_offset_ms": 700,
                     },
                 },
@@ -96,7 +96,7 @@ def test_transcription_merges_tracks_on_session_timeline(tmp_path: Path) -> None
     assert value["model"] == "test-model"
     assert [(item["source"], item["start"]) for item in value["segments"]] == [
         ("microphone", 0.6),
-        ("system", 0.8),
+        ("system_audio", 0.8),
     ]
     assert [item["start_offset_ms"] for item in value["tracks"]] == [100, 700]
     assert [item["runtime_device"] for item in value["tracks"]] == ["unknown", "unknown"]
@@ -123,7 +123,7 @@ def test_transcription_rejects_legacy_session_relative_audio_path(tmp_path: Path
     manifest_path = session / "audio" / "manifest.json"
     value = json.loads(manifest_path.read_text("utf-8"))
     value["tracks"]["microphone"]["file"] = "audio/microphone.wav"
-    value["tracks"]["system"]["file"] = "audio/system.wav"
+    value["tracks"]["system_audio"]["file"] = "audio/system_audio.wav"
     manifest_path.write_text(json.dumps(value), encoding="utf-8")
     with pytest.raises(TranscriptionError, match="音声ファイル名が不正"):
         TranscriptionService(_Backend(), model_name="test-model").run(session)
@@ -143,7 +143,7 @@ def test_transcription_rejects_legacy_session_schema(tmp_path: Path) -> None:
 def test_transcription_requires_at_least_one_supported_track(tmp_path: Path) -> None:
     session = _session(tmp_path)
     (session / "audio" / "manifest.json").write_text(
-        json.dumps({"schema_version": 2, "tracks": {}}),
+        json.dumps({"schema_version": 3, "tracks": {}}),
         encoding="utf-8",
     )
 

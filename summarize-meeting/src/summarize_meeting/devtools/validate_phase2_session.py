@@ -35,7 +35,7 @@ def validate_phase2_session(
     session: Path,
     *,
     expected_microphone_text: str | None = None,
-    expected_system_text: str | None = None,
+    expected_system_audio_text: str | None = None,
 ) -> ValidationReport:
     session = session.resolve()
     report = ValidationReport(session=str(session))
@@ -63,7 +63,7 @@ def validate_phase2_session(
         report.fail("audio manifest has no tracks object")
         tracks = {}
     audio_metrics: dict[str, object] = {}
-    for source in ("microphone", "system"):
+    for source in ("microphone", "system_audio"):
         value = tracks.get(source)
         name = source if isinstance(value, dict) else None
         track = value if isinstance(value, dict) else None
@@ -112,7 +112,7 @@ def validate_phase2_session(
     if not isinstance(segments, list):
         report.fail("transcription segments is not an array")
         segments = []
-    source_text: dict[str, list[str]] = {"microphone": [], "system": []}
+    source_text: dict[str, list[str]] = {"microphone": [], "system_audio": []}
     for index, segment in enumerate(segments):
         if not isinstance(segment, dict):
             report.fail(f"segment {index} is not an object")
@@ -126,13 +126,13 @@ def validate_phase2_session(
         if source in source_text and isinstance(text, str):
             source_text[source].append(text)
     report.metrics["segment_count"] = len(segments)
-    for source in ("microphone", "system"):
+    for source in ("microphone", "system_audio"):
         if not source_text[source]:
             report.fail(f"transcription has no {source} segment")
 
     expected = {
         "microphone": expected_microphone_text,
-        "system": expected_system_text,
+        "system_audio": expected_system_audio_text,
     }
     for source, expected_text in expected.items():
         if expected_text and expected_text not in "".join(source_text[source]):
@@ -226,12 +226,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate a recorded Phase 2 session")
     parser.add_argument("--session", required=True, type=Path)
     parser.add_argument("--expect-microphone")
-    parser.add_argument("--expect-system")
+    parser.add_argument("--expect-system-audio")
     args = parser.parse_args(argv)
     report = validate_phase2_session(
         args.session,
         expected_microphone_text=args.expect_microphone,
-        expected_system_text=args.expect_system,
+        expected_system_audio_text=args.expect_system_audio,
     )
     print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
     return 0 if report.passed else 1

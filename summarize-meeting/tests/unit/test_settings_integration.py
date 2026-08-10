@@ -182,7 +182,7 @@ def _create_recorded_session(root: Path, name: str = "session") -> Path:
         encoding="utf-8",
     )
     (audio / "manifest.json").write_text(
-        '{"schema_version":2,"tracks":{"microphone":{"file":"microphone.wav"}}}',
+        '{"schema_version":3,"tracks":{"microphone":{"file":"microphone.wav"}}}',
         encoding="utf-8",
     )
     (audio / "microphone.wav").write_bytes(b"wave")
@@ -193,7 +193,7 @@ def _add_microphone_track(session: Path) -> None:
     (session / "audio" / "manifest.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "tracks": {
                     "microphone": {
                         "file": "microphone.wav",
@@ -236,7 +236,7 @@ def test_ui_selects_past_session_and_starts_transcription(
             encoding="utf-8",
         )
         (audio / "manifest.json").write_text(
-            '{"schema_version":2,"tracks":{"microphone":{"file":"microphone.wav"}}}',
+            '{"schema_version":3,"tracks":{"microphone":{"file":"microphone.wav"}}}',
             encoding="utf-8",
         )
         (audio / "microphone.wav").write_bytes(b"wave")
@@ -275,10 +275,10 @@ def test_ui_starts_diarization_and_updates_speaker_names(
     tmp_path: Path,
 ) -> None:
     session = _create_recorded_session(tmp_path)
-    (session / "audio" / "system.wav").write_bytes(b"wave")
+    (session / "audio" / "system_audio.wav").write_bytes(b"wave")
     (session / "audio" / "manifest.json").write_text(
         json.dumps(
-            {"schema_version": 2, "tracks": {"system": {"file": "system.wav"}}}
+            {"schema_version": 3, "tracks": {"system_audio": {"file": "system_audio.wav"}}}
         ),
         encoding="utf-8",
     )
@@ -286,7 +286,7 @@ def test_ui_starts_diarization_and_updates_speaker_names(
         json.dumps(
             {
                 "status": "SUCCEEDED",
-                "segments": [{"source": "system", "start": 0, "end": 1, "text": "確認"}],
+                "segments": [{"source": "system_audio", "start": 0, "end": 1, "text": "確認"}],
             }
         ),
         encoding="utf-8",
@@ -429,14 +429,14 @@ def test_ui_shows_optional_branches_that_can_enrich_minutes(
     tmp_path: Path,
 ) -> None:
     session = _create_recorded_session(tmp_path)
-    (session / "audio" / "system.wav").write_bytes(b"wave")
+    (session / "audio" / "system_audio.wav").write_bytes(b"wave")
     (session / "audio" / "manifest.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "tracks": {
                     "microphone": {"file": "microphone.wav"},
-                    "system": {"file": "system.wav"},
+                    "system_audio": {"file": "system_audio.wav"},
                 },
             }
         ),

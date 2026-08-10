@@ -102,7 +102,7 @@ def _session(tmp_path: Path, *, diarized: bool = True, screens: bool = True) -> 
         {
             "start": 10.0,
             "end": 13.0,
-            "source": "system",
+            "source": "system_audio",
             "text": "来週の金曜日までに、テスト結果を共有します。",
         },
     ]
@@ -207,7 +207,7 @@ def test_service_uses_map_reduce_for_long_timeline(tmp_path: Path) -> None:
         {
             "start": index,
             "end": index + 0.5,
-            "source": "system",
+            "source": "system_audio",
             "text": "長い発話です。" * 120,
         }
         for index in range(20)
@@ -336,7 +336,7 @@ def test_service_summarizes_informal_conversation_without_empty_meeting_sections
                     {
                         "start": 5.0,
                         "end": 8.0,
-                        "source": "system",
+                        "source": "system_audio",
                         "text": "現地ではどんな料理を食べましたか。",
                     },
                 ],

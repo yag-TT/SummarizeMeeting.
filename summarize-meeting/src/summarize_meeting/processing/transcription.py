@@ -150,7 +150,7 @@ class FasterWhisperBackend:
 class TranscriptionService:
     _SOURCE_NAMES = {
         "microphone": "microphone",
-        "system": "system",
+        "system_audio": "system_audio",
     }
 
     def __init__(self, backend: TranscriptionBackend, *, model_name: str) -> None:
@@ -261,7 +261,7 @@ class TranscriptionService:
         audio_directory: Path,
         tracks: dict[str, object],
     ) -> Iterable[tuple[str, Path, int]]:
-        for manifest_name in ("microphone", "system"):
+        for manifest_name in ("microphone", "system_audio"):
             value = tracks.get(manifest_name)
             if not isinstance(value, dict):
                 continue

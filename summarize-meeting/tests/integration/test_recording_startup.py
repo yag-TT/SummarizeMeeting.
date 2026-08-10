@@ -143,7 +143,7 @@ def test_session_starts_when_one_of_two_audio_sources_is_ready(tmp_path: Path) -
     session_path = controller.start_session(
         title="partial audio",
         microphone=AudioDevice("mic", "Broken mic", 1),
-        system_audio=AudioDevice("system", "Working output", 1),
+        system_audio=AudioDevice("system_audio", "Working output", 1),
         screen_target=None,
     )
 
@@ -167,7 +167,13 @@ def test_session_starts_when_one_of_two_audio_sources_is_ready(tmp_path: Path) -
 
     metadata = json.loads((session_path / "session.json").read_text(encoding="utf-8"))
     assert metadata["status"] == SessionStatus.RECORDED
-    assert (session_path / "audio" / "system.wav").is_file()
+    assert (session_path / "audio" / "system_audio.wav").is_file()
+    manifest = json.loads(
+        (session_path / "audio" / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["schema_version"] == 3
+    assert "system_audio" in manifest["tracks"]
+    assert "system" not in manifest["tracks"]
     session_log = (session_path / "logs" / "session.log").read_text(encoding="utf-8")
     assert "partial audio" not in session_log
     assert "Broken mic" not in session_log
@@ -232,7 +238,7 @@ def test_session_is_failed_to_start_when_all_audio_sources_fail(
     tmp_path: Path,
     qapp: QApplication,
 ) -> None:
-    controller = _make_controller(tmp_path, failing_device_ids={"mic", "system"})
+    controller = _make_controller(tmp_path, failing_device_ids={"mic", "system_audio"})
     start_failures: list[tuple[str, str]] = []
     controller.session_start_failed.connect(
         lambda path, message: start_failures.append((path, message))
@@ -241,7 +247,7 @@ def test_session_is_failed_to_start_when_all_audio_sources_fail(
     controller.start_session(
         title="no audio",
         microphone=AudioDevice("mic", "Broken mic", 1),
-        system_audio=AudioDevice("system", "Broken output", 1),
+        system_audio=AudioDevice("system_audio", "Broken output", 1),
         screen_target=None,
     )
     _wait_for(lambda: controller._session_terminal.is_set())  # noqa: SLF001

@@ -319,7 +319,7 @@ class RecordingController(QObject):
                 recorder = self._create_audio_recorder(
                     ComponentKind.SYSTEM_AUDIO,
                     system_audio,
-                    "system",
+                    "system_audio",
                     paths,
                     audio_start_gate,
                 )

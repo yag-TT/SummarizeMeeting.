@@ -206,7 +206,7 @@ class SessionRecoveryService:
             return {}
 
         expectations: dict[str, dict[str, Any]] = {}
-        for track_name in ("microphone", "system"):
+        for track_name in ("microphone", "system_audio"):
             track = tracks.get(track_name)
             if track is None:
                 continue

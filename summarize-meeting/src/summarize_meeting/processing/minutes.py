@@ -368,7 +368,7 @@ def _build_timeline(
             speaker_id = raw.get("speaker_id")
         else:
             speaker_name = "自分" if source == "microphone" else "PC音声"
-            speaker_id = "self" if source == "microphone" else "system"
+            speaker_id = "self" if source == "microphone" else "system_audio"
         items.append(
             {
                 "id": f"speech-{index:05d}",
