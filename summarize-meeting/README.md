@@ -261,7 +261,7 @@ uv run python -m summarize_meeting.devtools.validate_phase2_session --session "d
 
 成功時は終了コード0と`passed: true`を返します。WAVはストリーミング検査するため、長時間セッションでもファイル全体をメモリへ読み込みません。
 
-実機録音の検証手順は [Phase 1 PoC手動検証](../docs/PHASE1_POC_MANUAL_TEST.md) を参照してください。
+実機録音や録音済みセッションの検証方法は、[開発・テストガイド](docs/development.md#8-開発補助ツール)を参照してください。
 
 ## 配置方針
 
@@ -276,16 +276,10 @@ uv run python -m summarize_meeting.devtools.validate_phase2_session --session "d
 
 ## ドキュメント
 
-- [依存ライブラリ・外部ツール一覧](../docs/DEPENDENCIES_AND_TOOLS.md)
-- [引き継ぎ資料](../docs/CODEX_HANDOFF_MEETING_MINUTES_TOOL.md)
-- [Phase 1詳細設計](../docs/PHASE1_DETAILED_DESIGN.md)
-- [Phase 2詳細設計](../docs/PHASE2_DETAILED_DESIGN.md)
-- [Phase 2 STTスモーク試験](../docs/PHASE2_STT_SMOKE_TEST.md)
-- [Phase 2 STT 1時間ベンチマーク](../docs/PHASE2_STT_1H_BENCHMARK.md)
-- [Phase 2 実音声スモーク試験](../docs/PHASE2_REAL_AUDIO_SMOKE_TEST.md)
-- [Phase 3詳細設計](../docs/PHASE3_DETAILED_DESIGN.md)
-- [Phase 3話者分離スモーク試験](../docs/PHASE3_DIARIZATION_SMOKE_TEST.md)
-- [Phase 4詳細設計](../docs/PHASE4_DETAILED_DESIGN.md)
-- [Phase 4 画面解析スモーク試験](../docs/PHASE4_SCREEN_ANALYSIS_SMOKE_TEST.md)
-- [Phase 5詳細設計](../docs/PHASE5_DETAILED_DESIGN.md)
-- [Phase 5統合議事録スモーク試験](../docs/PHASE5_MINUTES_SMOKE_TEST.md)
+- [ドキュメント目次](docs/README.md)
+- [プロジェクト概要](docs/project-overview.md)
+- [アーキテクチャ](docs/architecture.md)
+- [内部API・worker APIリファレンス](docs/api-reference.md)
+- [保存データ形式](docs/data-formats.md)
+- [開発・テストガイド](docs/development.md)
+- [Ubuntu 22.04へのコピー導入手順](docs/ubuntu-install.md)
