@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import sys
 from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
@@ -45,6 +47,8 @@ from summarize_meeting.infrastructure.session_catalog import (
 )
 from summarize_meeting.ui.analysis_stage import AnalysisStageCard, AnalysisStageState
 from summarize_meeting.ui.status_row import CaptureStatusRow
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class _ScreenPreviewLabel(QLabel):
@@ -1876,6 +1880,11 @@ class MainWindow(QMainWindow):
         )
 
     def show_error(self, message: str) -> None:
+        _LOGGER.error(
+            "UI error: %s",
+            message,
+            exc_info=sys.exc_info()[0] is not None,
+        )
         self._message.setText(message)
         self._message.setStyleSheet(
             "padding: 10px; background: #4a2024; color: #ffdad6; "
@@ -1883,6 +1892,7 @@ class MainWindow(QMainWindow):
         )
 
     def show_warning(self, message: str) -> None:
+        _LOGGER.warning("UI warning: %s", message)
         self._message.setText(message)
         self._message.setStyleSheet(
             "padding: 10px; background: #463b18; color: #ffe082; "

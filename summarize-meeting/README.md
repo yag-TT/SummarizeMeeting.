@@ -224,6 +224,8 @@ PC音声loopbackにはSoundCardを使用します。WindowsではWASAPI loopback
 
 前回使用したマイクとPC音声のdevice ID、画面変更検知設定、保持方針、LLMエンドポイント、自動文字起こし、ログレベルは `data/settings.json` に保存します。壊れた設定は `data/settings.corrupt-<timestamp>.json` へ退避し、既定値で起動します。保存済みdevice IDが見つからない場合、別デバイスへ自動切替はしません。
 
+アプリで表示したエラーと警告、捕捉されていないPython例外、バックグラウンドスレッド例外、Python/Qtの警告は `data/logs/application.log` に記録します。ログは5 MiBごとにローテーションし、過去3世代を保持します。録音セッション固有の構造化ログは、従来どおり各セッションの `logs/session.log` に保存します。
+
 `audio/manifest.json` には2track共通のmonotonic origin、各trackの推定開始offset、WAV時間、再接続gapを除く稼働時間、duration drift、queue最大使用率、pressure回数、overflow回数を保存します。診断値に基づく音声の自動伸縮や無音挿入は行いません。
 
 スクリーンショットはtempへ書き込んで再decode検証した後にatomic確定します。一時的な画像保存失敗では画面Captureと音声を止めず、baselineを維持して再試行します。異常終了後に残った正常なPNG tempは起動時復旧の対象です。

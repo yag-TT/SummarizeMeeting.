@@ -5,10 +5,18 @@ from __future__ import annotations
 import logging
 import platform
 import sys
+import threading
 from logging.handlers import RotatingFileHandler
+from types import TracebackType
 from typing import Protocol
 
-from PySide6.QtCore import QLockFile, QTimer
+from PySide6.QtCore import (
+    QLockFile,
+    QMessageLogContext,
+    QTimer,
+    QtMsgType,
+    qInstallMessageHandler,
+)
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from summarize_meeting.application.diarization_controller import DiarizationController
@@ -27,6 +35,10 @@ from summarize_meeting.infrastructure.settings import FileSettingsRepository, Se
 from summarize_meeting.ui.font_support import configure_japanese_ui_font
 from summarize_meeting.ui.main_window import MainWindow
 
+_LOGGER = logging.getLogger(__name__)
+_ORIGINAL_SYS_EXCEPTHOOK = sys.excepthook
+_ORIGINAL_THREADING_EXCEPTHOOK = threading.excepthook
+
 
 class ShutdownWindowPort(Protocol):
     def prepare_for_os_shutdown(self) -> None: ...
@@ -37,14 +49,84 @@ class ShutdownControllerPort(Protocol):
 
 
 def _configure_logging(paths: PortableAppPaths, log_level: str) -> None:
+    level = getattr(logging, log_level.upper(), logging.INFO)
     handler = RotatingFileHandler(
         paths.logs_dir / "application.log",
         maxBytes=5 * 1024 * 1024,
         backupCount=3,
         encoding="utf-8",
     )
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
-    logging.basicConfig(level=getattr(logging, log_level), handlers=[handler])
+    handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s %(levelname)s %(name)s "
+            "[process=%(process)d thread=%(threadName)s] %(message)s"
+        )
+    )
+    handler.setLevel(level)
+    handler._summarize_meeting_application_log = True
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+    for existing in tuple(root_logger.handlers):
+        if getattr(existing, "_summarize_meeting_application_log", False):
+            root_logger.removeHandler(existing)
+            existing.close()
+    root_logger.addHandler(handler)
+    logging.captureWarnings(True)
+
+
+def _install_runtime_logging_bridges() -> None:
+    """Python/Qtが標準エラーだけへ出す診断情報をアプリログにも転送する。"""
+
+    sys.excepthook = _log_unhandled_exception
+    threading.excepthook = _log_unhandled_thread_exception
+    qInstallMessageHandler(_log_qt_message)
+
+
+def _log_unhandled_exception(
+    exception_type: type[BaseException],
+    exception: BaseException,
+    traceback: TracebackType | None,
+) -> None:
+    if issubclass(exception_type, (KeyboardInterrupt, SystemExit)):
+        _ORIGINAL_SYS_EXCEPTHOOK(exception_type, exception, traceback)
+        return
+    _LOGGER.critical(
+        "Unhandled exception",
+        exc_info=(exception_type, exception, traceback),
+    )
+    _ORIGINAL_SYS_EXCEPTHOOK(exception_type, exception, traceback)
+
+
+def _log_unhandled_thread_exception(args: threading.ExceptHookArgs) -> None:
+    if issubclass(args.exc_type, (KeyboardInterrupt, SystemExit)):
+        _ORIGINAL_THREADING_EXCEPTHOOK(args)
+        return
+    _LOGGER.critical(
+        "Unhandled thread exception thread=%s",
+        args.thread.name if args.thread is not None else "unknown",
+        exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+    )
+    _ORIGINAL_THREADING_EXCEPTHOOK(args)
+
+
+def _log_qt_message(
+    message_type: QtMsgType,
+    context: QMessageLogContext,
+    message: str,
+) -> None:
+    level = {
+        QtMsgType.QtDebugMsg: logging.DEBUG,
+        QtMsgType.QtInfoMsg: logging.INFO,
+        QtMsgType.QtWarningMsg: logging.WARNING,
+        QtMsgType.QtCriticalMsg: logging.ERROR,
+        QtMsgType.QtFatalMsg: logging.CRITICAL,
+    }.get(message_type, logging.WARNING)
+    location = ""
+    if context.file:
+        location = f" file={context.file}:{context.line}"
+    category = f" category={context.category}" if context.category else ""
+    logging.getLogger("qt").log(level, "Qt message%s%s: %s", category, location, message)
 
 
 def main() -> int:
@@ -64,11 +146,13 @@ def main() -> int:
     try:
         paths.ensure_writable()
     except AppRootNotWritableError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
         QMessageBox.critical(None, "起動できません", str(exc))
         return 1
 
     instance_lock = _acquire_instance_lock(paths)
     if instance_lock is None:
+        print("WARNING: Summarize Meeting is already running.", file=sys.stderr)
         QMessageBox.warning(
             None,
             "既に起動しています",
@@ -79,10 +163,11 @@ def main() -> int:
     settings_repository = FileSettingsRepository(paths.settings_file)
     settings_result = settings_repository.load()
     _configure_logging(paths, settings_result.settings.log_level)
-    logging.getLogger(__name__).info("Application started app_root=%s", paths.app_root)
-    logging.getLogger(__name__).info("UI font selected family=%s", selected_font)
+    _install_runtime_logging_bridges()
+    _LOGGER.info("Application started app_root=%s", paths.app_root)
+    _LOGGER.info("UI font selected family=%s", selected_font)
     if settings_result.error:
-        logging.getLogger(__name__).warning(
+        _LOGGER.warning(
             "Settings fallback backup=%s error=%s",
             settings_result.backup_path,
             settings_result.error,
@@ -119,7 +204,7 @@ def main() -> int:
         exit_code = app.exec()
     finally:
         instance_lock.unlock()
-    logging.getLogger(__name__).info("Application stopped exit_code=%s", exit_code)
+    _LOGGER.info("Application stopped exit_code=%s", exit_code)
     return exit_code
 
 
@@ -135,7 +220,7 @@ def _handle_os_shutdown(
 ) -> bool:
     window.prepare_for_os_shutdown()
     completed = controller.stop_for_shutdown(timeout_seconds=4.0)
-    logging.getLogger(__name__).info(
+    _LOGGER.info(
         "OS shutdown recording finalize_completed=%s",
         completed,
     )
