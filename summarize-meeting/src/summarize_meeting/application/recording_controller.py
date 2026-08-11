@@ -12,6 +12,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
+from summarize_meeting.application.recording_finalizer import RecordingFinalizer
+from summarize_meeting.application.session_logging import SessionLogMonitor
 from summarize_meeting.application.storage_monitor import (
     StorageCapacity,
     StorageCapacityCheckError,
@@ -35,7 +37,6 @@ from summarize_meeting.domain.session import (
 from summarize_meeting.infrastructure.audio_writer import AudioTrackStats
 from summarize_meeting.infrastructure.paths import PortableAppPaths
 from summarize_meeting.infrastructure.screenshot_store import ScreenshotStore
-from summarize_meeting.infrastructure.session_log import SessionLogWriter
 from summarize_meeting.infrastructure.session_repository import (
     FileSessionRepository,
     SessionPaths,
@@ -104,7 +105,7 @@ class RecordingController(QObject):
         self._audio_start_timeout_seconds = audio_start_timeout_seconds
         self._session: RecordingSession | None = None
         self._session_paths: SessionPaths | None = None
-        self._session_log: SessionLogWriter | None = None
+        self._session_log: SessionLogMonitor | None = None
         self._origin_ns = 0
         self._audio_recorders: dict[ComponentKind, AudioTrackRecorder] = {}
         self._screen_recorder: ScreenRecorder | None = None
@@ -441,7 +442,7 @@ class RecordingController(QObject):
 
         paths = self._repository.create(session)
         try:
-            session_log = SessionLogWriter(
+            session_log = SessionLogMonitor.open(
                 paths.session_log,
                 session_id=session.id,
                 sensitive_values=(
@@ -456,6 +457,7 @@ class RecordingController(QObject):
                     screen_target.title if screen_target is not None else None,
                 ),
                 minimum_level=self._settings.log_level,
+                on_write_failure=self._handle_session_log_write_failure,
             )
         except OSError as exc:
             session.ended_at = RecordingSession.now_iso()
@@ -945,158 +947,45 @@ class RecordingController(QObject):
             paths = self._session_paths
             if session is None or paths is None:
                 return
-            session.status = SessionStatus.STOPPING
-            self._try_save_session(paths, session, operation="session_stopping")
-            audio_kinds = list(self._audio_recorders)
-            self._finalize_track_ranges = {
-                kind: (
-                    15 + (70 * index // max(1, len(audio_kinds))),
-                    15 + (70 * (index + 1) // max(1, len(audio_kinds))),
-                )
-                for index, kind in enumerate(audio_kinds)
-            }
-        self._emit_finalize_progress(0, "記録の停止を開始しています")
-        self._append_event("session_stopping")
-        self._storage_monitor.request_stop()
+            audio_recorders = dict(self._audio_recorders)
+            screen_recorder = self._screen_recorder
+            screenshot_count = self._screenshot_count
+        RecordingFinalizer(
+            session=session,
+            paths=paths,
+            audio_recorders=audio_recorders,
+            screen_recorder=screen_recorder,
+            storage_monitor=self._storage_monitor,
+            origin_ns=self._origin_ns,
+            screenshot_count=screenshot_count,
+            state_lock=self._lock,
+            emit_progress=self._emit_finalize_progress,
+            append_event=self._append_event,
+            save_session=lambda target_paths, target_session, operation: self._try_save_session(
+                target_paths,
+                target_session,
+                operation=operation,
+            ),
+            log_exception=lambda event, error, component, code: self._log_session_exception(
+                event,
+                error,
+                component=component,
+                error_code=code,
+            ),
+            set_component=self._set_component,
+            set_track_ranges=self._set_finalize_track_ranges,
+            write_audio_manifest=self._write_audio_manifest,
+            close_session_log=self._close_session_log,
+            notify_fatal=self.fatal_error.emit,
+            notify_finished=self.session_finished.emit,
+            terminal_event=self._session_terminal,
+        ).run()
 
-        # 先に全取得元へ停止要求を出し、以降は画面→音声→manifestの順で確定する。
-        for recorder in self._audio_recorders.values():
-            recorder.request_stop()
-        if self._screen_recorder is not None:
-            self._screen_recorder.request_stop()
-        self._emit_finalize_progress(8, "画面取得を停止しています")
-
-        stats: dict[str, AudioTrackStats] = {}
-        failures: list[str] = []
-        if self._screen_recorder is not None:
-            try:
-                self._screen_recorder.finish()
-            except Exception as exc:
-                failures.append(f"screen: {exc}")
-                self._log_session_exception(
-                    "finalize_failed",
-                    exc,
-                    component=ComponentKind.SCREEN.value,
-                    error_code="FINALIZE_FAILED",
-                )
-        self._emit_finalize_progress(12, "画面取得を停止しました")
-
-        with self._lock:
-            session.status = SessionStatus.FINALIZING
-            self._try_save_session(paths, session, operation="session_finalizing")
-        self._emit_finalize_progress(15, "音声ファイルを確定しています")
-
-        for kind, recorder in self._audio_recorders.items():
-            start, end = self._finalize_track_ranges[kind]
-            self._emit_finalize_progress(start, f"{self._audio_label(kind)}を停止しています")
-            try:
-                result = recorder.finish()
-                if result is not None:
-                    stats[kind.value] = result
-            except Exception as exc:
-                failures.append(f"{kind.value}: {exc}")
-                self._log_session_exception(
-                    "finalize_failed",
-                    exc,
-                    component=kind.value,
-                    error_code="FINALIZE_FAILED",
-                )
-                self._set_component(kind, ComponentStatus.FAILED, "FINALIZE_FAILED", str(exc))
-            self._emit_finalize_progress(end, f"{self._audio_label(kind)}を確定しました")
-
-        self._emit_finalize_progress(85, "保存状態を確認しています")
-
-        try:
-            self._storage_monitor.finish()
-        except Exception as exc:
-            failures.append(f"storage monitor: {exc}")
-            self._log_session_exception(
-                "finalize_failed",
-                exc,
-                component=ComponentKind.SESSION_STORAGE.value,
-                error_code="FINALIZE_FAILED",
-            )
-        self._emit_finalize_progress(90, "音声情報を保存しています")
-
-        with self._lock:
-            storage_failed = (
-                session.components[ComponentKind.SESSION_STORAGE.value].status
-                == ComponentStatus.FAILED
-            )
-        if not storage_failed:
-            self._set_component(ComponentKind.SESSION_STORAGE, ComponentStatus.STOPPED)
-
-        try:
-            self._write_audio_manifest(
-                paths.audio / "manifest.json",
-                stats,
-                monotonic_origin_ns=self._origin_ns,
-            )
-        except OSError as exc:
-            failures.append(f"audio manifest: {exc}")
-            self._log_session_exception(
-                "finalize_failed",
-                exc,
-                component=ComponentKind.SESSION_STORAGE.value,
-                error_code="FINALIZE_FAILED",
-            )
-        self._emit_finalize_progress(95, "セッション情報を保存しています")
-        cleanup_warnings = [
-            f"{track}: {track_stats.work_cleanup_error}"
-            for track, track_stats in stats.items()
-            if track_stats.work_cleanup_error is not None
-        ]
-        for warning in cleanup_warnings:
-            self._append_event("audio_work_cleanup_failed", message=warning)
-        ended_ns = time.perf_counter_ns()
-        with self._lock:
-            session.ended_at = RecordingSession.now_iso()
-            session.duration_ms = (ended_ns - self._origin_ns) // 1_000_000
-            session.status = SessionStatus.INTERRUPTED if failures else SessionStatus.RECORDED
-            for failure in failures:
-                session.add_warning("FINALIZE_FAILED", failure, session.duration_ms)
-            for warning in cleanup_warnings:
-                session.add_warning("AUDIO_WORK_CLEANUP_FAILED", warning, session.duration_ms)
-            metadata_saved = self._try_save_session(
-                paths,
-                session,
-                operation="session_finished",
-            )
-            if not metadata_saved:
-                failure = "session metadata: final session.json write failed"
-                failures.append(failure)
-                session.status = SessionStatus.INTERRUPTED
-                session.add_warning("FINALIZE_FAILED", failure, session.duration_ms)
-        self._emit_finalize_progress(99, "保存結果を確認しています")
-        audio_summary = {
-            track: {
-                "frames": track_stats.frames_written,
-                "segments": track_stats.segments,
-                "duration_ms": track_stats.audio_duration_ms,
-                "validated": track_stats.validated,
-                "overflow_count": track_stats.overflow_count,
-                "queue_pressure_count": track_stats.queue_pressure_count,
-            }
-            for track, track_stats in stats.items()
-        }
-        self._append_event(
-            "session_finished",
-            status=session.status.value,
-            duration_ms=session.duration_ms,
-            screenshot_count=self._screenshot_count,
-            audio_summary=audio_summary,
-            failure_count=len(failures),
-            failures=failures,
-        )
-        if failures:
-            self.fatal_error.emit("一部の記録を正常に確定できませんでした: " + "; ".join(failures))
-        self._emit_finalize_progress(
-            100,
-            "エラーを含む記録を保存しました" if failures else "記録を保存しました",
-        )
-        self._close_session_log()
-        self._session_terminal.set()
-        self.session_finished.emit(str(paths.root))
+    def _set_finalize_track_ranges(
+        self,
+        ranges: dict[ComponentKind, tuple[int, int]],
+    ) -> None:
+        self._finalize_track_ranges = ranges
 
     def _on_audio_finalize_progress(
         self,
@@ -1397,6 +1286,29 @@ class RecordingController(QObject):
                 error_code=error_code,
                 timestamp_ms=int(timestamp_ms),
             )
+
+    def _handle_session_log_write_failure(self, error: Exception) -> None:
+        message = (
+            "セッションログへ書き込めません。録音は継続しますが、"
+            "保存先の空き容量とアクセス権を確認してください。"
+        )
+        with self._lock:
+            timestamp_ms = (time.perf_counter_ns() - self._origin_ns) // 1_000_000
+            session = self._session
+            paths = self._session_paths
+            if session is not None:
+                session.add_warning(
+                    "SESSION_LOG_WRITE_FAILED",
+                    message,
+                    int(timestamp_ms),
+                )
+        logging.getLogger(__name__).error(
+            "Session log write failed",
+            exc_info=error,
+        )
+        if session is not None and paths is not None:
+            self._try_save_session(paths, session, operation="session_log_write_failed")
+        self.fatal_error.emit(message)
 
     def _close_session_log(self) -> None:
         with self._lock:

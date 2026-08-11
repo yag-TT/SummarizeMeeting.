@@ -79,11 +79,11 @@ def test_controller_persists_success(tmp_path: Path, monkeypatch) -> None:
     session = _session(app_paths)
     output = session / "analysis" / "screens.json"
     monkeypatch.setattr(
-        "summarize_meeting.application.screen_analysis_controller.threading.Thread",
+        "summarize_meeting.application.analysis_job_runner.threading.Thread",
         _ImmediateThread,
     )
     monkeypatch.setattr(
-        "summarize_meeting.application.screen_analysis_controller.subprocess.Popen",
+        "summarize_meeting.application.analysis_job_runner.subprocess.Popen",
         lambda *_args, **_kwargs: _SuccessfulProcess(output),
     )
     controller = ScreenAnalysisController(app_paths)
@@ -107,7 +107,7 @@ def test_controller_persists_worker_start_failure(tmp_path: Path, monkeypatch) -
     app_paths.ensure_writable()
     session = _session(app_paths)
     monkeypatch.setattr(
-        "summarize_meeting.application.screen_analysis_controller.threading.Thread",
+        "summarize_meeting.application.analysis_job_runner.threading.Thread",
         _ImmediateThread,
     )
 
@@ -115,7 +115,7 @@ def test_controller_persists_worker_start_failure(tmp_path: Path, monkeypatch) -
         raise OSError("worker unavailable")
 
     monkeypatch.setattr(
-        "summarize_meeting.application.screen_analysis_controller.subprocess.Popen",
+        "summarize_meeting.application.analysis_job_runner.subprocess.Popen",
         fail_start,
     )
     controller = ScreenAnalysisController(app_paths)
@@ -137,13 +137,13 @@ def test_controller_persists_canceled_state(tmp_path: Path, monkeypatch) -> None
     app_paths.ensure_writable()
     session = _session(app_paths)
     monkeypatch.setattr(
-        "summarize_meeting.application.screen_analysis_controller.threading.Thread",
+        "summarize_meeting.application.analysis_job_runner.threading.Thread",
         _ImmediateThread,
     )
     controller = ScreenAnalysisController(app_paths)
     process = _CancelingProcess(controller.cancel)
     monkeypatch.setattr(
-        "summarize_meeting.application.screen_analysis_controller.subprocess.Popen",
+        "summarize_meeting.application.analysis_job_runner.subprocess.Popen",
         lambda *_args, **_kwargs: process,
     )
     canceled: list[str] = []

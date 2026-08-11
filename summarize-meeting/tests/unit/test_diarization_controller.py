@@ -58,7 +58,7 @@ def test_controller_persists_success_and_speaker_count(
     output = session / "output" / "transcript.md"
     commands: list[list[str]] = []
     monkeypatch.setattr(
-        "summarize_meeting.application.diarization_controller.threading.Thread",
+        "summarize_meeting.application.analysis_job_runner.threading.Thread",
         _ImmediateThread,
     )
 
@@ -67,7 +67,7 @@ def test_controller_persists_success_and_speaker_count(
         return _SuccessfulProcess(output, commands)
 
     monkeypatch.setattr(
-        "summarize_meeting.application.diarization_controller.subprocess.Popen",
+        "summarize_meeting.application.analysis_job_runner.subprocess.Popen",
         create_process,
     )
     controller = DiarizationController(app_paths)
@@ -94,7 +94,7 @@ def test_controller_persists_worker_start_failure(tmp_path: Path, monkeypatch) -
     session = app_paths.meetings_dir / "session"
     session.mkdir()
     monkeypatch.setattr(
-        "summarize_meeting.application.diarization_controller.threading.Thread",
+        "summarize_meeting.application.analysis_job_runner.threading.Thread",
         _ImmediateThread,
     )
 
@@ -102,7 +102,7 @@ def test_controller_persists_worker_start_failure(tmp_path: Path, monkeypatch) -
         raise OSError("worker unavailable")
 
     monkeypatch.setattr(
-        "summarize_meeting.application.diarization_controller.subprocess.Popen",
+        "summarize_meeting.application.analysis_job_runner.subprocess.Popen",
         fail_start,
     )
     controller = DiarizationController(app_paths)

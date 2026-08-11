@@ -127,6 +127,9 @@ class FileSessionCatalog:
 def _transcription_status(directory: Path) -> str:
     path = directory / "analysis" / "transcription.json"
     result_exists = path.is_file()
+    job_status = _job_status(directory, "transcription")
+    if job_status is not None and job_status != "SUCCEEDED":
+        return job_status
     if result_exists:
         value = _read_object(path)
         status = _non_empty_string(value.get("status"))
@@ -136,30 +139,32 @@ def _transcription_status(directory: Path) -> str:
             )
         if status is not None:
             return status
-    jobs = _read_object(directory / "analysis" / "jobs.json").get("jobs")
-    if isinstance(jobs, dict):
-        transcription = jobs.get("transcription")
-        if isinstance(transcription, dict):
-            status = _non_empty_string(transcription.get("status"))
-            if status is not None:
-                return status
+    if job_status == "SUCCEEDED":
+        return "INCOMPLETE"
     return "UNKNOWN" if result_exists else "NOT_STARTED"
 
 
 def _analysis_status(directory: Path, *, job: str, result_name: str) -> str:
     result = _read_object(directory / "analysis" / result_name)
     result_exists = (directory / "analysis" / result_name).is_file()
+    job_status = _job_status(directory, job)
+    if job_status is not None and job_status != "SUCCEEDED":
+        return job_status
     status = _non_empty_string(result.get("status"))
     if status is not None:
         return status
+    if job_status == "SUCCEEDED":
+        return "INCOMPLETE"
+    return "UNKNOWN" if result_exists else "NOT_STARTED"
+
+
+def _job_status(directory: Path, job: str) -> str | None:
     jobs = _read_object(directory / "analysis" / "jobs.json").get("jobs")
     if isinstance(jobs, dict):
         state = jobs.get(job)
         if isinstance(state, dict):
-            status = _non_empty_string(state.get("status"))
-            if status is not None:
-                return status
-    return "UNKNOWN" if result_exists else "NOT_STARTED"
+            return _non_empty_string(state.get("status"))
+    return None
 
 
 def _has_system_audio(directory: Path) -> bool:

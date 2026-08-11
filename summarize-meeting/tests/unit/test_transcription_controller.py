@@ -45,11 +45,11 @@ def test_controller_persists_running_and_succeeded_state(
     (session / "output").mkdir(parents=True)
     output = session / "output" / "transcript.md"
     monkeypatch.setattr(
-        "summarize_meeting.application.transcription_controller.threading.Thread",
+        "summarize_meeting.application.analysis_job_runner.threading.Thread",
         _ImmediateThread,
     )
     monkeypatch.setattr(
-        "summarize_meeting.application.transcription_controller.subprocess.Popen",
+        "summarize_meeting.application.analysis_job_runner.subprocess.Popen",
         lambda *_args, **_kwargs: _SuccessfulProcess(output),
     )
     controller = TranscriptionController(app_paths)
@@ -78,7 +78,7 @@ def test_controller_persists_worker_start_failure(
     session = app_paths.meetings_dir / "session"
     session.mkdir()
     monkeypatch.setattr(
-        "summarize_meeting.application.transcription_controller.threading.Thread",
+        "summarize_meeting.application.analysis_job_runner.threading.Thread",
         _ImmediateThread,
     )
 
@@ -86,7 +86,7 @@ def test_controller_persists_worker_start_failure(
         raise OSError("worker unavailable")
 
     monkeypatch.setattr(
-        "summarize_meeting.application.transcription_controller.subprocess.Popen",
+        "summarize_meeting.application.analysis_job_runner.subprocess.Popen",
         fail_start,
     )
     controller = TranscriptionController(app_paths)

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
 import re
 import sys
 import wave
@@ -21,6 +20,7 @@ from summarize_meeting.domain.session import (
     AUDIO_MANIFEST_SCHEMA_VERSION,
     SESSION_SCHEMA_VERSION,
 )
+from summarize_meeting.infrastructure.atomic_io import ArtifactPublisher, json_bytes
 from summarize_meeting.processing.sherpa_runtime import sherpa_cuda_status
 
 ProgressCallback = Callable[[int, str], None]
@@ -422,11 +422,15 @@ class DiarizationService:
         _notify(progress_callback, 94, "話者分離結果を保存しています")
         analysis = session_directory / "analysis"
         output = session_directory / "output"
-        _write_json_atomic(analysis / "diarization.json", diarization_value)
-        _write_json_atomic(analysis / "speaker_names.json", names_value)
-        _write_json_atomic(analysis / "diarized_transcription.json", merged_value)
         transcript_path = output / "transcript.md"
-        _write_text_atomic(transcript_path, _render_markdown(merged))
+        ArtifactPublisher(session_directory).publish(
+            {
+                analysis / "diarization.json": json_bytes(diarization_value),
+                analysis / "speaker_names.json": json_bytes(names_value),
+                analysis / "diarized_transcription.json": json_bytes(merged_value),
+                transcript_path: _render_markdown(merged).encode("utf-8"),
+            }
+        )
         _notify(progress_callback, 100, "話者分離が完了しました")
         return transcript_path
 
@@ -476,21 +480,29 @@ class DiarizationService:
             nearest_tolerance_seconds=self._nearest_tolerance_seconds,
         )
         updated_at = _now_iso()
-        _write_json_atomic(
-            session_directory / "analysis" / "speaker_names.json",
-            {"schema_version": 1, "updated_at": updated_at, "names": normalized_names},
-        )
-        _write_json_atomic(
-            session_directory / "analysis" / "diarized_transcription.json",
-            {
+        names_value = {
+            "schema_version": 1,
+            "updated_at": updated_at,
+            "names": normalized_names,
+        }
+        merged_value = {
                 "schema_version": 1,
                 "status": "SUCCEEDED",
                 "source_transcription_schema_version": transcription.get("schema_version", 1),
                 "segments": merged,
-            },
-        )
+            }
         transcript_path = session_directory / "output" / "transcript.md"
-        _write_text_atomic(transcript_path, _render_markdown(merged))
+        ArtifactPublisher(session_directory).publish(
+            {
+                session_directory / "analysis" / "speaker_names.json": json_bytes(
+                    names_value
+                ),
+                session_directory / "analysis" / "diarized_transcription.json": json_bytes(
+                    merged_value
+                ),
+                transcript_path: _render_markdown(merged).encode("utf-8"),
+            }
+        )
         return transcript_path
 
 
@@ -792,27 +804,6 @@ def _read_object(path: Path, label: str) -> dict[str, object]:
     if not isinstance(value, dict):
         raise DiarizationError(f"{label}の形式が不正です")
     return value
-
-
-def _write_json_atomic(path: Path, value: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    with temporary.open("w", encoding="utf-8", newline="\n") as stream:
-        json.dump(value, stream, ensure_ascii=False, indent=2)
-        stream.write("\n")
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, path)
-
-
-def _write_text_atomic(path: Path, value: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    with temporary.open("w", encoding="utf-8", newline="\n") as stream:
-        stream.write(value)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, path)
 
 
 def _non_negative_int(value: object) -> int:

@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import os
 import re
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
@@ -18,6 +17,7 @@ from urllib.request import Request, urlopen
 from uuid import uuid4
 
 from summarize_meeting.domain.session import SESSION_SCHEMA_VERSION
+from summarize_meeting.infrastructure.atomic_io import ArtifactPublisher, json_bytes
 
 ProgressCallback = Callable[[int, str], None]
 
@@ -192,9 +192,6 @@ class MinutesService:
             screen_path=screen_path,
             warnings=warnings,
         )
-        timeline_path = session_directory / "analysis" / "timeline.json"
-        _write_json_atomic(timeline_path, timeline)
-
         # コンテキスト上限を超える会議は部分要約し、最後に同じschemaで統合する。
         chunks = _timeline_chunks(timeline["items"], self._max_chunk_characters)
         partials: list[Mapping[str, object]] = []
@@ -250,9 +247,16 @@ class MinutesService:
             "warnings": warnings,
         }
         _notify(progress_callback, 96, "会話要約を保存しています")
-        _write_json_atomic(session_directory / "analysis" / "minutes.json", minutes_value)
         output = session_directory / "output" / "minutes.md"
-        _write_text_atomic(output, _render_markdown(session, timeline, validated, warnings))
+        ArtifactPublisher(session_directory).publish(
+            {
+                session_directory / "analysis" / "timeline.json": json_bytes(timeline),
+                session_directory / "analysis" / "minutes.json": json_bytes(minutes_value),
+                output: _render_markdown(session, timeline, validated, warnings).encode(
+                    "utf-8"
+                ),
+            }
+        )
         _notify(progress_callback, 100, "会話要約が完了しました")
         return output
 
@@ -842,20 +846,6 @@ def _read_object(path: Path, label: str) -> dict[str, object]:
     if not isinstance(value, dict):
         raise MinutesError(f"{label}の形式が不正です")
     return value
-
-
-def _write_json_atomic(path: Path, value: object) -> None:
-    _write_text_atomic(path, json.dumps(value, ensure_ascii=False, indent=2) + "\n")
-
-
-def _write_text_atomic(path: Path, content: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    with temporary.open("w", encoding="utf-8", newline="\n") as stream:
-        stream.write(content)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, path)
 
 
 def _now_iso() -> str:

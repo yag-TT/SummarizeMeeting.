@@ -55,3 +55,28 @@ def test_screenshot_store_keeps_temp_when_decode_verification_fails(
     assert store.count == 0
     assert not (tmp_path / "000001.png").exists()
     assert (tmp_path / "000001.png.tmp").exists()
+
+
+def test_screenshot_store_rolls_back_png_when_event_publish_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    store = ScreenshotStore(tmp_path)
+    frame = np.zeros((10, 12, 3), dtype=np.uint8)
+
+    def fail_events(*_args, **_kwargs) -> None:
+        raise OSError("event storage unavailable")
+
+    monkeypatch.setattr(store_module, "write_bytes_atomic", fail_events)
+
+    with pytest.raises(ScreenshotSaveError, match="event storage unavailable"):
+        store.save(
+            frame,
+            timestamp_ms=0,
+            reason="initial",
+            metrics={"changed_ratio": 1.0, "mean_abs_diff": 255.0},
+        )
+
+    assert store.count == 0
+    assert not (tmp_path / "000001.png").exists()
+    assert not (tmp_path / "events.jsonl").exists()

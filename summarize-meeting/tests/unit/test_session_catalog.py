@@ -149,6 +149,27 @@ def test_catalog_reads_persisted_failed_job_state(tmp_path: Path) -> None:
     assert "文字起こし失敗" in value.display_label
 
 
+def test_catalog_prefers_latest_failed_job_over_stale_transcription_result(
+    tmp_path: Path,
+) -> None:
+    session = _session(
+        tmp_path,
+        "retried",
+        title="再実行失敗",
+        started_at="2026-08-08T10:00:00+09:00",
+        transcript=True,
+        transcription_json=True,
+    )
+    (session / "analysis" / "jobs.json").write_text(
+        '{"jobs":{"transcription":{"status":"FAILED"}}}',
+        encoding="utf-8",
+    )
+
+    value = FileSessionCatalog(tmp_path).scan()[0]
+
+    assert value.transcription_status == "FAILED"
+
+
 def test_catalog_enables_diarization_for_transcribed_system_audio_track(
     tmp_path: Path,
 ) -> None:
@@ -215,3 +236,24 @@ def test_catalog_enables_minutes_after_transcription_and_reads_status(tmp_path: 
 
     assert value.can_generate_minutes
     assert value.minutes_status == "SUCCEEDED"
+
+
+def test_catalog_prefers_latest_running_job_over_stale_minutes_result(tmp_path: Path) -> None:
+    session = _session(
+        tmp_path,
+        "minutes-retry",
+        title="議事録再生成",
+        started_at="2026-08-08T10:00:00+09:00",
+        transcript=True,
+        transcription_json=True,
+    )
+    (session / "analysis" / "minutes.json").write_text(
+        '{"status":"SUCCEEDED"}', encoding="utf-8"
+    )
+    (session / "analysis" / "jobs.json").write_text(
+        '{"jobs":{"minutes":{"status":"RUNNING"}}}', encoding="utf-8"
+    )
+
+    value = FileSessionCatalog(tmp_path).scan()[0]
+
+    assert value.minutes_status == "RUNNING"

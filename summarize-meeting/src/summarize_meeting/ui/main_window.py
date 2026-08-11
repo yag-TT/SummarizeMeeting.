@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from summarize_meeting.application.analysis_workflow import AnalysisWorkflow
 from summarize_meeting.application.diarization_controller import DiarizationController
 from summarize_meeting.application.minutes_controller import MinutesController
 from summarize_meeting.application.recording_controller import (
@@ -127,6 +128,14 @@ class MainWindow(QMainWindow):
         self._diarization_controller = diarization_controller
         self._screen_analysis_controller = screen_analysis_controller
         self._minutes_controller = minutes_controller
+        self._analysis_workflow = AnalysisWorkflow(
+            (
+                transcription_controller,
+                diarization_controller,
+                screen_analysis_controller,
+                minutes_controller,
+            )
+        )
         self._session_catalog = session_catalog or FileSessionCatalog(controller.meetings_directory)
         self._started_at: datetime | None = None
         self._session_path: Path | None = None
@@ -525,15 +534,7 @@ class MainWindow(QMainWindow):
         self._title.setFocus()
 
     def _any_analysis_running(self) -> bool:
-        return any(
-            controller is not None and controller.is_running
-            for controller in (
-                self._transcription_controller,
-                self._diarization_controller,
-                self._screen_analysis_controller,
-                self._minutes_controller,
-            )
-        )
+        return self._analysis_workflow.any_running
 
     def _update_start_enabled(self) -> None:
         # 会議開始条件をここへ集約し、各非同期処理の完了時に同じ判定を再利用する。
@@ -1108,7 +1109,10 @@ class MainWindow(QMainWindow):
             self.show_error("文字起こしする会議記録がありません。")
             return
         try:
-            controller.start(summary.path)
+            self._analysis_workflow.start(
+                controller,
+                lambda: controller.start(summary.path),
+            )
         except Exception as exc:
             self.show_error(str(exc))
 
@@ -1131,7 +1135,13 @@ class MainWindow(QMainWindow):
             self.show_error("話者分離する会議記録がありません。")
             return
         try:
-            controller.start(summary.path, speaker_count=self._speaker_count.currentData())
+            self._analysis_workflow.start(
+                controller,
+                lambda: controller.start(
+                    summary.path,
+                    speaker_count=self._speaker_count.currentData(),
+                ),
+            )
         except Exception as exc:
             self.show_error(str(exc))
 
@@ -1154,7 +1164,10 @@ class MainWindow(QMainWindow):
             self.show_error("画面解析する会議記録がありません。")
             return
         try:
-            controller.start(summary.path)
+            self._analysis_workflow.start(
+                controller,
+                lambda: controller.start(summary.path),
+            )
         except Exception as exc:
             self.show_error(str(exc))
 
@@ -1177,7 +1190,10 @@ class MainWindow(QMainWindow):
             self.show_error("要約する会話記録がありません。")
             return
         try:
-            controller.start(summary.path)
+            self._analysis_workflow.start(
+                controller,
+                lambda: controller.start(summary.path),
+            )
         except Exception as exc:
             self.show_error(str(exc))
 
@@ -1224,7 +1240,10 @@ class MainWindow(QMainWindow):
             return
         self.show_information("録音を保存しました。文字起こしを自動実行します。")
         try:
-            controller.start(summary.path)
+            self._analysis_workflow.start(
+                controller,
+                lambda: controller.start(summary.path),
+            )
         except Exception as exc:
             self.show_error(f"文字起こしを自動実行できません: {exc}")
 
@@ -1465,62 +1484,25 @@ class MainWindow(QMainWindow):
 
     def _update_analysis_availability(self) -> None:
         summary = self._selected_analysis_session()
-        controllers = (
-            self._transcription_controller,
-            self._diarization_controller,
-            self._screen_analysis_controller,
-            self._minutes_controller,
-        )
-
-        def other_running(current: object | None) -> bool:
-            return any(
-                controller is not None
-                and controller is not current
-                and controller.is_running
-                for controller in controllers
-            )
-
         transcription = self._transcription_controller
-        self._transcribe.setEnabled(
-            transcription is not None
-            and summary is not None
-            and (transcription.is_running or summary.can_transcribe)
-            and not other_running(transcription)
-        )
         diarization = self._diarization_controller
-        self._diarize.setEnabled(
-            diarization is not None
-            and summary is not None
-            and (diarization.is_running or summary.can_diarize)
-            and not other_running(diarization)
-        )
         screen_analysis = self._screen_analysis_controller
-        self._analyze_screens.setEnabled(
-            screen_analysis is not None
-            and summary is not None
-            and (screen_analysis.is_running or summary.can_analyze_screens)
-            and not other_running(screen_analysis)
-        )
         minutes = self._minutes_controller
-        self._generate_minutes.setEnabled(
-            minutes is not None
-            and summary is not None
-            and (
-                minutes.is_running
-                or (minutes.is_configured and summary.can_generate_minutes)
-            )
-            and not other_running(minutes)
+        availability = self._analysis_workflow.availability(
+            summary,
+            transcription=transcription,
+            diarization=diarization,
+            screen_analysis=screen_analysis,
+            minutes=minutes,
         )
-        self._open_session.setEnabled(summary is not None and summary.path.exists())
-        self._open_transcript.setEnabled(
-            summary is not None and (summary.path / "output" / "transcript.md").is_file()
-        )
-        self._open_screen_analysis.setEnabled(
-            summary is not None and (summary.path / "analysis" / "screens.json").is_file()
-        )
-        self._open_minutes.setEnabled(
-            summary is not None and (summary.path / "output" / "minutes.md").is_file()
-        )
+        self._transcribe.setEnabled(availability.transcribe)
+        self._diarize.setEnabled(availability.diarize)
+        self._analyze_screens.setEnabled(availability.analyze_screens)
+        self._generate_minutes.setEnabled(availability.generate_minutes)
+        self._open_session.setEnabled(availability.open_session)
+        self._open_transcript.setEnabled(availability.open_transcript)
+        self._open_screen_analysis.setEnabled(availability.open_screen_analysis)
+        self._open_minutes.setEnabled(availability.open_minutes)
 
     @staticmethod
     def _set_finished_stage(
@@ -1983,14 +1965,10 @@ class MainWindow(QMainWindow):
         self._reselect.setEnabled(False)
         if self._controller.is_recording:
             self.show_information("OSの終了に備えて記録を保存しています。")
-        if self._transcription_controller is not None:
-            self._transcription_controller.cancel()
-        if self._diarization_controller is not None:
-            self._diarization_controller.cancel()
-        if self._screen_analysis_controller is not None:
-            self._screen_analysis_controller.cancel()
-        if self._minutes_controller is not None:
-            self._minutes_controller.cancel()
+        self._analysis_workflow.cancel_all()
+
+    def wait_for_analysis_shutdown(self, timeout_seconds: float) -> bool:
+        return self._analysis_workflow.shutdown(timeout_seconds)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         if self._audio_preview_pending:
@@ -2021,12 +1999,7 @@ class MainWindow(QMainWindow):
             self._controller.stop_session()
             event.ignore()
             return
-        if self._transcription_controller is not None:
-            self._transcription_controller.cancel()
-        if self._diarization_controller is not None:
-            self._diarization_controller.cancel()
-        if self._screen_analysis_controller is not None:
-            self._screen_analysis_controller.cancel()
-        if self._minutes_controller is not None:
-            self._minutes_controller.cancel()
+        completed = self._analysis_workflow.shutdown(3.0)
+        if not completed:
+            _LOGGER.warning("Analysis workers did not stop before window close timeout")
         event.accept()

@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 
 from summarize_meeting.capture.screen.base import BgrFrame
+from summarize_meeting.infrastructure.atomic_io import write_bytes_atomic
 
 
 class ScreenshotSaveError(RuntimeError):
@@ -44,6 +45,7 @@ class ScreenshotStore:
             if not success:
                 raise ScreenshotSaveError("PNG encoding failed")
             with self._lock:
+                self._directory.mkdir(parents=True, exist_ok=True)
                 sequence = self._sequence + 1
                 filename = f"{sequence:06d}.png"
                 output = self._directory / filename
@@ -57,8 +59,6 @@ class ScreenshotStore:
                 expected_size = (int(frame.shape[0]), int(frame.shape[1]))
                 if decoded is None or decoded.shape[:2] != expected_size:
                     raise ScreenshotSaveError("PNG verification failed")
-                os.replace(temporary, output)
-                self._sequence = sequence
                 event: dict[str, Any] = {
                     "schema_version": 1,
                     "sequence": sequence,
@@ -69,11 +69,17 @@ class ScreenshotStore:
                     "reason": reason,
                     "metrics": metrics,
                 }
-                with self._events.open("a", encoding="utf-8", newline="\n") as stream:
-                    stream.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")))
-                    stream.write("\n")
-                    stream.flush()
-                    os.fsync(stream.fileno())
+                event_line = (
+                    json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
+                ).encode("utf-8")
+                existing_events = self._events.read_bytes() if self._events.exists() else b""
+                os.replace(temporary, output)
+                try:
+                    write_bytes_atomic(self._events, existing_events + event_line)
+                except Exception:
+                    output.unlink(missing_ok=True)
+                    raise
+                self._sequence = sequence
                 return filename
         except ScreenshotSaveError:
             raise

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
@@ -16,6 +15,7 @@ from summarize_meeting.domain.session import (
     SESSION_SCHEMA_VERSION,
 )
 from summarize_meeting.domain.transcript import TranscribedTrack, TranscriptSegment
+from summarize_meeting.infrastructure.atomic_io import ArtifactPublisher, json_bytes
 
 ProgressCallback = Callable[[int, str], None]
 
@@ -257,8 +257,12 @@ class TranscriptionService:
         analysis_path = session_directory / "analysis" / "transcription.json"
         transcript_path = session_directory / "output" / "transcript.md"
         self._notify(progress_callback, 94, "文字起こし結果を保存しています")
-        self._write_json_atomic(analysis_path, payload)
-        self._write_text_atomic(transcript_path, self._render_markdown(all_segments))
+        ArtifactPublisher(session_directory).publish(
+            {
+                analysis_path: json_bytes(payload),
+                transcript_path: self._render_markdown(all_segments).encode("utf-8"),
+            }
+        )
         self._notify(progress_callback, 100, "文字起こしが完了しました")
         return transcript_path
 
@@ -314,27 +318,6 @@ class TranscriptionService:
                 ]
             )
         return "\n".join(lines).rstrip() + "\n"
-
-    @staticmethod
-    def _write_json_atomic(path: Path, value: object) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(path.suffix + ".tmp")
-        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
-            json.dump(value, stream, ensure_ascii=False, indent=2)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-
-    @staticmethod
-    def _write_text_atomic(path: Path, content: str) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_suffix(path.suffix + ".tmp")
-        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
 
     @staticmethod
     def _notify(callback: ProgressCallback | None, percent: int, message: str) -> None:

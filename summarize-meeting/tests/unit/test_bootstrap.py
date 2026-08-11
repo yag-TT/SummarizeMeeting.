@@ -87,9 +87,14 @@ def test_instance_lock_recovers_lock_owned_by_missing_process(tmp_path: Path) ->
 class _ShutdownWindow:
     def __init__(self) -> None:
         self.prepared = False
+        self.analysis_timeout_seconds: float | None = None
 
     def prepare_for_os_shutdown(self) -> None:
         self.prepared = True
+
+    def wait_for_analysis_shutdown(self, timeout_seconds: float) -> bool:
+        self.analysis_timeout_seconds = timeout_seconds
+        return True
 
 
 class _ShutdownController:
@@ -110,6 +115,7 @@ def test_os_shutdown_prepares_ui_and_waits_for_bounded_finalize() -> None:
 
     assert not completed
     assert window.prepared
+    assert window.analysis_timeout_seconds == 4.0
     assert controller.timeout_seconds == 4.0
 
 

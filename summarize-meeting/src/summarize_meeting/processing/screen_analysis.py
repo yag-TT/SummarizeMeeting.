@@ -17,6 +17,7 @@ import numpy as np
 
 from summarize_meeting.domain.screen_analysis import OcrLine, ScreenRecognition
 from summarize_meeting.domain.session import SESSION_SCHEMA_VERSION
+from summarize_meeting.infrastructure.atomic_io import write_json_atomic
 
 ProgressCallback = Callable[[int, str], None]
 
@@ -334,7 +335,7 @@ class ScreenAnalysisService:
             "warnings": warnings,
         }
         output = session_directory / "analysis" / "screens.json"
-        _write_json_atomic(output, value)
+        write_json_atomic(output, value)
         _notify(progress_callback, 100, "画面解析が完了しました")
         return output
 
@@ -511,17 +512,6 @@ def _non_negative_int(value: object, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ScreenAnalysisError(f"{label}が不正です")
     return value
-
-
-def _write_json_atomic(path: Path, value: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    with temporary.open("w", encoding="utf-8", newline="\n") as stream:
-        json.dump(value, stream, ensure_ascii=False, indent=2)
-        stream.write("\n")
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, path)
 
 
 def _now_iso() -> str:

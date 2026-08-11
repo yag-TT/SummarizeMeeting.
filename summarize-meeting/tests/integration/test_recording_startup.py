@@ -361,7 +361,7 @@ def test_session_log_open_failure_prevents_recording_start(
         raise OSError("log directory is unavailable")
 
     monkeypatch.setattr(
-        "summarize_meeting.application.recording_controller.SessionLogWriter",
+        "summarize_meeting.application.recording_controller.SessionLogMonitor.open",
         fail_to_open_log,
     )
 

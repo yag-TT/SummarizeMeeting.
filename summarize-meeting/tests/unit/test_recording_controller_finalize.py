@@ -28,6 +28,11 @@ class _NoopStorageMonitor:
         pass
 
 
+class _UnexpectedlyFailingStorageMonitor(_NoopStorageMonitor):
+    def request_stop(self) -> None:
+        raise RuntimeError("unexpected monitor failure")
+
+
 class _FakeAudioRecorder:
     def __init__(
         self,
@@ -209,6 +214,23 @@ def test_shutdown_stop_requests_stop_and_reports_bounded_wait_timeout(
 
     controller._session_terminal.set()  # noqa: SLF001
     assert controller.stop_for_shutdown(timeout_seconds=0.0)
+
+
+def test_unexpected_finalize_error_still_completes_terminal_flow(tmp_path: Path) -> None:
+    controller, session_root = _prepare_controller(tmp_path)
+    controller._storage_monitor = _UnexpectedlyFailingStorageMonitor()  # type: ignore[assignment]  # noqa: SLF001,E501
+    errors: list[str] = []
+    finished: list[str] = []
+    controller.fatal_error.connect(errors.append)
+    controller.session_finished.connect(finished.append)
+
+    controller._stop_session_worker()  # noqa: SLF001
+
+    metadata = json.loads((session_root / "session.json").read_text(encoding="utf-8"))
+    assert metadata["status"] == SessionStatus.INTERRUPTED
+    assert controller._session_terminal.is_set()  # noqa: SLF001
+    assert finished == [str(session_root)]
+    assert any("予期しないエラー" in message for message in errors)
 
 
 def test_final_metadata_write_failure_does_not_abort_finalize_worker(

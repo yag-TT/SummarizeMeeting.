@@ -98,7 +98,7 @@ def test_controller_persists_success(tmp_path: Path, monkeypatch) -> None:
     output = session / "output" / "minutes.md"
     monkeypatch.delenv("SUMMARIZE_MEETING_LLM_URL", raising=False)
     monkeypatch.setattr(
-        "summarize_meeting.application.minutes_controller.threading.Thread",
+        "summarize_meeting.application.analysis_job_runner.threading.Thread",
         _ImmediateThread,
     )
     commands: list[list[str]] = []
@@ -108,7 +108,7 @@ def test_controller_persists_success(tmp_path: Path, monkeypatch) -> None:
         return _SuccessfulProcess(output)
 
     monkeypatch.setattr(
-        "summarize_meeting.application.minutes_controller.subprocess.Popen", start_process
+        "summarize_meeting.application.analysis_job_runner.subprocess.Popen", start_process
     )
     controller = MinutesController(
         paths,

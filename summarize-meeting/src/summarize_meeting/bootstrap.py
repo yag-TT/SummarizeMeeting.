@@ -31,6 +31,9 @@ from summarize_meeting.application.screen_analysis_controller import (
     ScreenAnalysisController,
 )
 from summarize_meeting.application.transcription_controller import TranscriptionController
+from summarize_meeting.infrastructure.analysis_job_repository import (
+    FileAnalysisJobRepository,
+)
 from summarize_meeting.infrastructure.logging_support import (
     RedactingLogFormatter,
     register_sensitive_log_values,
@@ -49,6 +52,8 @@ _previous_qt_message_handler: _QtMessageHandler | None = None
 
 class ShutdownWindowPort(Protocol):
     def prepare_for_os_shutdown(self) -> None: ...
+
+    def wait_for_analysis_shutdown(self, timeout_seconds: float) -> bool: ...
 
 
 class ShutdownControllerPort(Protocol):
@@ -193,12 +198,17 @@ def main() -> int:
         settings=settings_result.settings,
         settings_repository=settings_repository,
     )
-    transcription_controller = TranscriptionController(paths)
-    diarization_controller = DiarizationController(paths)
-    screen_analysis_controller = ScreenAnalysisController(paths)
+    job_repository = FileAnalysisJobRepository()
+    transcription_controller = TranscriptionController(paths, job_repository=job_repository)
+    diarization_controller = DiarizationController(paths, job_repository=job_repository)
+    screen_analysis_controller = ScreenAnalysisController(
+        paths,
+        job_repository=job_repository,
+    )
     minutes_controller = MinutesController(
         paths,
         base_url=settings_result.settings.llm.base_url,
+        job_repository=job_repository,
     )
     window = MainWindow(
         controller,
@@ -235,12 +245,14 @@ def _handle_os_shutdown(
     controller: ShutdownControllerPort,
 ) -> bool:
     window.prepare_for_os_shutdown()
+    analysis_completed = window.wait_for_analysis_shutdown(timeout_seconds=4.0)
     completed = controller.stop_for_shutdown(timeout_seconds=4.0)
     _LOGGER.info(
-        "OS shutdown recording finalize_completed=%s",
+        "OS shutdown analysis_completed=%s recording_finalize_completed=%s",
+        analysis_completed,
         completed,
     )
-    return completed
+    return analysis_completed and completed
 
 
 def _offer_recovery(window: MainWindow, controller: RecoveryController) -> None:
