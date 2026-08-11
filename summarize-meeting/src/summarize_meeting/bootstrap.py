@@ -6,6 +6,7 @@ import logging
 import platform
 import sys
 import threading
+from collections.abc import Callable
 from logging.handlers import RotatingFileHandler
 from types import TracebackType
 from typing import Protocol
@@ -30,6 +31,10 @@ from summarize_meeting.application.screen_analysis_controller import (
     ScreenAnalysisController,
 )
 from summarize_meeting.application.transcription_controller import TranscriptionController
+from summarize_meeting.infrastructure.logging_support import (
+    RedactingLogFormatter,
+    register_sensitive_log_values,
+)
 from summarize_meeting.infrastructure.paths import AppRootNotWritableError, PortableAppPaths
 from summarize_meeting.infrastructure.settings import FileSettingsRepository, SettingsLoadResult
 from summarize_meeting.ui.font_support import configure_japanese_ui_font
@@ -38,6 +43,8 @@ from summarize_meeting.ui.main_window import MainWindow
 _LOGGER = logging.getLogger(__name__)
 _ORIGINAL_SYS_EXCEPTHOOK = sys.excepthook
 _ORIGINAL_THREADING_EXCEPTHOOK = threading.excepthook
+_QtMessageHandler = Callable[[QtMsgType, QMessageLogContext, str], None]
+_previous_qt_message_handler: _QtMessageHandler | None = None
 
 
 class ShutdownWindowPort(Protocol):
@@ -50,6 +57,7 @@ class ShutdownControllerPort(Protocol):
 
 def _configure_logging(paths: PortableAppPaths, log_level: str) -> None:
     level = getattr(logging, log_level.upper(), logging.INFO)
+    register_sensitive_log_values(paths.app_root)
     handler = RotatingFileHandler(
         paths.logs_dir / "application.log",
         maxBytes=5 * 1024 * 1024,
@@ -57,7 +65,7 @@ def _configure_logging(paths: PortableAppPaths, log_level: str) -> None:
         encoding="utf-8",
     )
     handler.setFormatter(
-        logging.Formatter(
+        RedactingLogFormatter(
             "%(asctime)s %(levelname)s %(name)s "
             "[process=%(process)d thread=%(threadName)s] %(message)s"
         )
@@ -78,9 +86,13 @@ def _configure_logging(paths: PortableAppPaths, log_level: str) -> None:
 def _install_runtime_logging_bridges() -> None:
     """Python/Qtが標準エラーだけへ出す診断情報をアプリログにも転送する。"""
 
+    global _previous_qt_message_handler
+
     sys.excepthook = _log_unhandled_exception
     threading.excepthook = _log_unhandled_thread_exception
-    qInstallMessageHandler(_log_qt_message)
+    previous = qInstallMessageHandler(_log_qt_message)
+    if previous is not _log_qt_message:
+        _previous_qt_message_handler = previous
 
 
 def _log_unhandled_exception(
@@ -127,6 +139,10 @@ def _log_qt_message(
         location = f" file={context.file}:{context.line}"
     category = f" category={context.category}" if context.category else ""
     logging.getLogger("qt").log(level, "Qt message%s%s: %s", category, location, message)
+    if _previous_qt_message_handler is not None:
+        _previous_qt_message_handler(message_type, context, message)
+    elif level >= logging.WARNING:
+        print(f"Qt {logging.getLevelName(level)}: {message}", file=sys.stderr)
 
 
 def main() -> int:

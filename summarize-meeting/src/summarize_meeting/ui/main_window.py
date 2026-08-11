@@ -41,6 +41,7 @@ from summarize_meeting.application.screen_analysis_controller import (
 )
 from summarize_meeting.application.transcription_controller import TranscriptionController
 from summarize_meeting.domain.capture import AudioDevice, ScreenTarget
+from summarize_meeting.infrastructure.logging_support import register_sensitive_log_values
 from summarize_meeting.infrastructure.session_catalog import (
     FileSessionCatalog,
     SessionSummary,
@@ -1880,6 +1881,7 @@ class MainWindow(QMainWindow):
         )
 
     def show_error(self, message: str) -> None:
+        self._register_sensitive_log_values()
         _LOGGER.error(
             "UI error: %s",
             message,
@@ -1892,12 +1894,31 @@ class MainWindow(QMainWindow):
         )
 
     def show_warning(self, message: str) -> None:
+        self._register_sensitive_log_values()
         _LOGGER.warning("UI warning: %s", message)
         self._message.setText(message)
         self._message.setStyleSheet(
             "padding: 10px; background: #463b18; color: #ffe082; "
             "border: 1px solid #806d2c; border-radius: 4px;"
         )
+
+    def _register_sensitive_log_values(self) -> None:
+        values: list[str | Path | None] = [getattr(self, "_session_path", None)]
+        title_widget = getattr(self, "_title", None)
+        if title_widget is not None:
+            values.append(title_widget.text().strip())
+        for attribute in ("_microphone", "_system_audio", "_screen_target", "_analysis_session"):
+            widget = getattr(self, attribute, None)
+            if widget is None:
+                continue
+            value = widget.currentData()
+            if isinstance(value, AudioDevice):
+                values.extend((value.id, value.name))
+            elif isinstance(value, ScreenTarget):
+                values.extend((value.id, value.title))
+            elif isinstance(value, SessionSummary):
+                values.extend((value.path, value.title))
+        register_sensitive_log_values(*values)
 
     def _on_fatal_error(self, message: str) -> None:
         if self._controller.is_recording or self._started_at is not None:

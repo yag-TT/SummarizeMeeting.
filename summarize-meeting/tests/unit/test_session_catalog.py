@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 from summarize_meeting.infrastructure.session_catalog import FileSessionCatalog
@@ -91,6 +92,24 @@ def test_catalog_skips_corrupt_and_legacy_sessions(tmp_path: Path) -> None:
     values = FileSessionCatalog(tmp_path).scan()
 
     assert [value.path for value in values] == [valid.resolve()]
+
+
+def test_catalog_logs_directory_enumeration_failure(
+    tmp_path: Path,
+    monkeypatch,
+    caplog,
+) -> None:
+    def fail_iterdir(_path: Path):
+        raise OSError("storage unavailable")
+
+    monkeypatch.setattr(Path, "iterdir", fail_iterdir)
+
+    with caplog.at_level(logging.ERROR, logger="summarize_meeting.infrastructure.session_catalog"):
+        values = FileSessionCatalog(tmp_path).scan()
+
+    assert values == ()
+    assert "Failed to enumerate meeting sessions" in caplog.text
+    assert "storage unavailable" in caplog.text
 
 
 def test_catalog_marks_success_without_markdown_as_incomplete(tmp_path: Path) -> None:

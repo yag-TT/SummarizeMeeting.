@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,8 @@ from summarize_meeting.domain.session import (
     AUDIO_MANIFEST_SCHEMA_VERSION,
     SESSION_SCHEMA_VERSION,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,7 +58,12 @@ class FileSessionCatalog:
         summaries: list[tuple[float, SessionSummary]] = []
         try:
             directories = tuple(self._meetings_directory.iterdir())
-        except OSError:
+        except OSError as exc:
+            _LOGGER.error(
+                "Failed to enumerate meeting sessions directory=%s",
+                self._meetings_directory,
+                exc_info=exc,
+            )
             return ()
         for directory in directories:
             if not directory.is_dir():
