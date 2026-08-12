@@ -242,14 +242,16 @@ output = service.run(session_dir, progress_callback=callback)
 backend = LlamaCppMinutesBackend(
     base_url="http://llm-host:8081/v1",
     model=None,
-    max_output_tokens=2048,
+    max_output_tokens=4096,
     timeout_seconds=600,
 )
-service = MinutesService(backend, max_chunk_characters=24_000)
+service = MinutesService(backend, max_chunk_characters=12_000)
 output = service.run(session_dir, progress_callback=callback)
 ```
 
-戻り値は`output/minutes.md`です。`MinutesBackend.generate(prompt, schema)`を実装すればLLM Backendを差し替えられます。
+戻り値は`output/minutes.md`です。長い入力は12,000文字単位で分割し、部分要約も同じ上限を目安に隣接する時系列単位から段階的に統合します。`MinutesBackend.generate(prompt, schema)`を実装すればLLM Backendを差し替えられます。
+
+生成JSONには、要約、話題、要点に加えて`conversation_flow`が必須です。各項目の`title`、`detail`、`uncertain`、`evidence_ids`をLLMが返し、`start_ms`、`end_ms`、`speakers`は検証済みの根拠からアプリが算出します。文字起こしの明白な誤認識だけを文脈から補正し、確信できない箇所は`uncertain: true`として断定を避けます。
 
 `progress_callback`はいずれも`Callable[[int, str], None]`です。percentは0〜100へ正規化されます。
 

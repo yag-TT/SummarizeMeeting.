@@ -41,7 +41,7 @@ class LlamaCppMinutesBackend:
         *,
         base_url: str,
         model: str | None = None,
-        max_output_tokens: int = 2_048,
+        max_output_tokens: int = 4_096,
         timeout_seconds: float = 600,
     ) -> None:
         parsed = urlparse(base_url)
@@ -71,8 +71,14 @@ class LlamaCppMinutesBackend:
                 {
                     "role": "system",
                     "content": (
-                        "入力資料だけを根拠に、会議・雑談・相談・インタビューなど"
-                        "種類を問わない日本語の会話要約JSONを作成してください。"
+                        "入力資料だけを根拠に、録音の形式や議題数を決めつけず、"
+                        "すべての意味のある話題を扱う日本語の詳細な会話要約JSONを"
+                        "作成してください。質問、回答、補足、理由、具体例、反論、"
+                        "認識の変化、話題転換を発生順に残し、相づち、言い直し、"
+                        "重複だけを圧縮してください。文字起こしには誤字、同音異義語、"
+                        "固有名詞の誤認識、聞き間違い、文の分断が含まれ得ます。"
+                        "前後の文脈を読み、明白な誤りだけを自然に補正し、"
+                        "確信できない内容は不明瞭と明記して断定や創作を避けてください。"
                     ),
                 },
                 {"role": "user", "content": prompt},
@@ -153,13 +159,13 @@ class LlamaCppMinutesBackend:
 
 
 class MinutesService:
-    """長い会議を分割要約し、根拠ID検証後にJSONとMarkdownを保存する。"""
+    """長い会話を分割要約し、根拠ID検証後にJSONとMarkdownを保存する。"""
 
     def __init__(
         self,
         backend: MinutesBackend,
         *,
-        max_chunk_characters: int = 24_000,
+        max_chunk_characters: int = 12_000,
     ) -> None:
         if max_chunk_characters < 2_000:
             raise ValueError("max_chunk_characters must be at least 2000")
@@ -192,7 +198,7 @@ class MinutesService:
             screen_path=screen_path,
             warnings=warnings,
         )
-        # コンテキスト上限を超える会議は部分要約し、最後に同じschemaで統合する。
+        # コンテキスト上限を超える会話は部分要約し、同じschemaで段階的に統合する。
         chunks = _timeline_chunks(timeline["items"], self._max_chunk_characters)
         partials: list[Mapping[str, object]] = []
         for index, chunk in enumerate(chunks, 1):
@@ -208,14 +214,11 @@ class MinutesService:
                     MINUTES_JSON_SCHEMA,
                 )
             )
-        if len(partials) == 1:
-            generated = partials[0]
-        else:
-            _notify(progress_callback, 80, "分割した要約を統合しています")
-            generated = self._backend.generate(
-                _merge_prompt(session, partials),
-                MINUTES_JSON_SCHEMA,
-            )
+        generated = self._merge_partials(
+            session,
+            partials,
+            progress_callback=progress_callback,
+        )
 
         _notify(progress_callback, 90, "生成内容と根拠を検証しています")
         # LLMの各主張に、実在するtimeline項目の根拠IDが付いているか検証する。
@@ -232,7 +235,7 @@ class MinutesService:
             json.dumps(timeline, ensure_ascii=False, sort_keys=True).encode("utf-8")
         ).hexdigest()
         minutes_value = {
-            "schema_version": 2,
+            "schema_version": 3,
             "status": "SUCCEEDED",
             "generation_id": generation_id,
             "completed_at": completed_at,
@@ -260,6 +263,40 @@ class MinutesService:
         _notify(progress_callback, 100, "会話要約が完了しました")
         return output
 
+    def _merge_partials(
+        self,
+        session: Mapping[str, object],
+        partials: Sequence[Mapping[str, object]],
+        *,
+        progress_callback: ProgressCallback | None,
+    ) -> Mapping[str, object]:
+        current = list(partials)
+        round_index = 1
+        while len(current) > 1:
+            batches = _partial_summary_batches(current, self._max_chunk_characters)
+            merged: list[Mapping[str, object]] = []
+            for batch_index, batch in enumerate(batches, 1):
+                if len(batch) == 1:
+                    merged.append(batch[0])
+                    continue
+                _notify(
+                    progress_callback,
+                    min(89, 79 + round_index),
+                    (
+                        "分割した要約を統合しています "
+                        f"({round_index}回目 {batch_index}/{len(batches)})"
+                    ),
+                )
+                merged.append(
+                    self._backend.generate(
+                        _merge_prompt(session, batch),
+                        MINUTES_JSON_SCHEMA,
+                    )
+                )
+            current = merged
+            round_index += 1
+        return current[0]
+
 
 def _evidenced_object(properties: Mapping[str, object]) -> dict[str, object]:
     all_properties = dict(properties)
@@ -277,6 +314,17 @@ MINUTES_JSON_SCHEMA: dict[str, object] = {
     "additionalProperties": False,
     "properties": {
         "summary": {"type": "string"},
+        "conversation_flow": {
+            "type": "array",
+            "minItems": 1,
+            "items": _evidenced_object(
+                {
+                    "title": {"type": "string"},
+                    "detail": {"type": "string"},
+                    "uncertain": {"type": "boolean"},
+                }
+            ),
+        },
         "topics": {
             "type": "array",
             "items": _evidenced_object(
@@ -313,6 +361,7 @@ MINUTES_JSON_SCHEMA: dict[str, object] = {
     },
     "required": [
         "summary",
+        "conversation_flow",
         "topics",
         "key_points",
         "decisions",
@@ -453,6 +502,28 @@ def _timeline_chunks(items: object, max_characters: int) -> list[list[object]]:
     return chunks
 
 
+def _partial_summary_batches(
+    partials: Sequence[Mapping[str, object]], max_characters: int
+) -> list[list[Mapping[str, object]]]:
+    batches: list[list[Mapping[str, object]]] = []
+    current: list[Mapping[str, object]] = []
+    current_size = 0
+    for partial in partials:
+        size = len(json.dumps(partial, ensure_ascii=False, separators=(",", ":"))) + 1
+        if current and current_size + size > max_characters:
+            batches.append(current)
+            current = []
+            current_size = 0
+        current.append(partial)
+        current_size += size
+    if current:
+        batches.append(current)
+    # 各部分要約が上限近くまである場合も、隣接する2件を統合して必ず収束させる。
+    if len(batches) == len(partials) and len(partials) > 1:
+        return [list(partials[index : index + 2]) for index in range(0, len(partials), 2)]
+    return batches
+
+
 def _generation_prompt(
     session: Mapping[str, object],
     items: Sequence[object],
@@ -462,9 +533,17 @@ def _generation_prompt(
 ) -> str:
     title = session.get("title") if isinstance(session.get("title"), str) else "会議"
     return (
-        "あなたは日本語の会話要約者です。会議、雑談、相談、インタビューなどの種類を決めつけず、"
+        "あなたは日本語の詳細な会話記録の要約者です。録音が会議、雑談、相談、説明、"
+        "インタビューのいずれか、または単一の議題を扱うものだと決めつけず、"
         "以下のタイムラインだけを根拠にJSONを生成してください。\n"
-        "全体像が分かるsummary、主なtopics、重要なkey_pointsを中心に整理してください。"
+        "summary、topics、key_pointsに加え、conversation_flowには意味のある会話の推移を"
+        "発生順に詳しく記録してください。質問、回答、補足、理由、具体例、反論、認識の変化、"
+        "話題転換を残し、主要な議題でないという理由で内容を省略してはいけません。"
+        "相づち、単なる言い直し、実質的な重複だけを圧縮してください。\n"
+        "文字起こしには誤字、同音異義語、固有名詞の誤認識、聞き間違い、文の不自然な分断が"
+        "含まれ得ます。前後の発言と画面情報から文脈を読み、文脈上ほぼ確実な誤りだけを"
+        "自然に補正してください。確信できない内容は推測で補完せず、detailで不明瞭と明記して"
+        "uncertainをtrueにしてください。それ以外はfalseにしてください。\n"
         "推測や一般知識を足してはいけません。各項目には必ず根拠のidをevidence_idsへ入れてください。\n"
         "decisions、todos、pendingは、明示的な合意、今後の対応、未解決事項がある場合だけ記載し、"
         "該当しなければ空配列にしてください。\n"
@@ -479,11 +558,19 @@ def _generation_prompt(
 def _merge_prompt(session: Mapping[str, object], partials: Sequence[Mapping[str, object]]) -> str:
     title = session.get("title") if isinstance(session.get("title"), str) else "会議"
     return (
-        "次の分割会話要約を重複なく統合し、同じJSON形式で返してください。"
+        "次の時系列順の分割会話要約を、同じJSON形式で統合してください。"
         "入力にない事実を追加してはいけません。\n"
-        "summary、topics、key_pointsを中心に会話全体を理解できる内容へまとめ、"
+        "録音の形式や議題数を決めつけず、すべての意味のある話題を扱ってください。"
+        "conversation_flowは質問、回答、補足、理由、具体例、反論、認識の変化、話題転換を"
+        "発生順のまま保持してください。完全に同じ内容だけを統合し、主要な議題ではないという"
+        "理由や、要約を短くする目的で意味のある応答を削除してはいけません。相づち、"
+        "言い直し、実質的な重複だけを圧縮してください。\n"
+        "文字起こしの誤字、同音異義語、固有名詞の誤認識、聞き間違い、文の分断を考慮し、"
+        "前後の内容から明白な誤りだけを自然に補正してください。確信できない内容は断定や"
+        "創作をせず、uncertainと不明瞭である旨の記述を保持してください。\n"
+        "summary、topics、key_pointsで会話全体を理解できる内容へまとめ、"
         "decisions、todos、pendingは明示的な内容だけを保持してください。\n"
-        "evidence_idsは保持し、相対期限は原文のままにしてください。"
+        "すべてのevidence_idsを保持し、相対期限は原文のままにしてください。"
         "担当者または期限が不明なTODOは「不明」としてください。\n"
         f"記録名: {title}\n分割会話要約:\n"
         + json.dumps(partials, ensure_ascii=False, separators=(",", ":"))
@@ -534,6 +621,8 @@ def _validate_generated(
                 converted[key] = text
                 if changed:
                     warnings.append(f"{name} {index}の不正な生成トークンを除去しました")
+            if name == "conversation_flow":
+                converted["uncertain"] = raw.get("uncertain") is True
             if name == "todos":
                 evidence_text = _evidence_text(evidence_ids, evidence)
                 assignee = str(converted["assignee"])
@@ -561,6 +650,25 @@ def _validate_generated(
             result.append(converted)
         return result
 
+    conversation_flow = validate_list("conversation_flow", ("title", "detail"))
+    if not conversation_flow:
+        fallback_ids = [
+            evidence_id
+            for evidence_id, item in evidence.items()
+            if item.get("kind") == "speech"
+        ]
+        if fallback_ids:
+            conversation_flow = [
+                {
+                    "title": "会話全体",
+                    "detail": summary,
+                    "uncertain": False,
+                    "evidence_ids": fallback_ids,
+                }
+            ]
+            warnings.append("会話の流れを生成できなかったため全体要約から再構成しました")
+    _add_conversation_flow_metadata(conversation_flow, evidence)
+
     topics = validate_list("topics", ("title", "summary"))
     key_points = validate_list("key_points", ("text",))
     if not key_points:
@@ -584,6 +692,7 @@ def _validate_generated(
         {
             "summary": summary.strip(),
             "participants": participants,
+            "conversation_flow": conversation_flow,
             "topics": topics,
             "key_points": key_points,
             "decisions": validate_list("decisions", ("text",)),
@@ -593,6 +702,50 @@ def _validate_generated(
         },
         warnings,
     )
+
+
+def _add_conversation_flow_metadata(
+    flow: list[dict[str, object]], evidence: Mapping[str, Mapping[str, object]]
+) -> None:
+    for item in flow:
+        evidence_ids = [
+            evidence_id
+            for evidence_id in _unique_strings(item.get("evidence_ids"))
+            if evidence_id in evidence
+        ]
+        evidence_ids.sort(
+            key=lambda evidence_id: (
+                _timeline_item_start_ms(evidence[evidence_id]),
+                evidence_id,
+            )
+        )
+        source_items = [evidence[evidence_id] for evidence_id in evidence_ids]
+        item["evidence_ids"] = evidence_ids
+        item["start_ms"] = min(
+            (_timeline_item_start_ms(source) for source in source_items), default=0
+        )
+        item["end_ms"] = max(
+            (_timeline_item_end_ms(source) for source in source_items), default=0
+        )
+        item["speakers"] = _unique_strings(
+            source.get("speaker_name")
+            for source in source_items
+            if source.get("kind") == "speech"
+        )
+    flow.sort(key=lambda item: (int(item.get("start_ms", 0)), str(item.get("title", ""))))
+
+
+def _timeline_item_start_ms(item: Mapping[str, object]) -> int:
+    value = item.get("timestamp_ms")
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _timeline_item_end_ms(item: Mapping[str, object]) -> int:
+    if item.get("kind") == "speech":
+        value = item.get("end")
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            return max(_timeline_item_start_ms(item), round(float(value) * 1000))
+    return _timeline_item_start_ms(item)
 
 
 def _render_markdown(
@@ -616,10 +769,39 @@ def _render_markdown(
             "",
             str(minutes.get("summary") or "記載なし"),
             "",
-            "## 主な話題",
+            "## 会話の流れ",
             "",
         ]
     )
+    conversation_flow = (
+        minutes.get("conversation_flow")
+        if isinstance(minutes.get("conversation_flow"), list)
+        else []
+    )
+    if conversation_flow:
+        for item in conversation_flow:
+            if not isinstance(item, dict):
+                continue
+            start = _format_timestamp_ms(item.get("start_ms"))
+            end = _format_timestamp_ms(item.get("end_ms"))
+            timestamp = start if start == end else f"{start}–{end}"
+            speakers = item.get("speakers") if isinstance(item.get("speakers"), list) else []
+            speaker_text = "・".join(str(speaker) for speaker in speakers) or "不明"
+            title_text = str(item.get("title") or "会話")
+            if item.get("uncertain") is True:
+                title_text += "（文字起こし不明瞭）"
+            lines.extend(
+                [
+                    f"### {timestamp} | {speaker_text} | {title_text}",
+                    "",
+                    str(item.get("detail") or "記載なし"),
+                    "",
+                ]
+            )
+    else:
+        lines.extend(["- 会話の流れを特定できませんでした", ""])
+
+    lines.extend(["## 主な話題", ""])
     topics = minutes.get("topics") if isinstance(minutes.get("topics"), list) else []
     if topics:
         for topic in topics:

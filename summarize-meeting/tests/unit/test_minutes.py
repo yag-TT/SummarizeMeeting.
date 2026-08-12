@@ -45,6 +45,26 @@ class _HttpResponse:
 def _generated() -> dict[str, object]:
     return {
         "summary": "テスト結果の共有予定を確認した。",
+        "conversation_flow": [
+            {
+                "title": "共有予定の確認",
+                "detail": "田中がテスト結果を来週金曜日までに共有すると説明した。",
+                "uncertain": True,
+                "evidence_ids": ["speech-00002"],
+            },
+            {
+                "title": "会話の開始",
+                "detail": "自分が開始を促した。",
+                "uncertain": False,
+                "evidence_ids": ["speech-00001"],
+            },
+            {
+                "title": "根拠のない流れ",
+                "detail": "存在しない発言。",
+                "uncertain": False,
+                "evidence_ids": ["missing"],
+            },
+        ],
         "topics": [
             {
                 "title": "テスト結果",
@@ -167,14 +187,25 @@ def test_service_builds_timeline_validates_evidence_and_renders_minutes(tmp_path
     markdown = output.read_text(encoding="utf-8")
     assert timeline["sources"]["transcript"] == "analysis/diarized_transcription.json"
     assert [item["kind"] for item in timeline["items"]] == ["speech", "screen", "speech"]
-    assert minutes["schema_version"] == 2
+    assert minutes["schema_version"] == 3
     assert minutes["minutes"]["participants"] == ["自分", "田中"]
+    flow = minutes["minutes"]["conversation_flow"]
+    assert [item["title"] for item in flow] == ["会話の開始", "共有予定の確認"]
+    assert flow[0]["start_ms"] == 1000
+    assert flow[0]["end_ms"] == 2000
+    assert flow[0]["speakers"] == ["自分"]
+    assert flow[1]["start_ms"] == 10_000
+    assert flow[1]["end_ms"] == 13_000
+    assert flow[1]["speakers"] == ["田中"]
     assert minutes["minutes"]["key_points"][0]["text"].startswith("テスト結果")
     assert len(minutes["minutes"]["decisions"]) == 1
     assert minutes["minutes"]["todos"][0]["assignee"] == "不明"
     assert any("根拠がないため除外" in item for item in minutes["warnings"])
     assert "# Phase 5試験" in markdown
     assert "## 会話の要約" in markdown
+    assert "## 会話の流れ" in markdown
+    assert "### 00:01–00:02 | 自分 | 会話の開始" in markdown
+    assert "### 00:10–00:13 | 田中 | 共有予定の確認（文字起こし不明瞭）" in markdown
     assert "## 会話の要点" in markdown
     assert "## 明確な合意・決定" in markdown
     assert "## 今後の対応" in markdown
@@ -213,12 +244,14 @@ def test_service_uses_map_reduce_for_long_timeline(tmp_path: Path) -> None:
         for index in range(20)
     ]
     transcription_path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
-    backend = FakeBackend([_generated() for _ in range(10)])
+    backend = FakeBackend([_generated() for _ in range(100)])
 
-    MinutesService(backend, max_chunk_characters=10_000).run(session)
+    MinutesService(backend, max_chunk_characters=2_000).run(session)
 
     assert len(backend.prompts) > 2
+    assert sum("分割会話要約" in prompt for prompt in backend.prompts) > 1
     assert "分割会話要約" in backend.prompts[-1]
+    assert "発生順のまま保持" in backend.prompts[-1]
 
 
 def test_service_rejects_session_without_successful_transcript(tmp_path: Path) -> None:
@@ -252,7 +285,11 @@ def test_llama_cpp_backend_uses_configured_structured_output(monkeypatch) -> Non
     assert payload["model"] == "existing-model"
     assert payload["response_format"]["type"] == "json_schema"
     assert payload["response_format"]["json_schema"]["name"] == "conversation_summary"
-    assert "種類を問わない" in payload["messages"][0]["content"]
+    assert payload["max_tokens"] == 4096
+    assert "議題数を決めつけず" in payload["messages"][0]["content"]
+    assert "誤字、同音異義語、固有名詞の誤認識、聞き間違い" in payload["messages"][0]["content"]
+    assert "質問、回答、補足、理由、具体例、反論" in payload["messages"][0]["content"]
+    assert "確信できない内容は不明瞭" in payload["messages"][0]["content"]
     assert result["summary"] == "テスト結果の共有予定を確認した。"
 
 
@@ -347,6 +384,20 @@ def test_service_summarizes_informal_conversation_without_empty_meeting_sections
     )
     generated = {
         "summary": "最近訪れた場所と、そこで食べた料理について話した。",
+        "conversation_flow": [
+            {
+                "title": "旅行先の印象",
+                "detail": "海辺の町を訪れ、景色がきれいだったと話した。",
+                "uncertain": False,
+                "evidence_ids": ["speech-00001"],
+            },
+            {
+                "title": "現地の料理への話題転換",
+                "detail": "相手が現地で食べた料理について質問した。",
+                "uncertain": False,
+                "evidence_ids": ["speech-00002"],
+            },
+        ],
         "topics": [
             {
                 "title": "最近の旅行",
@@ -377,14 +428,23 @@ def test_service_summarizes_informal_conversation_without_empty_meeting_sections
     markdown = output.read_text(encoding="utf-8")
     assert "## 会話情報" in markdown
     assert "## 会話の要約" in markdown
+    assert "## 会話の流れ" in markdown
+    assert "### 00:01–00:04 | 自分 | 旅行先の印象" in markdown
+    assert "### 00:05–00:08 | PC音声 | 現地の料理への話題転換" in markdown
     assert "## 主な話題" in markdown
     assert "## 会話の要点" in markdown
     assert "海辺の景色が印象に残った" in markdown
     assert "## 明確な合意・決定" not in markdown
     assert "## 今後の対応" not in markdown
     assert "## 未解決・確認事項" not in markdown
-    assert "会議、雑談、相談、インタビュー" in backend.prompts[0]
+    assert "単一の議題" in backend.prompts[0]
+    assert "質問、回答、補足、理由、具体例、反論、認識の変化" in backend.prompts[0]
+    assert "誤字、同音異義語、固有名詞の誤認識、聞き間違い" in backend.prompts[0]
+    assert "主要な議題でないという理由で内容を省略" in backend.prompts[0]
     assert "key_points" in backend.schemas[0]["properties"]  # type: ignore[index]
+    flow_schema = backend.schemas[0]["properties"]["conversation_flow"]  # type: ignore[index]
+    assert flow_schema["minItems"] == 1
+    assert "uncertain" in flow_schema["items"]["properties"]
 
 
 def test_service_rejects_legacy_session_schema(tmp_path: Path) -> None:

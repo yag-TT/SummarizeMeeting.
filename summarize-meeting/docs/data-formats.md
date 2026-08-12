@@ -362,11 +362,11 @@ schema version 1です。発話は`speech-00001`、画面は`screen-00001`のよ
 
 ### `analysis/minutes.json`
 
-schema versionは2です。
+schema versionは3です。
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "status": "SUCCEEDED",
   "generation_id": "uuid",
   "completed_at": "2026-08-11T10:40:00.000+09:00",
@@ -380,6 +380,17 @@ schema versionは2です。
   "minutes": {
     "summary": "...",
     "participants": ["自分", "田中"],
+    "conversation_flow": [
+      {
+        "title": "設計案の説明と確認",
+        "detail": "自分が設計案を説明し、田中が前提条件を確認した。",
+        "uncertain": false,
+        "evidence_ids": ["speech-00001", "speech-00002"],
+        "start_ms": 420,
+        "end_ms": 18200,
+        "speakers": ["自分", "田中"]
+      }
+    ],
     "topics": [{"title":"...","summary":"...","evidence_ids":["speech-00001"]}],
     "key_points": [{"text":"...","evidence_ids":["speech-00001"]}],
     "decisions": [],
@@ -391,14 +402,14 @@ schema versionは2です。
 }
 ```
 
-LLMが返した根拠IDは実在するtimeline itemだけに絞られます。根拠がない主張や不正な生成トークンは除外または再構成され、`warnings`へ記録されます。
+LLMが返した根拠IDは実在するtimeline itemだけに絞られます。`conversation_flow`の時刻範囲と話者は根拠IDから算出され、開始時刻順に整列されます。根拠がない主張や不正な生成トークンは除外または再構成され、`warnings`へ記録されます。
 
 `timeline.json`, `minutes.json`, `output/minutes.md`は同じ`ArtifactPublisher`処理で一括公開されます。
 
 ## 13. Markdown成果物
 
 - `output/transcript.md`: 時刻、話者、発話本文を人間向けに表示します。話者分離または話者名更新後は同じファイルを再生成します。
-- `output/minutes.md`: 会話情報、要約、話題、要点、明示的な決定・TODO・未解決事項、画面参照を表示します。
+- `output/minutes.md`: 会話情報、要約、時刻・話者付きの詳細な会話の流れ、話題、要点、明示的な決定・TODO・未解決事項、画面参照を表示します。不確実なフロー項目には文字起こしが不明瞭である旨を表示します。
 
 JSONが機械処理用の正本で、Markdownは表示用派生成果物です。
 
